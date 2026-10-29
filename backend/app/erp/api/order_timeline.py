@@ -49,6 +49,7 @@ AUDIT_TITLES: dict[str, str] = {
     "erp.invoice_marked_unsent": "Desmarcada «factura enviada»",
     "erp.order_cobro_banco": "Cobro registrado con el movimiento del banco",
     "erp.invoice_mention_added": "Mención añadida a la factura",
+    "erp.invoice_client_changed": "Cliente de la factura cambiado en FACTUSOL",
     "erp.order_client_relinked": "Cliente del pedido cambiado",
     "erp.order_customer_created": "Cliente creado en FACTUSOL",
 }

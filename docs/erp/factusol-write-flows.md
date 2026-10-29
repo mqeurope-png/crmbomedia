@@ -367,33 +367,55 @@ de escribir (si cambió, no se escribe) y Auditoría (target `order`). Código e
 
 | Qué | Tabla | Cómo | Auditoría |
 |---|---|---|---|
-| Mención legal | F_FAC | `ActualizarRegistro` con `TIPFAC`, `CODFAC` y **solo** `OB1FAC` u `OB2FAC` (la primera vacía; nunca se pisa una con texto). Se relee para comprobarlo. | `erp.invoice_mention_added` |
-| Cliente de la factura | F_FAC | `ActualizarRegistro` con la clave y **solo** los campos que cambian de `CLIFAC`, `CNOFAC`, `CDOFAC`, `CPOFAC`, `CCPFAC`, `CPRFAC`, `CPAFAC`, `CNIFAC`, con el mismo tipo JSON que devolvió FACTUSOL (gotcha 13). Se relee. | `erp.order_client_relinked` (con antes y después) |
-| Cliente nuevo | F_CLI | `create_customer` de siempre, solo si **ningún** cliente tiene ese CIF (se busca por NIF justo antes, y `create_customer` vuelve a mirar). | `erp.order_customer_created` |
+| Mención legal | F_FAC | `ActualizarRegistro` con `TIPFAC`, `CODFAC` y **solo** `OB1FAC` u `OB2FAC` (la primera vacía; nunca se pisa una con texto). Se relee para comprobarlo. | `erp.invoice_mention_added`, guardado en cuanto FACTUSOL acepta (con `comprobada` nula) y completado con la relectura |
+| Cliente de la factura | F_FAC | `ActualizarRegistro` con la clave y **solo** los campos que cambian de `CLIFAC`, `CNOFAC`, `CDOFAC`, `CPOFAC`, `CCPFAC`, `CPRFAC`, `CPAFAC`, `CNIFAC`, con el mismo tipo JSON que devolvió FACTUSOL (gotcha 13). Se relee. | `erp.invoice_client_changed` (antes y después, guardado nada más escribir, antes de releer y de tocar BoHub) y `erp.order_client_relinked` (de qué cliente a cuál) |
+| Cliente nuevo | F_CLI | `create_customer` de siempre, solo si **ningún** cliente tiene ese CIF (se busca por NIF justo antes, y `create_customer` vuelve a mirar). Un CIF vacío o mal formado se rechaza (`nif_no_valido`). | `erp.order_customer_created` |
+
+**Lo que se escribe es lo de la vista previa.** La mención va a la observación
+que enseñó la vista previa; el cliente, con los mismos campos **y valores** (si
+algo cambió en FACTUSOL entre medias, 409 `cambio_en_factusol` y no se escribe
+nada).
+
+**Si algo falla después de escribir**, la Auditoría ya lo tiene y el mensaje
+dice que la factura SÍ se cambió. Volver a pulsar completa lo que faltaba (el
+pedido en BoHub), sin escribir otra vez. Las escrituras no se reintentan: si
+FACTUSOL no responde, se relee la factura. Si ya tiene lo nuevo, cuenta como
+escrita (`respuesta_perdida` en la Auditoría). Si tampoco se puede releer, se
+dice que puede haberse escrito y que se compruebe en FACTUSOL antes de repetir.
 
 **Por qué las observaciones.** La ayuda de FactuSOL dice que con VERI*FACTU
 las observaciones se pueden editar (no son parte del registro), no cambian
 importes ni asientos, y el PDF de BoHub las imprime (OB1/OB2). Si a la factura
 le faltaba del todo la mención de exención, el RD 1619/2012 (arts. 6.1.j y 15)
 apunta a una rectificativa: lo decide la gestoría. La mención también se puede
-elegir al emitir (`FacturaOptions.ob1fac` → `OB1FAC` de la factura nueva).
+elegir al emitir (`FacturaOptions.mencion`): va a la primera observación vacía
+de la factura nueva (`OB1FAC` u `OB2FAC`), sin pisar la que venga del pedido o
+del albarán. Si las dos tienen texto, no se emite y se dice.
 
 **Cuándo NO se cambia el cliente de una factura:**
 
 - con **VERI*FACTU activo** (interruptor en Configuración ERP, apagado): ahí
   el cliente es parte del registro y solo cabe la rectificativa;
-- si el **régimen de IVA** del cliente nuevo no casa con la factura (lleva IVA
-  y el cliente no es nacional, o al revés): abono y factura nueva;
+- si la factura tiene **abono** (`invoice_status = credit_note`): ni el cliente
+  ni la mención (`factura_abonada`);
+- si el **régimen de IVA** no casa. Se calcula para la empresa que emite la
+  serie, como al emitir (`regimen_efectivo`): manda la pareja de países, y la
+  ficha F_CLI solo donde el régimen es una decisión (los dos en la UE y
+  distintos). En Canarias, Ceuta y Melilla (mismo país que el emisor y ficha
+  «exportación») manda la ficha. El cliente nuevo tiene que tener el **mismo
+  régimen** que el de la factura, y casar con su IVA. Si no, es abono y factura
+  nueva;
 - si quien lo pide no emite facturas.
 
 Los cobros (F_LCO) van por factura: no se tocan.
 
 **Pedido revinculado aún sin facturar.** El F_PCL de la web o el albarán no se
-tocan. Al emitir, si el pedido se revinculó desde la ficha
-(`cliente_revinculado`: el último `erp.order_client_relinked` y su empresa
-sigue con ese CODCLI), la cabecera de la factura lleva el bloque de cliente
-del cliente nuevo (`FacturaOptions.codcli`). Si su IVA no casa con el
-documento, no se emite.
+tocan. Al emitir, si el pedido se revinculó desde la ficha, la cabecera de la
+factura lleva el bloque de cliente del cliente nuevo (`FacturaOptions.codcli`).
+Se considera revinculado si el último `erp.order_client_relinked` tiene como
+`to_company` la empresa actual del pedido. Su `to_codcli` manda aunque esa
+empresa esté vinculada a otro código de FACTUSOL (mismo NIF con dos códigos;
+la vista previa lo avisa). Si el régimen no casa con el documento, no se emite.
 
 **Escrituras síncronas.** Son un `ActualizarRegistro` sobre un registro que
 existe, sin contador, así que van en la petición (no en `factusol:writes`), como

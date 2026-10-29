@@ -741,3 +741,29 @@ def test_export_preserves_original_format_and_fills_columns(
     ws = load_workbook(io.BytesIO(r.content), read_only=True).worksheets[0]
     grid = [list(row) for row in ws.iter_rows(values_only=True)]
     assert [g[1] for g in grid[5:]] == ["ABONO TRANSFERENCIA DE MOVIATICOS SL"]
+
+
+# --- casar movimientos con las líneas de cobro de FACTUSOL --------------------------
+
+
+def test_cada_linea_de_cobro_vale_para_un_solo_movimiento() -> None:
+    """Mismo importe (±0,01) y fecha a ±7 días de la fecha valor o la de
+    operación; la contrapartida no cuenta. Dos movimientos iguales no se
+    quedan con la misma línea: por orden de fecha, cada uno la más cercana."""
+    lineas = [
+        {"linea": 1, "fecha": "2026-08-27", "importe": 500.0, "contrapartida": "9"},
+        {"linea": 2, "fecha": "2026-09-02", "importe": 499.99, "contrapartida": "6"},
+        {"linea": 3, "fecha": None, "importe": 500.0, "contrapartida": "6"},
+    ]
+    movs = [
+        ("m-tarde", 500.0, (date(2026, 9, 1), date(2026, 9, 1))),
+        ("m-pronto", 500.0, (date(2026, 8, 26), date(2026, 8, 25))),
+        ("m-tercero", 500.0, (date(2026, 9, 3), date(2026, 9, 3))),
+    ]
+    casados = service.casar_lineas_de_cobro(movs, lineas)
+    assert {k: v["linea"] for k, v in casados.items()} == {"m-pronto": 1, "m-tarde": 2}
+    # Fuera de los 7 días o con otro importe, no casa.
+    lejos = [("m-1", 500.0, (date(2026, 9, 4), date(2026, 9, 4)))]
+    assert service.casar_lineas_de_cobro(lejos, lineas[:1]) == {}
+    otro = [("m-1", 427.0, (date(2026, 8, 26), date(2026, 8, 26)))]
+    assert service.casar_lineas_de_cobro(otro, lineas[:1]) == {}

@@ -1354,6 +1354,89 @@ def conciliado_con_factura(
     return round(float(session.scalar(q) or 0), 2)
 
 
+def conciliados_de_factura(
+    session: Session, serie: int, codigo: int,
+) -> list[tuple[BankMovement, float]]:
+    """Los movimientos conciliados (confirmados) con la factura y lo que cada
+    uno paga de ella."""
+    out: dict[str, tuple[BankMovement, float]] = {}
+    for rec, mov in session.execute(
+        select(BankReconciliation, BankMovement)
+        .join(BankMovement, BankMovement.id == BankReconciliation.movement_id)
+        .where(
+            BankReconciliation.serie == int(serie), BankReconciliation.codigo == int(codigo),
+            BankReconciliation.status == "confirmed",
+        )
+    ):
+        previo = out.get(mov.id, (mov, 0.0))[1]
+        out[mov.id] = (mov, round(previo + float(rec.importe), 2))
+    return list(out.values())
+
+
+#: Días de margen entre la fecha del banco y la del cobro apuntado en FACTUSOL.
+DIAS_COBRO_FACTUSOL = 7
+
+
+def fechas_de_movimiento(mov: BankMovement) -> tuple[date, date]:
+    """(fecha valor, fecha de operación) de un movimiento; sin fecha valor, la
+    de operación."""
+    return (mov.fecha_valor or mov.fecha_oper, mov.fecha_oper)
+
+
+def misma_contrapartida(a: Any, b: Any) -> bool:
+    x, y = str(a or "").strip(), str(b or "").strip()
+    if x.isdigit() and y.isdigit():
+        return int(x) == int(y)
+    return bool(x) and x == y
+
+
+def casar_lineas_de_cobro(
+    movimientos: list[tuple[Any, ...]], lineas: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Qué línea de cobro de FACTUSOL corresponde a cada movimiento del banco:
+    `{movement_id: línea}`. `movimientos` = (id, lo que paga de la factura,
+    (fecha valor, fecha de operación)[, contrapartida de su cuenta]). Casa si
+    el importe es el mismo (±0,01) y la fecha de la línea cae a ±7 días de
+    alguna de las dos fechas. Cada línea vale para UN solo movimiento, y se
+    reparten para que casen los más posibles: por orden de fin de su ventana,
+    cada movimiento se queda con la primera línea libre que le cabe (con
+    ventanas iguales, es el reparto óptimo). Primero, solo las líneas de la
+    misma contrapartida que la cuenta del banco; después, cualquiera (pudo
+    apuntarse a mano en otra cuenta)."""
+    fechas_linea: dict[int, date] = {}
+    for i, linea in enumerate(lineas):
+        if linea.get("importe") is None:
+            continue
+        try:
+            fechas_linea[i] = date.fromisoformat(str(linea.get("fecha") or "")[:10])
+        except ValueError:
+            continue
+    margen = timedelta(days=DIAS_COBRO_FACTUSOL)
+    orden = sorted(movimientos, key=lambda m: (max(m[2]) + margen, m[0]))
+    usadas: set[int] = set()
+    out: dict[str, dict[str, Any]] = {}
+    for solo_misma_cuenta in (True, False):
+        for mov in orden:
+            mid, importe, fechas = mov[0], float(mov[1]), mov[2]
+            cuenta = mov[3] if len(mov) > 3 else None
+            if mid in out or (solo_misma_cuenta and not cuenta):
+                continue
+            libres = [
+                i for i, dia in fechas_linea.items()
+                if i not in usadas
+                and round(abs(float(lineas[i]["importe"]) - importe), 2) <= AMOUNT_TOL
+                and min(abs((dia - f).days) for f in fechas) <= DIAS_COBRO_FACTUSOL
+                and (not solo_misma_cuenta
+                     or misma_contrapartida(lineas[i].get("contrapartida"), cuenta))
+            ]
+            if libres:
+                i = min(libres, key=lambda j: (
+                    fechas_linea[j], int(lineas[j].get("linea") or 0), j))
+                usadas.add(i)
+                out[mid] = lineas[i]
+    return out
+
+
 # --- exportación -------------------------------------------------------------------
 
 
@@ -1519,6 +1602,7 @@ def export_cobros_csv(
     session: Session,
     *,
     saldos: dict[tuple[int, int], float],
+    totales: dict[tuple[int, int], float] | None = None,
     account_id: str | None = None,
     desde: date | None = None,
     hasta: date | None = None,
@@ -1526,14 +1610,18 @@ def export_cobros_csv(
     """El CSV de cobros para `scripts/registrar_cobros_lote.ps1` con lo
     CONCILIADO (confirmado) y no descartado: una fila por factura, con la
     contrapartida de la cuenta del banco en `cuenta`, `forma` «Transferencia»
-    y la fecha del movimiento. No escribe en FACTUSOL: lo registra el script,
-    que simula primero.
+    y la fecha valor del último de sus movimientos. No escribe en FACTUSOL: lo
+    registra el script, que simula primero.
 
     El script no lleva importe: registra el SALDO entero de la factura. Por eso
-    solo entra una factura si lo conciliado de ella cuadra con su saldo
-    pendiente en FACTUSOL ahora (`saldos`, de `pending_invoices`). Se dejan
-    fuera, y se cuentan:
-      - `parciales`: lo conciliado no llega a su saldo (regístralo a mano);
+    solo entra una factura si lo conciliado de ella que AÚN NO consta cobrado
+    cubre su saldo pendiente en FACTUSOL ahora (`saldos` y `totales`, de
+    `pending_invoices`): lo ya cobrado (total − saldo) se da por pagado con lo
+    conciliado. Así, tras un cobro parcial registrado desde la ficha, la
+    factura no vuelve a entrar por ese mismo movimiento. Sin el total de una
+    factura, se da por no cobrado nada. Se dejan fuera, y se cuentan:
+      - `parciales`: lo conciliado sin cobrar no llega a su saldo (regístralo a
+        mano);
       - `no_pendientes`: no está pendiente en FACTUSOL (ya cobrada, o de otro
         ejercicio);
       - `no_cuadran`: el movimiento tiene conciliado más que su importe;
@@ -1562,13 +1650,35 @@ def export_cobros_csv(
     stats = {"incluidas": 0, "parciales": 0, "no_pendientes": 0, "no_cuadran": 0,
              "sin_contrapartida": 0}
     # Lo conciliado de cada movimiento y de cada factura (una factura puede
-    # cobrarse en dos movimientos: entra si entre los dos llegan a su saldo).
+    # cobrarse en dos movimientos: entra si entre los dos llegan a su saldo),
+    # y la fecha valor más reciente de los de cada factura.
     por_movimiento: dict[str, float] = {}
     por_factura: dict[tuple[int, int], float] = {}
+    ultima_fecha: dict[tuple[int, int], date] = {}
     for r, mov, _acc in filas:
         por_movimiento[mov.id] = por_movimiento.get(mov.id, 0.0) + float(r.importe)
         clave = (r.serie, r.codigo)
         por_factura[clave] = por_factura.get(clave, 0.0) + float(r.importe)
+        fecha_mov = mov.fecha_valor or mov.fecha_oper
+        if clave not in ultima_fecha or fecha_mov > ultima_fecha[clave]:
+            ultima_fecha[clave] = fecha_mov
+    # Lo conciliado de cada factura SIN el filtro de cuenta y fechas: lo ya
+    # cobrado (total − saldo) se descuenta de todo lo conciliado de ella, no
+    # solo de lo que cae en el filtro (si no, el resto pagado en septiembre se
+    # quedaría fuera al exportar solo septiembre).
+    claves = list(por_factura)
+    todo_conciliado: dict[tuple[int, int], float] = {}
+    if totales and claves:
+        for serie, codigo, suma in session.execute(
+            select(BankReconciliation.serie, BankReconciliation.codigo,
+                   func.sum(BankReconciliation.importe))
+            .join(BankMovement, BankMovement.id == BankReconciliation.movement_id)
+            .where(BankReconciliation.status == "confirmed",
+                   BankMovement.status == "reconciled",
+                   BankReconciliation.codigo.in_({c for _, c in claves}))
+            .group_by(BankReconciliation.serie, BankReconciliation.codigo)
+        ):
+            todo_conciliado[(int(serie), int(codigo))] = float(suma or 0)
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(COBROS_CSV_COLUMNS)
@@ -1588,7 +1698,10 @@ def export_cobros_csv(
         if saldo is None:
             stats["no_pendientes"] += 1
             continue
-        if por_factura[clave] < saldo - 0.01:
+        total = (totales or {}).get(clave)
+        cobrado = max(float(total) - saldo, 0.0) if total is not None else 0.0
+        sin_cobrar = todo_conciliado.get(clave, por_factura[clave]) - cobrado
+        if por_factura[clave] < saldo - 0.01 or sin_cobrar < saldo - 0.01:
             stats["parciales"] += 1
             continue
         origen = "anotado en el extracto" if r.origen == ORIGEN_EXTRACTO else "conciliado en BoHub"
@@ -1598,10 +1711,11 @@ def export_cobros_csv(
             f"{float(mov.importe):.2f} EUR - {origen} - {concepto}"
         )
         # La fecha del cobro es la fecha VALOR del movimiento (la que Bart
-        # escribía a mano); sin ella, la de operación.
+        # escribía a mano; sin ella, la de operación). Pagada en varios, la
+        # del último: es cuando queda cobrada.
         writer.writerow([
             r.serie, r.codigo, acc.contrapartida_codigo, "Transferencia",
-            (mov.fecha_valor or mov.fecha_oper).strftime("%d/%m/%Y"),
+            ultima_fecha[clave].strftime("%d/%m/%Y"),
             observaciones[:_MAX_OBSERVACIONES],
         ])
         stats["incluidas"] += 1

@@ -900,13 +900,16 @@ function ErpOrderDetailScreen() {
                 Enviar a SAT
               </button>
             ) : null}
-            {canEmit && canEmailClient ? (
+            {canEmit && canEmailClient && !(hasInvoice && !order.invoice_sent) ? (
               <>
                 {/* «Enviar factura al cliente»: la factura de FACTUSOL en PDF,
                     desde el alias de la TIENDA del pedido (o de la serie), en
                     el idioma del pedido/cliente, con previsualización
                     obligatoria antes de enviar y registro en el timeline.
-                    Sin factura emitida queda deshabilitado (no oculto). */}
+                    Sin factura emitida queda deshabilitado (no oculto). Con
+                    factura sin enviar, el botón está en el paso «Factura
+                    enviada» o en «Siguiente paso» (no se repite); aquí queda
+                    para reenviarla. */}
                 <button
                   type="button"
                   className="button small secondary"
@@ -1244,11 +1247,13 @@ function ErpOrderDetailScreen() {
               ) : null;
               // Paso 6, «Factura enviada» (antes del cobro): enviada (con
               // fecha y cómo) o pendiente, con «Enviar factura al cliente» y
-              // «Ya enviada…» cuando no es el paso actual (si lo es, ya están
-              // en «Siguiente paso»).
-              const enviada = s.key === "factura_enviada" ? (
+              // «Ya enviada…» cuando no es lo que toca (si lo es, ya están en
+              // «Siguiente paso», aunque el paso actual sea otro, p. ej.
+              // «Pagado» en un B2B sin pagar). Omitido (muestra): nada.
+              const enviada = s.key === "factura_enviada" && s.state !== "skipped" ? (
                 <FacturaEnviadaHito
-                  order={order} hasInvoice={hasInvoice} isNow={s.state === "now"}
+                  order={order} hasInvoice={hasInvoice}
+                  isNow={wf.next_action === "enviar_factura"}
                   emailBusy={emailBusy}
                   onSend={canEmit && canEmailClient ? openInvoiceEmail : undefined}
                   onMark={canEditOrder ? () => setMarcarEnviadaOpen(true) : undefined}
@@ -1261,6 +1266,7 @@ function ErpOrderDetailScreen() {
                 && canOffice && !esMuestra ? (
                   <CobroBancoBlock
                     orderId={order.id} refreshKey={officeTick} canConfirm={canCobro}
+                    canConciliar={can(user, Cap.CONCILIACION)}
                     onDone={() => load()}
                   />
                 ) : null;

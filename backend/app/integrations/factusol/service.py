@@ -41,6 +41,7 @@ from app.integrations.factusol.client import FactusolClient, FactusolError
 from app.integrations.factusol.mapper import (
     FacturaOptions,
     lpc_row_to_lfa_payload,
+    observacion_para_mencion,
     pcl_row_to_fac_payload,
 )
 from app.models.crm import User
@@ -909,8 +910,9 @@ def emit_invoice(
         from app.erp.factura_cliente import cliente_para_emitir  # noqa: PLC0415
 
         cabecera.update(cliente_para_emitir(
-            client, cabecera=cabecera, codcli=options.codcli, ejercicio=ejercicio,
-            origen=pcl, documento="El pedido de cliente de FACTUSOL",
+            session, client, cabecera=cabecera, codcli=options.codcli, ejercicio=ejercicio,
+            origen=pcl, codcli_origen=pcl.get("CLIPCL"),
+            documento="El pedido de cliente de FACTUSOL", serie=serie,
         ))
     lineas = [
         lpc_row_to_lfa_payload(row, codfac, i + 1, ejercicio, serie=serie)
@@ -1105,13 +1107,24 @@ def _emit_from_albaran(
             overrides["FOPFAC"] = options.fopfac
         if options.comfac:
             overrides["COMFAC"] = options.comfac
-        if options.ob1fac:
-            overrides["OB1FAC"] = options.ob1fac
-        if options.codcli:
-            overrides.update(_cliente_revinculado_albaran(
-                client, codcli=options.codcli, serie=serie_alb, codigo=codigo_alb,
-                ejercicio=ejercicio,
-            ))
+        if options.mencion or options.codcli:
+            # La cabecera de la factura copiará la del albarán por sufijo: se
+            # mira retagueada (con sus tipos) para no pisar lo que ya lleva.
+            rows = client.load_table(
+                "F_ALB", filtro=f"CODALB={int(codigo_alb)}", ejercicio=ejercicio,
+            )
+            alb = next((r for r in rows if serie_of_row(r, "TIPALB") == serie_alb), None)
+            como_factura = {f"{col[:-3]}FAC": val for col, val in (alb or {}).items()
+                            if col.endswith("ALB")}
+            if options.mencion:
+                overrides.update(observacion_para_mencion(como_factura, options.mencion))
+            if options.codcli and alb is not None:
+                overrides.update(_cliente_revinculado_albaran(
+                    session, client, alb=alb, como_factura=como_factura,
+                    codcli=options.codcli, numero=visible_number(serie_alb, codigo_alb),
+                    serie=options.serie if options.serie is not None else serie_alb,
+                    ejercicio=ejercicio,
+                ))
     result = convert_document(
         session, client, source_type="albaranes", target_type="facturas",
         tip=serie_alb, cod=codigo_alb, ejercicio=ejercicio,
@@ -1149,23 +1162,21 @@ def _emit_from_albaran(
 
 
 def _cliente_revinculado_albaran(
-    client: FactusolClient, *, codcli: str, serie: int, codigo: int, ejercicio: str,
+    session: Session, client: FactusolClient, *, alb: dict[str, Any],
+    como_factura: dict[str, Any], codcli: str, numero: str, serie: Any, ejercicio: str,
 ) -> dict[str, Any]:
     """El bloque de cliente de la factura cuando el pedido se revinculó a otro
     cliente y su albarán sigue con el anterior (el albarán no se toca). `{}`
-    si el albarán ya es de ese cliente."""
+    si el albarán ya es de ese cliente. `serie`: la de la factura (quien
+    emite decide el régimen de IVA)."""
     from app.erp.factura_cliente import cliente_para_emitir  # noqa: PLC0415
 
-    rows = client.load_table("F_ALB", filtro=f"CODALB={int(codigo)}", ejercicio=ejercicio)
-    alb = next((r for r in rows if serie_of_row(r, "TIPALB") == serie), None)
-    if alb is None or str(alb.get("CLIALB") or "").strip() == codcli:
+    if str(alb.get("CLIALB") or "").strip() == codcli:
         return {}
-    # La cabecera de la factura copiará la del albarán por sufijo: se compara
-    # con ella retagueada para mandar solo lo que cambia, con sus tipos.
-    como_factura = {f"{col[:-3]}FAC": val for col, val in alb.items() if col.endswith("ALB")}
     return cliente_para_emitir(
-        client, cabecera=como_factura, codcli=codcli, ejercicio=ejercicio,
-        origen=alb, documento=f"El albarán {serie}-{int(codigo):06d}",
+        session, client, cabecera=como_factura, codcli=codcli, ejercicio=ejercicio,
+        origen=alb, codcli_origen=alb.get("CLIALB"), documento=f"El albarán {numero}",
+        serie=serie,
     )
 
 

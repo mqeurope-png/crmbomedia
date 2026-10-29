@@ -20,7 +20,7 @@ import csv
 import io
 import json
 from collections.abc import Generator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -81,9 +81,10 @@ def _fac(serie: int, codigo: int, total: float) -> dict:
             "CLIFAC": 4321}
 
 
-def _lco(serie: int, codigo: int, importe: float) -> dict:
-    return {"TFALCO": str(serie), "CFALCO": codigo, "LINLCO": 1, "IMPLCO": importe,
-            "CPALCO": 6, "FECLCO": "2026-08-27T00:00:00"}
+def _lco(serie: int, codigo: int, importe: float, *, linea: int = 1,
+         fecha: str = "2026-08-27", cuenta: int = 6) -> dict:
+    return {"TFALCO": str(serie), "CFALCO": codigo, "LINLCO": linea, "IMPLCO": importe,
+            "CPALCO": cuenta, "FECLCO": f"{fecha}T00:00:00"}
 
 
 def _patched(client):
@@ -154,19 +155,34 @@ def _movimiento(s: Session, mid: str = "m-1", *, importe: float = 927.0,
     return m
 
 
-def _cobro_banco(http, oid: str = "o-1", role: str = "pedidos"):
-    return http.get(f"/api/erp/orders/{oid}/cobro-banco", headers=auth_headers(http, role))
+def _job(estado: str = "pending"):
+    """El estado del job de un cobro ya mandado (sin Redis de verdad)."""
+    return patch("app.erp.api.factusol._rq_quote_status", return_value={"status": estado})
 
 
-def _confirmar(http, mid: str = "m-1", oid: str = "o-1", fake=None, **body):
+def _cobro_banco(http, oid: str = "o-1", role: str = "pedidos", fake=None,
+                 job: str = "pending"):
     fake = fake or FakeFactusol([_fac(2, 526081, 927.0)])
-    with _patched(fake), patch(
+    with _patched(fake), _job(job):
+        return http.get(f"/api/erp/orders/{oid}/cobro-banco", headers=auth_headers(http, role))
+
+
+def _confirmar(http, mid: str = "m-1", oid: str = "o-1", fake=None, job: str = "pending",
+               **body):
+    fake = fake or FakeFactusol([_fac(2, 526081, 927.0)])
+    with _patched(fake), _job(job), patch(
         "app.integrations.factusol.jobs.enqueue_register_invoice_collection",
         return_value="job-1",
     ) as enq, patch("app.erp.bank.drive_job.encolar_escritura") as hoja:
         r = http.post(f"/api/erp/orders/{oid}/cobro-banco", headers=auth_headers(http, "pedidos"),
                       json={"movement_id": mid, "confirm": True, **body})
     return r, enq, hoja
+
+
+def _conciliado(s: Session, mid: str, importe: float, codigo: int = 526081) -> None:
+    s.add(BankReconciliation(movement_id=mid, serie=2, codigo=codigo,
+                             numero=f"2-{codigo}", importe=importe, status="confirmed"))
+    s.commit()
 
 
 # --- el cobro que propone el banco --------------------------------------------------
@@ -312,17 +328,20 @@ def test_ya_cobrada_ensena_con_que_movimiento(http, session_factory) -> None:
 def test_conciliado_en_conciliacion_y_cobro_ya_registrado_no_se_registra_otra_vez(
     http, session_factory,
 ) -> None:
-    """El script de Bart ya registró el cobro de lo conciliado: no se duplica."""
+    """El script de Bart ya registró el cobro de lo conciliado (una línea de
+    cobro con ese importe y fecha cercana): no se duplica."""
     with session_factory() as s:
         _pedido(s)
         _movimiento(s, importe=500.0, status="reconciled")
-        s.add(BankReconciliation(movement_id="m-1", serie=2, codigo=526081, numero="2-526081",
-                                 importe=500.0, status="confirmed"))
-        s.commit()
+        _conciliado(s, "m-1", 500.0)
     fake = FakeFactusol([_fac(2, 526081, 927.0)], [_lco(2, 526081, 500.0)])
+    body = _cobro_banco(http, fake=fake).json()
+    [c] = body["conciliados"]
+    assert c["registrado"] == "2026-08-27" and c["en_cola"] is False
+    assert body["por_registrar"] == 0.0
     r, enq, _ = _confirmar(http, fake=fake)
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["code"] == "ya_registrado"
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "already" and r.json()["fecha_factusol"] == "2026-08-27"
     enq.assert_not_called()
 
 
@@ -332,17 +351,154 @@ def test_conciliado_sin_cobro_registra_con_su_fecha(http, session_factory) -> No
     with session_factory() as s:
         _pedido(s)
         _movimiento(s, status="reconciled")
-        s.add(BankReconciliation(movement_id="m-1", serie=2, codigo=526081, numero="2-526081",
-                                 importe=927.0, status="confirmed"))
-        s.commit()
+        _conciliado(s, "m-1", 927.0)
     body = _cobro_banco(http).json()
     assert body["estado"] == "conciliado" and body["por_registrar"] == 927.0
+    assert body["conciliados"][0]["registrado"] is None
     r, enq, _ = _confirmar(http)
     assert r.status_code == 202, r.text
     assert enq.call_args.args[3] == "2026-08-26T00:00:00"
-    # Segunda vez desde la ficha: ya está registrado.
-    r2, _, _ = _confirmar(http)
-    assert r2.status_code == 409 and r2.json()["detail"]["code"] == "ya_registrado"
+    with session_factory() as s:
+        meta = json.loads(s.scalars(select(AuditLog.metadata_json).where(
+            AuditLog.action == "erp.order_cobro_banco")).one())
+        assert meta["registrado"] is True and meta["job_id"] == "job-1"
+
+
+def test_un_cobro_en_cola_no_se_manda_dos_veces_y_uno_fallido_se_reintenta(
+    http, session_factory,
+) -> None:
+    """Mandado desde la ficha y aún en cola: ni se ofrece ni se deja mandar
+    otra vez. Si el job falló, sí (no hay línea de cobro en FACTUSOL). Pasada
+    media hora, «en cola» deja de valer (sin Redis, el job dice «pendiente»
+    para siempre)."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, status="reconciled")
+        _conciliado(s, "m-1", 927.0)
+    r, _, _ = _confirmar(http)
+    assert r.status_code == 202, r.text
+    # En cola: la ficha no lo ofrece y el segundo intento se para.
+    body = _cobro_banco(http, job="pending").json()
+    assert body["conciliados"][0]["en_cola"] is True and body["por_registrar"] == 0.0
+    r2, enq2, _ = _confirmar(http, job="pending")
+    assert r2.status_code == 409 and r2.json()["detail"]["code"] == "en_cola"
+    enq2.assert_not_called()
+    # El job falló: se puede volver a mandar.
+    body = _cobro_banco(http, job="failed").json()
+    assert body["conciliados"][0]["en_cola"] is False and body["por_registrar"] == 927.0
+    r3, enq3, _ = _confirmar(http, job="failed")
+    assert r3.status_code == 202, r3.text
+    enq3.assert_called_once()
+    # Hace más de media hora: aunque el job siga «pendiente», ya no bloquea.
+    with session_factory() as s:
+        for log in s.scalars(select(AuditLog).where(AuditLog.action == "erp.order_cobro_banco")):
+            log.created_at = datetime.now(UTC) - timedelta(minutes=31)
+        s.commit()
+    r4, enq4, _ = _confirmar(http, job="pending")
+    assert r4.status_code == 202, r4.text
+    enq4.assert_called_once()
+
+
+def test_sin_cola_el_movimiento_queda_conciliado_y_se_avisa(http, session_factory) -> None:
+    """La cola (Redis) no responde al mandar el cobro: error claro, y el
+    movimiento queda conciliado."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s)
+    with _patched(FakeFactusol([_fac(2, 526081, 927.0)])), _job(), patch(
+        "app.integrations.factusol.jobs.enqueue_register_invoice_collection",
+        side_effect=ConnectionError("redis caído"),
+    ), patch("app.erp.bank.drive_job.encolar_escritura"):
+        r = http.post("/api/erp/orders/o-1/cobro-banco", headers=auth_headers(http, "pedidos"),
+                      json={"movement_id": "m-1", "confirm": True})
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "cobro_no_encolado"
+    assert "queda conciliado" in detail["detail"]
+    with session_factory() as s:
+        assert s.get(BankMovement, "m-1").status == "reconciled"
+
+
+def test_efectivo_y_transferencia_la_transferencia_se_registra(http, session_factory) -> None:
+    """427 € cobrados en efectivo (apuntados a mano) y 500 € por el banco: la
+    línea de 427 no es la de la transferencia, así que se registra."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, importe=500.0, status="reconciled")
+        _conciliado(s, "m-1", 500.0)
+    fake = FakeFactusol([_fac(2, 526081, 927.0)],
+                        [_lco(2, 526081, 427.0, fecha="2026-08-24", cuenta=1)])
+    body = _cobro_banco(http, fake=fake).json()
+    assert body["conciliados"][0]["registrado"] is None and body["por_registrar"] == 500.0
+    r, enq, _ = _confirmar(http, fake=fake)
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "queued"
+    assert enq.call_args.args[4] == 500.0      # el saldo que queda, entero
+
+
+def test_registrado_a_mano_sin_conciliar_se_concilia_sin_registrar(
+    http, session_factory,
+) -> None:
+    """La transferencia ya se apuntó a mano en FACTUSOL (en otra cuenta) pero
+    no se concilió: la ficha la concilia y no registra nada más."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, importe=500.0)
+    fake = FakeFactusol([_fac(2, 526081, 927.0)],
+                        [_lco(2, 526081, 500.0, fecha="2026-08-28", cuenta=9)])
+    body = _cobro_banco(http, fake=fake).json()
+    [c] = body["candidatos"]
+    assert c["ya_en_factusol"] == "2026-08-28"
+    # Apuntado en OTRA cuenta que la del banco: la ficha lo dice (puede ser
+    # otro pago del mismo importe).
+    assert c["ya_en_factusol_cuenta"] == "9 · Caja Bomedia"
+    assert c["ya_en_factusol_otra_cuenta"] is True
+    r, enq, hoja = _confirmar(http, fake=fake)
+    assert r.status_code == 202, r.text
+    res = r.json()
+    assert res["status"] == "already" and res["fecha_factusol"] == "2026-08-28"
+    assert res["cuenta_factusol"] == "9 · Caja Bomedia" and res["otra_cuenta"] is True
+    assert res["importe"] == 500.0 and res["parcial"] is True
+    assert res["movimiento"]["id"] == "m-1"
+    enq.assert_not_called()
+    with session_factory() as s:
+        assert s.get(BankMovement, "m-1").status == "reconciled"
+        assert bank_service.conciliado_con_factura(s, 2, 526081) == 500.0
+        audit = s.scalars(select(AuditLog).where(AuditLog.action == "erp.order_cobro_banco")).one()
+        meta = json.loads(audit.metadata_json)
+        assert meta["registrado"] is False and meta["ya_en_factusol"] == "2026-08-28"
+        assert meta["movement_id"] == "m-1"
+
+
+def test_dos_pagos_iguales_cada_uno_con_su_linea(http, session_factory) -> None:
+    """Dos pagos de 500 € de una factura de 1.000 €: una línea de cobro de 500
+    en FACTUSOL solo vale para uno (el más cercano por fecha), no para los dos."""
+    with session_factory() as s:
+        _pedido(s, total_amount=1000.0)
+        _movimiento(s, importe=500.0, status="reconciled")
+        _conciliado(s, "m-1", 500.0)
+        _movimiento(s, "m-2", importe=500.0, concepto="SEGUNDO PAGO FACTURA 2-526081",
+                    fecha_oper=date(2026, 9, 1), fecha_valor=date(2026, 9, 1))
+    una = FakeFactusol([_fac(2, 526081, 1000.0)], [_lco(2, 526081, 500.0)])
+    body = _cobro_banco(http, fake=una).json()
+    assert body["conciliados"][0]["registrado"] == "2026-08-27"
+    assert body["candidatos"][0]["ya_en_factusol"] is None
+    r, enq, _ = _confirmar(http, "m-2", fake=una)
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "queued"
+    enq.assert_called_once()
+    # Con las dos líneas, cada movimiento tiene la suya.
+    dos = FakeFactusol([_fac(2, 526081, 1000.0)],
+                       [_lco(2, 526081, 500.0),
+                        _lco(2, 526081, 500.0, linea=2, fecha="2026-09-02")])
+    body = _cobro_banco(http, fake=dos).json()
+    assert {c["id"]: c["registrado"] for c in body["conciliados"]} == {
+        "m-1": "2026-08-27", "m-2": "2026-09-02",
+    }
+    assert body["por_registrar"] == 0.0
+    r, enq, _ = _confirmar(http, "m-2", fake=dos)
+    assert r.json()["status"] == "already" and r.json()["fecha_factusol"] == "2026-09-02"
+    enq.assert_not_called()
 
 
 def test_confirmar_exige_confirmacion_y_permiso(http, session_factory) -> None:
@@ -368,6 +524,92 @@ def test_csv_de_cobros_lleva_fecha_valor_y_la_contrapartida_de_la_cuenta(session
     assert stats["incluidas"] == 1
     assert filas[0]["fecha"] == "26/08/2026"      # fecha valor, no la de operación
     assert filas[0]["cuenta"] == "6"
+
+
+def test_csv_tras_un_cobro_parcial_desde_la_ficha_no_registra_lo_que_se_debe(
+    session_factory,
+) -> None:
+    """500 de 927 registrados desde la ficha (saldo 427 en FACTUSOL): lo
+    conciliado (500) ya está cobrado, así que la factura NO entra en el CSV
+    (el script registraría los 427 que el cliente aún debe). Cuando llega y
+    se concilia el resto, entra, con la fecha valor del último pago."""
+    clave = (2, 526081)
+    with session_factory() as s:
+        _movimiento(s, importe=500.0, status="reconciled")
+        _conciliado(s, "m-1", 500.0)
+        texto, stats = bank_service.export_cobros_csv(
+            s, saldos={clave: 427.0}, totales={clave: 927.0},
+        )
+        assert stats["incluidas"] == 0 and stats["parciales"] == 1
+        assert texto.count("\n") == 1                 # solo la cabecera
+        _movimiento(s, "m-2", importe=427.0, concepto="RESTO FACTURA 2-526081",
+                    fecha_oper=date(2026, 9, 3), fecha_valor=date(2026, 9, 4), status="reconciled")
+        _conciliado(s, "m-2", 427.0)
+        texto, stats = bank_service.export_cobros_csv(
+            s, saldos={clave: 427.0}, totales={clave: 927.0},
+        )
+    filas = list(csv.DictReader(io.StringIO(texto.lstrip("﻿"))))
+    assert stats["incluidas"] == 1 and stats["parciales"] == 0
+    assert [(f["codigo"], f["fecha"]) for f in filas] == [("526081", "04/09/2026")]
+
+
+def test_csv_con_filtro_de_fechas_tras_un_parcial_incluye_el_resto(session_factory) -> None:
+    """Exportando solo septiembre: el resto (427) pagado en septiembre entra,
+    aunque el primer pago (500, registrado desde la ficha) sea de agosto."""
+    clave = (2, 526081)
+    with session_factory() as s:
+        _movimiento(s, importe=500.0, status="reconciled")
+        _conciliado(s, "m-1", 500.0)
+        _movimiento(s, "m-2", importe=427.0, concepto="RESTO FACTURA 2-526081",
+                    fecha_oper=date(2026, 9, 3), fecha_valor=date(2026, 9, 4), status="reconciled")
+        _conciliado(s, "m-2", 427.0)
+        texto, stats = bank_service.export_cobros_csv(
+            s, saldos={clave: 427.0}, totales={clave: 927.0}, desde=date(2026, 9, 1),
+        )
+    assert stats["incluidas"] == 1 and stats["parciales"] == 0
+
+
+def test_el_endpoint_del_csv_pasa_los_totales(http, session_factory) -> None:
+    """El CSV que descarga Conciliación usa el total de cada factura: tras un
+    cobro parcial desde la ficha no sale la factura (lo que falta se debe)."""
+    with session_factory() as s:
+        _movimiento(s, importe=500.0, status="reconciled")
+        _conciliado(s, "m-1", 500.0)
+    pendientes = [{"serie": 2, "codigo": 526081, "numero": "2-526081", "total": 927.0,
+                   "saldo_pendiente": 427.0}]
+    with _patched(FakeFactusol([])), patch.object(bank_service, "pending_invoices",
+                                                  return_value=pendientes):
+        r = http.get("/api/erp/bank/export-cobros", headers=auth_headers(http, "admin"))
+    assert r.status_code == 200, r.text
+    assert r.headers["X-Cobros-Incluidos"] == "0" and r.headers["X-Cobros-Parciales"] == "1"
+
+
+def test_las_lineas_se_reparten_para_casar_el_maximo(session_factory) -> None:
+    """Dos pagos de 500 (01/08 y 05/08) y dos líneas de 500 en FACTUSOL (28/07
+    y 04/08): cada movimiento se queda una, aunque la más cercana al primero
+    sea la del 04/08 (si se la quedara, el segundo se registraría otra vez)."""
+    lineas = [
+        {"linea": 1, "importe": 500.0, "fecha": "2026-08-04", "contrapartida": "6"},
+        {"linea": 2, "importe": 500.0, "fecha": "2026-07-28", "contrapartida": "6"},
+    ]
+    casados = bank_service.casar_lineas_de_cobro([
+        ("m-1", 500.0, (date(2026, 8, 1), date(2026, 8, 1)), "6"),
+        ("m-2", 500.0, (date(2026, 8, 5), date(2026, 8, 5)), "6"),
+    ], lineas)
+    assert casados["m-1"]["linea"] == 2 and casados["m-2"]["linea"] == 1
+
+
+def test_las_lineas_de_la_misma_cuenta_van_primero(session_factory) -> None:
+    """Una transferencia de 500 y dos líneas de 500 el mismo día: una en la
+    caja (efectivo) y otra en la cuenta del banco. Se casa con la del banco."""
+    lineas = [
+        {"linea": 1, "importe": 500.0, "fecha": "2026-08-26", "contrapartida": "1"},
+        {"linea": 2, "importe": 500.0, "fecha": "2026-08-26", "contrapartida": "2"},
+    ]
+    casados = bank_service.casar_lineas_de_cobro(
+        [("m-1", 500.0, (date(2026, 8, 26), date(2026, 8, 26)), "2")], lineas,
+    )
+    assert casados["m-1"]["linea"] == 2
 
 
 def test_del_movimiento_al_pedido(http, session_factory) -> None:
@@ -424,10 +666,17 @@ def test_factura_enviada_va_antes_del_cobro_y_se_marca_a_mano(http, session_fact
     tl = http.get("/api/erp/orders/o-1/timeline", headers=h).json()["items"]
     assert any(e["title"] == "Factura marcada como enviada al cliente" for e in tl)
 
-    # Deshacer (un error al marcar): vuelve a estar por enviar.
+    # Deshacer (un error al marcar): vuelve a estar por enviar. Dice qué marca
+    # quita.
     r = http.post("/api/erp/orders/o-1/factura-enviada/deshacer", headers=h)
     assert r.status_code == 200 and r.json()["invoice_sent"] is None
     assert _wf(session_factory)["queue"] == "factura_por_enviar"
+    with session_factory() as s:
+        marca = s.scalars(select(AuditLog).where(
+            AuditLog.action == "erp.invoice_marked_sent")).one()
+        deshacer = s.scalars(select(AuditLog).where(
+            AuditLog.action == "erp.invoice_marked_unsent")).one()
+        assert json.loads(deshacer.metadata_json)["anula"] == marca.id
 
 
 def test_una_muestra_no_tiene_factura_que_enviar(http, session_factory) -> None:
@@ -460,3 +709,14 @@ def test_la_bandeja_cuenta_las_facturas_por_enviar(http, session_factory) -> Non
               json={"confirm": True, "medio": "gmail"})
     no_env = http.get("/api/erp/orders?invoice_email=no_enviada", headers=h).json()
     assert {i["id"] for i in no_env["items"]} == {"b"}
+    # Los contadores cuentan lo que la lista enseña con ese filtro…
+    assert no_env["queue_counts"]["factura_por_enviar"] == 1
+    assert sum(no_env["queue_counts"].values()) == 1
+    enviadas = http.get("/api/erp/orders?invoice_email=enviada", headers=h).json()
+    assert {i["id"] for i in enviadas["items"]} == {"a", "c"}
+    assert sum(enviadas["queue_counts"].values()) == 2
+    assert enviadas["queue_counts"]["factura_por_enviar"] == 0
+    # …y elegir una cola no los cambia.
+    con_cola = http.get("/api/erp/orders?invoice_email=enviada&queue=por_cobrar",
+                        headers=h).json()
+    assert con_cola["queue_counts"] == enviadas["queue_counts"]

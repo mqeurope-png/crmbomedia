@@ -42,14 +42,16 @@ export function facturaEnviadaTexto(s: InvoiceSent): string {
  *  factura se manda al cliente y luego se espera su pago) y ya no es
  *  opcional. Enviada → la fecha y cómo (email desde BoHub, marcada a mano u
  *  hoja de seguimiento). Sin enviar → «Enviar factura al cliente» y «Ya
- *  enviada…» (se mandó en papel, desde Gmail, con el albarán…), salvo que el
- *  paso sea el actual: entonces esos botones ya están en «Siguiente paso». */
+ *  enviada…» (se mandó en papel, desde Gmail, con el albarán…), salvo que
+ *  enviarla sea lo que toca: entonces esos botones ya están en «Siguiente
+ *  paso». */
 export function FacturaEnviadaHito({
   order, hasInvoice, isNow, emailBusy, onSend, onMark, onUndone,
 }: {
   order: OrderDetail;
   hasInvoice: boolean;
-  /** Es el paso actual: los botones van en «Siguiente paso». */
+  /** Enviarla es lo que toca (`next_action`), sea cual sea el paso actual:
+   *  los botones van en «Siguiente paso». */
   isNow: boolean;
   emailBusy: boolean;
   /** Sin él (quien no manda facturas al cliente) no hay botón de enviar. */
@@ -112,8 +114,8 @@ export function FacturaEnviadaHito({
   );
 }
 
-/** «Enviar factura al cliente» + «Ya enviada…»: en el hito y en «Siguiente
- *  paso» (cuando el paso actual es el envío de la factura). */
+/** «Enviar factura al cliente» + «Ya enviada…»: en el hito o en «Siguiente
+ *  paso» (cuando enviar la factura es lo que toca), nunca en los dos. */
 export function FacturaEnviadaBotones({
   emailBusy, onSend, onMark, label = "Enviar factura al cliente",
 }: {

@@ -336,6 +336,11 @@ Lo que queda sin anotar es lo que falta por conciliar.
     Por eso se lee FACTUSOL (`pending_invoices`, solo lectura) y entra cada
     factura cuyo saldo pendiente cuadra con lo conciliado de ella (aunque
     venga de dos movimientos). Sin FACTUSOL, 503: no se sabe qué falta.
+  - Lo ya cobrado (total − saldo) se descuenta de todo lo conciliado de la
+    factura, sin el filtro de cuenta ni de fechas. Así, tras un cobro parcial
+    registrado desde la ficha, la factura no vuelve a entrar por ese mismo
+    movimiento (el script registraría lo que el cliente aún debe). Cuando se
+    concilia el resto, entra, con la fecha valor del último pago.
   - Se dejan fuera, y se cuentan en las cabeceras `X-Cobros-*` (la pantalla
     las dice en el aviso):
     - `Parciales`: lo conciliado no llega al saldo;
@@ -380,9 +385,21 @@ pedido. Es el mismo casador, pero visto desde la factura
    la cuenta, Transferencia y, si es parcial, ese importe.
 5. Auditoría `erp.order_cobro_banco` (target `order`).
 
-Un movimiento conciliado antes, cuyo cobro ya consta en FACTUSOL, **no** se
-vuelve a registrar: lo conciliado menos lo cobrado tiene que cubrirlo, y lo
-registrado desde la ficha se marca por movimiento.
+**Nunca dos veces.** Antes de registrar, se casan los movimientos de la
+factura (los conciliados y el que se confirma) con sus líneas de cobro en
+FACTUSOL (`casar_lineas_de_cobro`):
+
+- casa el mismo importe (±0,01) con una fecha a ±7 días de la fecha valor o
+  de operación;
+- cada línea vale para un solo movimiento, y se reparten para casar los más
+  posibles, primero las de la misma contrapartida que la cuenta del banco.
+
+Si el movimiento ya tiene su línea, no se registra: se concilia (si no lo
+estaba) y responde `status: "already"`, con la fecha y la cuenta de la línea,
+y avisa si es otra cuenta. Un cobro mandado desde la ficha que sigue en cola
+(menos de 30 minutos y su trabajo aún pendiente) bloquea otro igual (409
+`en_cola`); uno fallido se puede reintentar. Si no se puede encolar, el
+movimiento queda conciliado y se dice (`cobro_no_encolado`).
 
 La vuelta: `GET /api/erp/bank/movements?movimiento=<id>` filtra un movimiento,
 y cada propuesta o conciliación lleva `pedido: {id, order_number}`.

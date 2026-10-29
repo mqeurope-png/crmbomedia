@@ -1187,7 +1187,8 @@ export default function ErpSettingsPage() {
             Estos textos van a las observaciones de la factura (OB1FAC/OB2FAC) cuando
             se eligen desde la ficha del pedido o al emitirla. Las tres iniciales son
             redacciones de referencia, sin revisar: no se pueden aplicar hasta que
-            alguien (o la gestoría) las revise y marque «Revisado».
+            alguien (o la gestoría) las revise y marque «Revisado». Si cambias el texto
+            de una revisada, se desmarca: hay que volver a revisarlo.
           </p>
           {(cfg.menciones_legales ?? []).map((m, i) => {
             const setMencion = (over: Partial<MencionLegal>) => {
@@ -1209,11 +1210,9 @@ export default function ErpSettingsPage() {
                   placeholder="El texto tal como sale en la factura"
                   aria-label={`Mención ${i + 1} texto`}
                   value={m.texto}
-                  onChange={(e) => setMencion({
-                    texto: e.target.value,
-                    // Sin texto no hay nada revisado.
-                    ...(e.target.value.trim() ? {} : { revisado: false }),
-                  })}
+                  // Texto cambiado = texto sin revisar: se vuelve a marcar
+                  // tras revisarlo.
+                  onChange={(e) => setMencion({ texto: e.target.value, revisado: false })}
                 />
                 <span className="muted small">{m.texto.length}/{MAX_MENCION}</span>
                 <label className="erp-bank-default"

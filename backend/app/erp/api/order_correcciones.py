@@ -6,8 +6,9 @@ observación de la factura, el bloque de cliente de la factura y, si hace
 falta, el cliente nuevo de F_CLI. Siempre en dos pasos —vista previa con lo
 que se va a escribir tal cual, y confirmación—, releyendo FACTUSOL en vivo
 antes de escribir (si cambió desde la vista previa, no se escribe) y con
-Auditoría (quién, cuándo, de qué a qué). La lógica vive en
-`app/erp/factura_cliente.py`.
+Auditoría (quién, cuándo, de qué a qué), guardada en cuanto FACTUSOL acepta
+la escritura: si después falla algo, consta y el error dice qué hacer. Una
+factura abonada no se toca. La lógica vive en `app/erp/factura_cliente.py`.
 """
 from __future__ import annotations
 
@@ -24,6 +25,9 @@ from app.erp.factura_cliente import (
     INVOICE_MENTION_EVENT,
     ORDER_CLIENT_RELINKED_EVENT,
     FacturaClienteError,
+    factura_abonada,
+    factura_cambiada_pedido_no,
+    motivo_abonada,
 )
 from app.models.crm import User
 
@@ -37,6 +41,10 @@ _HTTP = {
     "mencion_vacia": status.HTTP_400_BAD_REQUEST,
     "mencion_larga": status.HTTP_400_BAD_REQUEST,
     "campo_no_valido": status.HTTP_400_BAD_REQUEST,
+    # Ya escrito en FACTUSOL y algo falló después: el detalle dice qué hacer.
+    "relectura_fallida": status.HTTP_502_BAD_GATEWAY,
+    "factusol_no_cambio": status.HTTP_502_BAD_GATEWAY,
+    "pedido_sin_cambiar": status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
 
 
@@ -116,6 +124,10 @@ def _plan_mencion(session: Session, order, payload: MencionIn) -> dict[str, Any]
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
     linked = _factura(order)
+    if factura_abonada(order):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "factura_abonada", "detail": motivo_abonada(linked.numero),
+        })
     try:
         texto, mencion_id = mencion_aplicable(
             session, mencion_id=payload.mencion_id, texto_libre=payload.texto,
@@ -175,10 +187,15 @@ def mencion_aplicar(
     current_user: User = Depends(require_invoice_emit),
 ) -> dict[str, Any]:
     """Escribe la mención en la observación que enseñó la vista previa
-    (`ActualizarRegistro` de F_FAC con SOLO esa columna), la relee para
-    comprobarlo y lo deja en Auditoría. Nada más cambia en la factura."""
+    (`ActualizarRegistro` de F_FAC con SOLO esa columna), lo deja en
+    Auditoría en cuanto FACTUSOL lo acepta y la relee para comprobarlo (el
+    resultado se anota en ese mismo registro). Nada más cambia en la factura."""
     from app.core.audit import record_event  # noqa: PLC0415
-    from app.erp.factura_cliente import escribir_mencion, leer_factura  # noqa: PLC0415
+    from app.erp.factura_cliente import (  # noqa: PLC0415
+        anotar_auditoria,
+        escribir_mencion,
+        leer_factura,
+    )
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
     order = _pedido(session, order_id, current_user)
@@ -199,32 +216,59 @@ def mencion_aplicar(
                        "previa: vuelve a revisarla. No se ha escrito nada."),
         })
     client, ejercicio, row = plan["_client"], plan["_ejercicio"], plan["_row"]
+    linked = _factura(order)
+    respuesta_perdida = False
     try:
         escribir_mencion(client, row=row, campo=payload.campo, texto=plan["texto"],
                          ejercicio=ejercicio)
-        linked = _factura(order)
-        despues = leer_factura(client, serie=linked.serie, codigo=linked.codigo,
-                               ejercicio=ejercicio)
     except FacturaClienteError as exc:
         raise _error(exc) from exc
     except FactusolError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
-            "code": "factusol_write_failed",
-            "detail": f"FACTUSOL no ha aceptado el cambio: {str(exc)[:160]}",
-        }) from exc
-    escrita = str(despues.get(payload.campo) or "").strip() == plan["texto"]
-    record_event(
+        # Pudo llegar y perderse la respuesta (las escrituras no se reintentan):
+        # se relee, y si la mención está, cuenta como escrita.
+        try:
+            ahora = leer_factura(client, serie=linked.serie, codigo=linked.codigo,
+                                 ejercicio=ejercicio)
+        except (FacturaClienteError, FactusolError):
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+                "code": "factusol_write_incierto",
+                "detail": (f"FACTUSOL no ha respondido al escribir la mención ni al releer la "
+                           f"factura {plan['factura']}: puede que se haya escrito. Compruébalo "
+                           "en FACTUSOL antes de volver a intentarlo."),
+            }) from exc
+        if str(ahora.get(payload.campo) or "").strip() != plan["texto"]:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+                "code": "factusol_write_failed",
+                "detail": f"FACTUSOL no ha aceptado el cambio: {str(exc)[:160]}",
+            }) from exc
+        respuesta_perdida = True
+    # Escrita: a Auditoría YA, antes de releer (si la relectura falla, consta).
+    log = record_event(
         session, action=INVOICE_MENTION_EVENT, target_type="order", target_id=order.id,
         actor=current_user,
         message=f"Mención legal añadida a la factura {plan['factura']} ({payload.campo})",
         metadata={
             "order_number": order.order_number, "factura": plan["factura"],
             "campo": payload.campo, "texto": plan["texto"], "mencion_id": plan["mencion_id"],
-            "antes": plan["actuales"].get(payload.campo) or "", "comprobada": escrita,
+            "antes": plan["actuales"].get(payload.campo) or "", "comprobada": None,
             "ya_enviada": bool(plan["enviada"]),
+            **({"respuesta_perdida": True} if respuesta_perdida else {}),
             "reason": f"«{plan['texto']}» en {payload.campo}",
         },
     )
+    session.commit()
+    try:
+        despues = leer_factura(client, serie=linked.serie, codigo=linked.codigo,
+                               ejercicio=ejercicio)
+    except (FacturaClienteError, FactusolError) as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "relectura_fallida",
+            "detail": (f"La mención se escribió en la factura {plan['factura']} "
+                       f"({payload.campo}), pero FACTUSOL no responde al releerla: compruébala "
+                       "allí. No la vuelvas a añadir."),
+        }) from exc
+    escrita = str(despues.get(payload.campo) or "").strip() == plan["texto"]
+    anotar_auditoria(log, comprobada=escrita)
     session.commit()
     if not escrita:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
@@ -245,9 +289,10 @@ class ClienteIn(BaseModel):
 
 class ClienteAplicarIn(ClienteIn):
     confirm: bool = False
-    #: Los campos de la factura que enseñó la vista previa (vacío si no tenía
-    #: factura o no cambiaba): si en FACTUSOL ya no son esos, no se escribe.
-    campos_factura: list[str] = Field(default_factory=list, max_length=20)
+    #: Lo que enseñó la vista previa de la factura: campo → valor nuevo
+    #: (`despues`). Vacío si no tenía factura o no cambiaba. Si FACTUSOL ya
+    #: no da eso (campos o valores), no se escribe.
+    campos_factura: dict[str, str] = Field(default_factory=dict, max_length=20)
 
 
 def _puede_tocar_factura(user: User) -> bool:
@@ -293,7 +338,8 @@ def cliente_aplicar(
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """Revincula el pedido: primero, si tiene factura emitida y cambia, la
-    factura en FACTUSOL (`CLIFAC` y el bloque de cliente; se relee para
+    factura en FACTUSOL (`CLIFAC` y el bloque de cliente; queda en Auditoría
+    `erp.invoice_client_changed` en cuanto FACTUSOL lo acepta y se relee para
     comprobarlo); después el pedido en BoHub. Auditoría con de qué cliente a
     cuál y los campos de la factura antes y después."""
     from app.core.audit import record_event  # noqa: PLC0415
@@ -315,7 +361,7 @@ def cliente_aplicar(
     try:
         res = aplicar_revincular(
             session, order, client=client, ejercicio=ejercicio, codcli=payload.codcli,
-            campos_esperados=payload.campos_factura,
+            campos_esperados=payload.campos_factura, actor=current_user,
         )
     except FacturaClienteError as exc:
         session.rollback()
@@ -330,34 +376,46 @@ def cliente_aplicar(
     actual = res["actual"] or {}
     cliente = res["cliente"]
     factura = res["factura"]
-    record_event(
-        session, action=ORDER_CLIENT_RELINKED_EVENT, target_type="order", target_id=order.id,
-        actor=current_user,
-        message=(f"Cliente del pedido {order.order_number}: de «{actual.get('nombre') or '—'}» "
-                 f"a «{cliente['nombre']}» ({cliente['codcli']})"
-                 + (f"; también en la factura {factura['numero']}"
-                    if res["escrito_en_factura"] else "")),
-        metadata={
-            "order_number": order.order_number,
-            "from_company": actual.get("company_id"), "from_name": actual.get("nombre"),
-            "from_codcli": actual.get("codcli"),
-            "to_company": res["company_id"], "to_name": res["company_name"],
-            "to_codcli": cliente["codcli"], "empresa_creada": res["creada"],
-            "factura": factura["numero"] if factura else None,
-            "cambios_factura": ([{k: c[k] for k in ("campo", "antes", "despues")}
-                                 for c in factura["cambios"]]
-                                if res["escrito_en_factura"] else []),
-            "documento": res["documento"],
-            "reason": (f"De «{actual.get('nombre') or '—'}» a «{cliente['nombre']}»"
-                       + (" (factura incluida)" if res["escrito_en_factura"] else "")),
-        },
-    )
-    session.commit()
+    en_factura = res["escrito_en_factura"] or res["factura_ya_cambiada"]
+    try:
+        record_event(
+            session, action=ORDER_CLIENT_RELINKED_EVENT, target_type="order",
+            target_id=order.id, actor=current_user,
+            message=(f"Cliente del pedido {order.order_number}: de "
+                     f"«{actual.get('nombre') or '—'}» a «{cliente['nombre']}» "
+                     f"({cliente['codcli']})"
+                     + (f"; también en la factura {factura['numero']}" if en_factura else "")),
+            metadata={
+                "order_number": order.order_number,
+                "from_company": actual.get("company_id"), "from_name": actual.get("nombre"),
+                "from_codcli": actual.get("codcli"),
+                "to_company": res["company_id"], "to_name": res["company_name"],
+                "to_codcli": cliente["codcli"], "empresa_creada": res["creada"],
+                "factura": factura["numero"] if factura else None,
+                "cambios_factura": ([{k: c[k] for k in ("campo", "antes", "despues")}
+                                     for c in factura["cambios"]]
+                                    if res["escrito_en_factura"] else []),
+                # Reintento: la factura se cambió en un intento anterior (ver
+                # su `erp.invoice_client_changed`).
+                "factura_ya_cambiada": res["factura_ya_cambiada"],
+                "documento": res["documento"],
+                "reason": (f"De «{actual.get('nombre') or '—'}» a «{cliente['nombre']}»"
+                           + (" (factura incluida)" if en_factura else "")),
+            },
+        )
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        if not en_factura:
+            raise
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, {
+            "code": "pedido_sin_cambiar", "detail": factura_cambiada_pedido_no(factura["numero"]),
+        }) from exc
     return {
         "ok": True, "company_id": res["company_id"], "company_name": res["company_name"],
         "codcli": cliente["codcli"], "empresa_creada": res["creada"],
         "factura": factura["numero"] if factura else None,
-        "escrito_en_factura": res["escrito_en_factura"],
+        "escrito_en_factura": en_factura,
     }
 
 
@@ -384,8 +442,19 @@ class ClienteNuevoAplicarIn(ClienteNuevoIn):
 
 
 def _datos_alta(payload: ClienteNuevoIn) -> dict[str, Any]:
+    from app.erp.company_discovery import nif_key, nif_looks_malformed  # noqa: PLC0415
+
     data = {k: (v.strip() if isinstance(v, str) else v)
             for k, v in payload.model_dump(exclude={"confirm"}).items()}
+    # Con un CIF de relleno («...», espacios) la búsqueda no encuentra a nadie
+    # y se crearía un duplicado: no se sigue.
+    clave = nif_key(data["nif"])
+    if clave is None or nif_looks_malformed(clave):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "nif_no_valido",
+            "detail": ("El CIF no parece válido (al menos 5 letras o números, alguno de ellos "
+                       "un número): sin él no se puede comprobar que el cliente no exista ya."),
+        })
     # El NIF-IVA es el CIF tal cual: con prefijo de país (FR…, BE…) decide el
     # régimen intracomunitario.
     data["vat"] = data["nif"]

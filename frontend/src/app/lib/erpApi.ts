@@ -3321,13 +3321,23 @@ export type CobroBancoCandidato = CobroBancoMovimiento & {
   parcial: boolean;
   /** Mayor que lo pendiente: se reparte en Conciliación. */
   excede: boolean;
+  /** Fecha ISO de su línea de cobro si ya está en FACTUSOL: confirmar solo
+   *  concilia, no registra otra vez. */
+  ya_en_factusol: string | null;
+  /** La cuenta (contrapartida) de esa línea de cobro de FACTUSOL. */
+  ya_en_factusol_cuenta?: string | null;
+  /** Apuntado en OTRA cuenta que la del banco: puede ser otro pago del mismo
+   *  importe (efectivo, tarjeta…). */
+  ya_en_factusol_otra_cuenta?: boolean;
 };
 
 export type CobroBancoConciliado = CobroBancoMovimiento & {
   importe_conciliado: number;
   origen: string | null;
-  /** Fecha ISO en que se registró su cobro desde la ficha, o null. */
-  registrado?: string | null;
+  /** Fecha ISO de su línea de cobro en FACTUSOL, o null si no la hay. */
+  registrado: string | null;
+  /** Su cobro, mandado desde la ficha, sigue en la cola de FACTUSOL. */
+  en_cola: boolean;
 };
 
 /** El cobro que propone el banco para la factura del pedido. */
@@ -3337,7 +3347,7 @@ export type CobroBanco =
       aplica: true;
       estado: "cobrada" | "conciliado" | "candidatos" | "nada";
       cobrada: boolean;
-      /** Lo conciliado que aún no consta cobrado en FACTUSOL. */
+      /** Lo conciliado que ni consta en FACTUSOL ni está en cola. */
       por_registrar: number;
       factura: { serie: number; codigo: number; numero: string; total: number;
                  saldo_pendiente: number };
@@ -3351,10 +3361,15 @@ export async function getOrderCobroBanco(orderId: string): Promise<CobroBanco> {
 
 /** «Marcar cobrado con esta fecha»: concilia el movimiento con la factura,
  *  registra el cobro con la fecha valor y la contrapartida de la cuenta, y
- *  pone la factura en la hoja de Drive. */
+ *  pone la factura en la hoja de Drive. Si su cobro ya estaba en FACTUSOL,
+ *  solo concilia: `status: "already"` con `fecha_factusol`. 409 `en_cola` si
+ *  su cobro sigue en la cola. */
 export async function confirmarCobroBanco(
   orderId: string, movementId: string,
-): Promise<InvoiceCollectionResponse & { parcial: boolean; movimiento: CobroBancoMovimiento }> {
+): Promise<InvoiceCollectionResponse & {
+  parcial: boolean; movimiento: CobroBancoMovimiento; fecha_factusol?: string | null;
+  cuenta_factusol?: string | null; otra_cuenta?: boolean;
+}> {
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cobro-banco`, {
     method: "POST", body: JSON.stringify({ movement_id: movementId, confirm: true }),
   });
@@ -3935,11 +3950,16 @@ export type RevincularPlan = {
   actual: { company_id: string; nombre: string; codcli: string | null } | null;
   empresa: { company_id: string | null; nombre: string | null; crear: boolean };
   sin_cambios_crm: boolean;
+  /** Nada que cambiar: ni la ficha, ni la factura, ni el cliente con el que
+   *  se emitirá (el del documento de origen). */
+  sin_cambios: boolean;
   factura: {
     numero: string;
     cambios: CambioFactura[];
     /** Por qué NO se puede cambiar la factura (VERI*FACTU, IVA). */
     bloqueo: string | null;
+    /** La factura tiene abono: no se toca. */
+    abonada?: boolean;
     avisos: string[];
     enviada?: InvoiceSent | null;
     /** ¿Puede este usuario tocar la factura? (quien emite facturas). */
@@ -3958,8 +3978,10 @@ export async function previewRevincularCliente(
   });
 }
 
+/** `camposFactura`: lo que enseñó la vista previa de la factura, campo →
+ *  valor nuevo (`despues`); vacío sin factura o si no cambia. */
 export async function revincularCliente(
-  orderId: string, codcli: string, camposFactura: string[],
+  orderId: string, codcli: string, camposFactura: Record<string, string>,
 ): Promise<{
   ok: boolean; company_id: string; company_name: string; codcli: string;
   empresa_creada: boolean; factura: string | null; escrito_en_factura: boolean;

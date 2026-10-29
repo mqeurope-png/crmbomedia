@@ -61,6 +61,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from app.integrations.factusol.client import FactusolError
+
 logger = logging.getLogger(__name__)
 
 #: Serie de último recurso si no hay ninguna resuelta ni heredada. NO es un
@@ -179,10 +181,11 @@ class FacturaOptions:
     #: CODPCL del pedido de cliente origen → `PEDFAC` (trazabilidad). Lo
     #: rellena el service, no el modal.
     pedfac: Any = None
-    #: Mención legal elegida en el modal (Ceuta y Melilla, Canarias…) →
-    #: `OB1FAC`, la primera observación de la factura. Ver
-    #: `app/erp/factura_cliente.py`.
-    ob1fac: str | None = None
+    #: Mención legal elegida en el modal (Ceuta y Melilla, Canarias…) → la
+    #: primera observación VACÍA de la factura (`OB1FAC`/`OB2FAC`): la que se
+    #: copió del documento de origen no se pisa. Ver `observacion_para_mencion`
+    #: y `app/erp/factura_cliente.py`.
+    mencion: str | None = None
     #: Cliente de FACTUSOL al que se REVINCULÓ el pedido desde su ficha: la
     #: factura sale a él aunque el documento de origen (F_PCL / albarán) lleve
     #: otro. Lo rellena la API (`factura_cliente.cliente_revinculado`).
@@ -198,6 +201,11 @@ class FacturaOptions:
         emisión por un crash del job."""
         if not data:
             return cls()
+        data = dict(data)
+        # Jobs encolados antes del 30/10/2026: la mención venía como `ob1fac`.
+        legacy = data.pop("ob1fac", None)
+        if legacy and not data.get("mencion"):
+            data["mencion"] = legacy
         known = {f for f in cls.__dataclass_fields__}
         clean = {k: v for k, v in data.items() if k in known and v is not None}
         ignored = sorted(set(data) - known)
@@ -281,9 +289,33 @@ def pcl_row_to_fac_payload(
         payload["FOPFAC"] = opts.fopfac
     if opts.comfac is not None:
         payload["COMFAC"] = opts.comfac
-    if opts.ob1fac:
-        payload["OB1FAC"] = opts.ob1fac
+    if opts.mencion:
+        payload.update(observacion_para_mencion(payload, opts.mencion))
     return filter_to_real_columns(payload, FAC_COLUMNS, tabla="F_FAC")
+
+
+#: Las dos observaciones de la factura (las imprime el PDF de BoHub).
+OBSERVACIONES_FAC: tuple[str, ...] = ("OB1FAC", "OB2FAC")
+
+
+def observacion_para_mencion(cabecera: dict[str, Any], mencion: str) -> dict[str, str]:
+    """Dónde va la mención elegida al emitir: `{campo: mención}` en la primera
+    de `OB1FAC`/`OB2FAC` vacía de la cabecera que se está montando (lo copiado
+    del documento de origen no se pisa). `{}` si ya la lleva. FactusolError si
+    las dos tienen texto: se lanza antes de escribir nada."""
+    texto = (mencion or "").strip()
+    if not texto:
+        return {}
+    actuales = {c: str(cabecera.get(c) or "").strip() for c in OBSERVACIONES_FAC}
+    if texto in actuales.values():
+        return {}
+    libre = next((c for c in OBSERVACIONES_FAC if not actuales[c]), None)
+    if libre is None:
+        raise FactusolError(
+            "La mención no cabe: las dos observaciones ya tienen texto. Emite sin mención "
+            "y añádela desde FACTUSOL."
+        )
+    return {libre: texto}
 
 
 def lpc_row_to_lfa_payload(

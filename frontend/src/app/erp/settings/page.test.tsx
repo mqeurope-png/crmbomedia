@@ -527,6 +527,28 @@ describe("ErpSettingsPage — menciones legales de factura y VERI*FACTU", () => 
     expect(screen.getByLabelText("Mención 1 revisada")).toBeDisabled();
   });
 
+  it("cambiar el texto de una revisada la desmarca: hay que volver a revisarla", async () => {
+    mockGet.mockResolvedValue(settings({
+      menciones_legales: [{ ...MENCIONES[0], revisado: true }],
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const revisada = await screen.findByLabelText("Mención 1 revisada");
+    expect(revisada).toBeChecked();
+    expect(screen.getByRole("region", { name: "Menciones legales de factura" }))
+      .toHaveTextContent("Si cambias el texto de una revisada, se desmarca");
+    await user.type(screen.getByLabelText("Mención 1 texto"), " Destino: islas.");
+    expect(revisada).not.toBeChecked();
+    // Con texto se puede volver a marcar tras revisarla.
+    expect(revisada).toBeEnabled();
+    await user.click(revisada);
+    await user.click(screen.getByRole("button", SAVE_MENCIONES));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0].menciones_legales).toEqual([{
+      ...MENCIONES[0], texto: `${MENCIONES[0].texto} Destino: islas.`, revisado: true,
+    }]);
+  });
+
   it("si el backend rechaza (400), enseña su motivo en la sección", async () => {
     mockGet.mockResolvedValue(settings({ menciones_legales: MENCIONES }));
     mockUpdate.mockRejectedValue(new ApiError(

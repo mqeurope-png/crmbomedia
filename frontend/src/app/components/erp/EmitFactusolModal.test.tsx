@@ -155,6 +155,32 @@ describe("EmitFactusolModal", () => {
     );
   });
 
+  it("mención legal: «Texto libre…» vacío no deja emitir (saldría sin mención sin avisar)", async () => {
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    render(<EmitFactusolModal {...base({ onSubmit })} />);
+    const select = await screen.findByLabelText("Mención legal");
+    await user.selectOptions(select, "Texto libre…");
+    const emitir = screen.getByRole("button", { name: "Emitir factura" });
+    expect(emitir).toBeDisabled();
+    expect(screen.getByText(/Escribe el texto de la mención, o elige otra opción/)).toBeInTheDocument();
+    // Solo espacios tampoco vale.
+    await user.type(screen.getByLabelText("Texto de la mención"), "   ");
+    expect(emitir).toBeDisabled();
+    await user.type(screen.getByLabelText("Texto de la mención"), "Exenta.");
+    expect(emitir).toBeEnabled();
+    expect(screen.queryByText(/Escribe el texto de la mención/)).not.toBeInTheDocument();
+    // Volver a «Ninguna» también deja emitir (sin mención, a sabiendas).
+    await user.clear(screen.getByLabelText("Texto de la mención"));
+    expect(emitir).toBeDisabled();
+    await user.selectOptions(select, "Ninguna");
+    expect(emitir).toBeEnabled();
+    await user.click(emitir);
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ mencion_id: null, mencion_texto: null }),
+    );
+  });
+
   it("sin tocar la mención no manda ninguna", async () => {
     const onSubmit = jest.fn();
     const user = userEvent.setup();

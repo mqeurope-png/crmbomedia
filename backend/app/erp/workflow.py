@@ -30,6 +30,7 @@ tiene, y llegarán al bloque en su fase.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -652,7 +653,47 @@ INVOICE_EMAILED_EVENT = "erp.invoice_emailed"
 #: `factura`, `fecha` (cuándo se envió), `medio`, `nota`.
 INVOICE_MARKED_SENT_EVENT = "erp.invoice_marked_sent"
 #: Deshacer esa marca (un error al marcar). No deshace un envío por email.
+#: Metadata `anula`: el id de la marca que quita.
 INVOICE_UNMARKED_SENT_EVENT = "erp.invoice_marked_unsent"
+
+
+def es_fecha_iso(value: Any) -> bool:
+    """¿Es una fecha ISO? Lo que vale como «Factura enviada» en la hoja (mismo
+    criterio que el espejo de Seguimiento): un texto («sí, por email») no."""
+    try:
+        datetime.fromisoformat(str(value).strip())
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def marca_enviada_vigente(eventos: list[tuple[str, str, dict[str, Any]]]) -> str | None:
+    """De las marcas «ya enviada» de UN pedido y sus deshacer, en orden de
+    creación (`(id, acción, metadata)`), el id de la marca que sigue en pie.
+    Un deshacer con `anula` quita esa marca y nada más, sin depender del orden
+    (marca y deshacer en el mismo segundo empatan); uno antiguo, sin `anula`,
+    quita lo marcado antes."""
+    anuladas = {
+        str(meta["anula"]) for _, accion, meta in eventos
+        if accion == INVOICE_UNMARKED_SENT_EVENT and meta.get("anula")
+    }
+    vigente: str | None = None
+    for log_id, accion, meta in eventos:
+        if accion == INVOICE_UNMARKED_SENT_EVENT:
+            if not meta.get("anula"):
+                vigente = None
+        elif accion == INVOICE_MARKED_SENT_EVENT and str(log_id) not in anuladas:
+            vigente = str(log_id)
+    return vigente
+
+
+def metadata_dict(meta_json: str | None) -> dict[str, Any]:
+    """La metadata de un AuditLog como dict ({} si no se entiende)."""
+    try:
+        meta = json.loads(meta_json) if meta_json else {}
+    except (TypeError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
 
 
 def latest_invoice_emailed_map(
@@ -697,9 +738,10 @@ def latest_invoice_sent_map(
     from app.models.crm import AuditLog  # noqa: PLC0415
 
     out = latest_invoice_emailed_map(session, order_ids)
-    manual: dict[str, str | None] = {}
-    for tid, action, created_at, meta_json in session.execute(
-        select(AuditLog.target_id, AuditLog.action, AuditLog.created_at,
+    eventos: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+    fechas: dict[str, str | None] = {}
+    for log_id, tid, action, created_at, meta_json in session.execute(
+        select(AuditLog.id, AuditLog.target_id, AuditLog.action, AuditLog.created_at,
                AuditLog.metadata_json)
         .where(
             AuditLog.action.in_([INVOICE_MARKED_SENT_EVENT, INVOICE_UNMARKED_SENT_EVENT]),
@@ -707,14 +749,16 @@ def latest_invoice_sent_map(
             AuditLog.target_id.in_(order_ids),
         ).order_by(AuditLog.created_at, AuditLog.id)
     ):
-        if action == INVOICE_UNMARKED_SENT_EVENT:
-            manual[tid] = None
-            continue
-        try:
-            fecha = (json.loads(meta_json or "{}") or {}).get("fecha")
-        except (TypeError, ValueError):
-            fecha = None
-        manual[tid] = str(fecha) if fecha else (created_at.isoformat() if created_at else None)
+        meta = metadata_dict(meta_json)
+        eventos.setdefault(tid, []).append((log_id, action, meta))
+        fecha = meta.get("fecha")
+        fechas[log_id] = (
+            str(fecha) if fecha else (created_at.isoformat() if created_at else None)
+        )
+    manual: dict[str, str | None] = {}
+    for tid, evs in eventos.items():
+        vigente = marca_enviada_vigente(evs)
+        manual[tid] = fechas.get(vigente) if vigente else None
     hoja = session.execute(
         select(SeguimientoOverride.order_id, SeguimientoOverride.value).where(
             SeguimientoOverride.order_id.in_(order_ids),
@@ -722,7 +766,8 @@ def latest_invoice_sent_map(
         )
     ) if con_hoja else ()
     for tid, value in hoja:
-        if (value or "").strip() and not manual.get(tid):
+        # Solo una fecha: un texto en la hoja no cuenta como enviada.
+        if es_fecha_iso(value) and not manual.get(tid):
             manual[tid] = value.strip()
     for tid, fecha in manual.items():
         if fecha and (tid not in out or fecha[:10] > out[tid][:10]):

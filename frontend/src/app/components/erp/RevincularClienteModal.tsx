@@ -95,7 +95,11 @@ export function RevincularClienteModal({
 
   async function aplicar() {
     if (!plan?.cliente.codcli) return;
-    const campos = plan.factura?.cambios.map((c) => c.campo) ?? [];
+    // Lo que se ha enseñado (campo → valor nuevo): si FACTUSOL ya no da eso,
+    // el backend no escribe.
+    const campos = Object.fromEntries(
+      (plan.factura?.cambios ?? []).map((c) => [c.campo, c.despues]),
+    );
     const r = await run(
       () => revincularCliente(orderId, plan.cliente.codcli as string, campos),
       "No se pudo cambiar el cliente.",
@@ -112,7 +116,7 @@ export function RevincularClienteModal({
   const facCambia = !!fac && fac.cambios.length > 0;
   const bloqueado = (facCambia && (!!fac?.bloqueo || fac?.puedes === false))
     || !!plan?.documento?.bloqueo;
-  const nada = !!plan && plan.sin_cambios_crm && !facCambia;
+  const nada = !!plan && plan.sin_cambios;
 
   const title = `Cambiar el cliente · ${orderNumber}`;
   return (

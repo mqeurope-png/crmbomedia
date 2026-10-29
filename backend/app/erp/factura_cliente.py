@@ -15,7 +15,8 @@ desde ese momento. Nunca se pisa una observación que ya tenga texto. Si la
 factura ya se envió al cliente, el PDF que tiene no la lleva: se avisa. Si a
 la factura le faltaba del todo la mención de exención, la norma (RD 1619/2012,
 arts. 6.1.j y 15) apunta a una rectificativa: eso lo decide la gestoría. La
-mención también se puede elegir al emitir (`FacturaOptions.ob1fac`).
+mención también se puede elegir al emitir (`FacturaOptions.mencion`: la
+primera observación vacía de la factura nueva). Una factura abonada no se toca.
 
 **Cliente**: buscar en FACTUSOL por nombre o CIF y revincular, o crear el
 cliente (comprobando ANTES que no exista ya con ese CIF). Si el pedido ya
@@ -27,20 +28,29 @@ tiene factura emitida, Bart decidió (30/10) que se cambie también la factura:
   es, en la norma, una rectificativa; el PDF ya enviado lleva el cliente
   anterior; si estaba contabilizada, el asiento sigue con el anterior;
 - NO se hace si el régimen de IVA del cliente nuevo no casa con la factura (la
-  factura llevaría el IVA mal): eso es abono y factura nueva;
+  factura llevaría el IVA mal): eso es abono y factura nueva. El régimen es el
+  EFECTIVO para la empresa que emite la serie, como al emitir
+  (`regimen_efectivo`), y tiene que ser el mismo que el del cliente anterior;
 - NO se hace con VERI*FACTU activo (interruptor en Configuración ERP): ahí el
-  cliente es parte del registro y solo cabe la rectificativa.
+  cliente es parte del registro y solo cabe la rectificativa;
+- NO se hace si la factura está abonada.
+
+En cuanto FACTUSOL acepta el cambio queda en Auditoría (con commit), antes de
+releer y de tocar BoHub: si algo falla después, consta y se dice.
 
 Los cobros (F_LCO) van por factura, no por cliente: no se tocan.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import unicodedata
 from typing import Any
 
 from sqlalchemy.orm import Session
+
+from app.integrations.factusol.mapper import OBSERVACIONES_FAC
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,30 @@ class FacturaClienteError(ValueError):
         super().__init__(message)
 
 
+def factura_abonada(order: Any) -> bool:
+    """¿La factura del pedido tiene un abono? Entonces no se toca."""
+    from app.erp.models import InvoiceStatus  # noqa: PLC0415
+
+    estado = getattr(order.invoice_status, "value", order.invoice_status)
+    return str(estado or "") == InvoiceStatus.CREDIT_NOTE.value
+
+
+def motivo_abonada(numero: str) -> str:
+    return (f"La factura {numero} está abonada (tiene una rectificativa): BoHub no la toca. "
+            "Lo que haga falta, en la factura nueva desde FACTUSOL.")
+
+
+def anotar_auditoria(log: Any, **campos: Any) -> None:
+    """Añade datos al `metadata` de un registro de Auditoría ya guardado (lo
+    que se supo al releer FACTUSOL). El commit, de quien llama."""
+    try:
+        meta = json.loads(log.metadata_json) if log.metadata_json else {}
+    except (TypeError, ValueError):
+        meta = {}
+    meta.update(campos)
+    log.metadata_json = json.dumps(meta, default=str)
+
+
 def mencion_aplicable(session: Session, *, mencion_id: str | None,
                       texto_libre: str | None) -> tuple[str, str | None]:
     """El texto a escribir y de qué mención sale (None: texto libre). Una
@@ -184,7 +218,7 @@ def mencion_aplicable(session: Session, *, mencion_id: str | None,
 # --- la factura emitida en FACTUSOL -----------------------------------------------
 
 #: Las dos observaciones de la factura que imprime el PDF de BoHub.
-OBSERVACIONES = ("OB1FAC", "OB2FAC")
+OBSERVACIONES = OBSERVACIONES_FAC
 
 
 def _texto(value: Any) -> str:
@@ -299,29 +333,101 @@ def cambios_cliente_factura(
     return out
 
 
-def bloqueo_regimen(row: dict[str, Any], cliente: dict[str, Any], *, documento: str) -> str | None:
-    """Por qué el cliente nuevo no casa con el IVA del documento, o None."""
+def regimen_efectivo(session: Session, cliente: dict[str, Any], *, serie: Any) -> str | None:
+    """Régimen de IVA con el que la empresa que emite la `serie` factura a este
+    cliente (de `customer_for_albaran`), como al emitir
+    (`albaran_manual.apply_regime`): manda el cálculo por la pareja de países
+    y la ficha F_CLI solo donde el régimen es una decisión (los dos en la UE y
+    distintos, con el país del emisor configurado). None si no se puede saber
+    (sin país y sin ficha, o la ficha decide y no se entiende)."""
+    from app.erp.factusol_pdf import issuer_iso2_for_serie  # noqa: PLC0415
+    from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
         REGIME_EXPORTACION,
-        REGIME_INTRACOMUNITARIO,
-        REGIME_NACIONAL,
+        REGIMES,
+        _emisor,
+        ficha_manda,
+        pareja_elegible,
+        regime_for,
     )
 
-    regimen = cliente.get("regime")
-    if regimen not in (REGIME_NACIONAL, REGIME_INTRACOMUNITARIO, REGIME_EXPORTACION):
+    ficha = cliente.get("regime")
+    pais = normalize_country(cliente.get("pais_iso2") or cliente.get("pais"))
+    if pais is None:
+        # Sin país no hay cálculo: la ficha (como al emitir).
+        return ficha if ficha in REGIMES else None
+    emisor = issuer_iso2_for_serie(session, serie)
+    if pais == _emisor(emisor) and ficha == REGIME_EXPORTACION:
+        # Canarias, Ceuta y Melilla: mismo país que el emisor pero exentos como
+        # una exportación. BoHub no los distingue de la Península por el país:
+        # manda la ficha (la mención de esas facturas es justo esta).
+        return ficha
+    nif = cliente.get("nif")
+    calculado = regime_for(pais, issuer_iso2=emisor, vat=nif, nif=nif)
+    if emisor is not None and pareja_elegible(pais, issuer_iso2=emisor):
+        if ficha not in REGIMES:
+            return None
+        return ficha_manda(ficha) or calculado
+    return calculado
+
+
+def _regimen_txt(regimen: str) -> str:
+    from app.integrations.factusol.vat_regime import REGIME_LABELS  # noqa: PLC0415
+
+    label = REGIME_LABELS.get(regimen, regimen)
+    return label[:1].lower() + label[1:]
+
+
+def cliente_o_none(client: Any, codcli: Any, *, ejercicio: str) -> dict[str, Any] | None:
+    """El cliente de F_CLI (como `customer_for_albaran`), o None si no hay
+    código o no se puede leer."""
+    from app.integrations.factusol.albaran_manual import customer_for_albaran  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    code = _texto(codcli)
+    if not code:
+        return None
+    try:
+        return customer_for_albaran(client, codcli=code, ejercicio=ejercicio)
+    except FactusolError:
+        return None
+
+
+def bloqueo_regimen(
+    session: Session, row: dict[str, Any], cliente: dict[str, Any], *, documento: str,
+    serie: Any, anterior: dict[str, Any] | None,
+) -> str | None:
+    """Por qué el cliente nuevo no casa con el IVA del documento, o None.
+
+    Con el régimen EFECTIVO de cada cliente para quien emite la `serie`: el
+    del nuevo tiene que casar con el IVA del documento y ser el mismo que el
+    del cliente que lleva ahora (`anterior`; si no se pudo leer, solo lo
+    primero). Ante la duda, se bloquea."""
+    from app.integrations.factusol.vat_regime import REGIME_NACIONAL  # noqa: PLC0415
+
+    nuevo = regimen_efectivo(session, cliente, serie=serie)
+    if nuevo is None:
         return ("El cliente nuevo no tiene en FACTUSOL un régimen de IVA reconocible "
                 "(nacional, intracomunitario o exportación): revisa su ficha antes.")
+    quien = f"para la empresa que emite la serie {_texto(serie) or '—'}"
     con_iva = factura_lleva_iva(row)
-    if con_iva != (regimen == REGIME_NACIONAL):
+    if con_iva != (nuevo == REGIME_NACIONAL):
         return (
-            f"{documento} {'lleva' if con_iva else 'no lleva'} IVA y el cliente nuevo es de "
-            f"régimen {regimen}: con él llevaría el IVA mal."
+            f"{documento} {'lleva' if con_iva else 'no lleva'} IVA y el cliente nuevo, {quien}, "
+            f"es {_regimen_txt(nuevo)}: con él llevaría el IVA mal."
+        )
+    viejo = regimen_efectivo(session, anterior, serie=serie) if anterior else None
+    if viejo is not None and viejo != nuevo:
+        return (
+            f"{documento} es de un cliente {_regimen_txt(viejo)} y el nuevo, {quien}, es "
+            f"{_regimen_txt(nuevo)}: el IVA y la mención de la factura no serían los suyos."
         )
     return None
 
 
 def bloqueo_cliente_factura(
-    session: Session, row: dict[str, Any], cliente: dict[str, Any],
+    session: Session, row: dict[str, Any], cliente: dict[str, Any], *,
+    client: Any, ejercicio: str,
 ) -> str | None:
     """Por qué NO se puede cambiar el cliente de esta factura en FACTUSOL, o
     None si se puede."""
@@ -329,7 +435,10 @@ def bloqueo_cliente_factura(
         return ("VERI*FACTU está activo: el cliente forma parte del registro de la factura y "
                 "no se puede cambiar en el sitio. Hace falta una rectificativa (abono y factura "
                 "nueva) desde FACTUSOL.")
-    motivo = bloqueo_regimen(row, cliente, documento="La factura")
+    motivo = bloqueo_regimen(
+        session, row, cliente, documento="La factura", serie=row.get("TIPFAC"),
+        anterior=cliente_o_none(client, row.get("CLIFAC"), ejercicio=ejercicio),
+    )
     if motivo:
         return motivo + " Hace falta abono y factura nueva desde FACTUSOL."
     return None
@@ -361,6 +470,7 @@ def escribir_cliente_factura(
 
 #: Acciones de Auditoría (target "order": salen en el historial del pedido).
 INVOICE_MENTION_EVENT = "erp.invoice_mention_added"
+INVOICE_CLIENT_CHANGED_EVENT = "erp.invoice_client_changed"
 ORDER_CLIENT_RELINKED_EVENT = "erp.order_client_relinked"
 CUSTOMER_CREATED_EVENT = "erp.order_customer_created"
 
@@ -372,14 +482,14 @@ def _cliente_resumen(cliente: dict[str, Any]) -> dict[str, Any]:
 
 
 def cliente_revinculado(session: Session, order: Any) -> str | None:
-    """El CODCLI al que se revinculó el pedido desde su ficha, si su empresa
-    lo sigue teniendo. Al emitir, la factura sale a ESE cliente aunque el
-    documento de origen (el F_PCL de la web o el albarán) lleve otro."""
-    import json  # noqa: PLC0415
-
+    """El CODCLI al que se revinculó el pedido desde su ficha (el último
+    `erp.order_client_relinked`), si el pedido sigue con la empresa de ese
+    cambio. Al emitir, la factura sale a ESE cliente aunque el documento de
+    origen (el F_PCL de la web o el albarán) lleve otro, y aunque la empresa
+    esté vinculada a otro código con el mismo NIF (hay clientes duplicados)."""
     from sqlalchemy import select  # noqa: PLC0415
 
-    from app.models.crm import AuditLog, Company  # noqa: PLC0415
+    from app.models.crm import AuditLog  # noqa: PLC0415
 
     if not order.company_id:
         return None
@@ -390,26 +500,27 @@ def cliente_revinculado(session: Session, order: Any) -> str | None:
         ).order_by(AuditLog.created_at.desc()).limit(1)
     )
     try:
-        codcli = str((json.loads(meta) if meta else {}).get("to_codcli") or "").strip()
+        datos = json.loads(meta) if meta else {}
     except (TypeError, ValueError):
         return None
-    company = session.get(Company, order.company_id)
-    if not codcli or company is None or (company.factusol_company_id or "").strip() != codcli:
+    if not isinstance(datos, dict) or datos.get("to_company") != order.company_id:
         return None
-    return codcli
+    return _texto(datos.get("to_codcli")) or None
 
 
 def _documento_origen(client: Any, order: Any, *, session: Session,
                       ejercicio: str) -> dict[str, Any] | None:
     """El documento de FACTUSOL del que saldrá la factura (aún sin emitir):
     el albarán de BoHub o el pedido de cliente F_PCL de la web. `{tipo,
-    numero, codcli, row}` o None si no hay ninguno."""
+    numero, codcli, serie, row}` (`serie`: la de la factura que saldrá) o None
+    si no hay ninguno."""
     from app.erp.factusol_cobro import parse_invoice_number  # noqa: PLC0415
     from app.erp.workflow import is_web_order  # noqa: PLC0415
     from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
     from app.integrations.factusol.service import (  # noqa: PLC0415
         _store_ref_prefix,
         find_pcl_by_order,
+        resolve_serie,
         serie_of_row,
     )
 
@@ -420,14 +531,15 @@ def _documento_origen(client: Any, order: Any, *, session: Session,
         if row is None:
             return None
         return {"tipo": "albarán", "numero": visible_number(serie, codigo),
-                "codcli": _texto(row.get("CLIALB")), "row": row}
+                "codcli": _texto(row.get("CLIALB")), "serie": serie, "row": row}
     if is_web_order(order):
         pcl = find_pcl_by_order(client, order, ejercicio,
                                 ref_prefix=_store_ref_prefix(session, order))
         if pcl is None:
             return None
         return {"tipo": "pedido de cliente", "numero": _texto(pcl.get("CODPCL")),
-                "codcli": _texto(pcl.get("CLIPCL")), "row": pcl}
+                "codcli": _texto(pcl.get("CLIPCL")),
+                "serie": resolve_serie(session, order, None, pcl_row=pcl), "row": pcl}
     return None
 
 
@@ -437,8 +549,17 @@ def plan_revincular(
     """Lo que pasaría al revincular el pedido al cliente `codcli` de FACTUSOL,
     sin escribir nada: el cliente de ahora y el nuevo, la ficha del CRM que
     queda vinculada (o que se crea), y —si hay factura emitida— los campos que
-    cambian en ella o por qué no se puede. FacturaClienteError si no se puede
-    de ninguna forma."""
+    cambian en ella o por qué no se puede. `sin_cambios`: no cambiaría nada
+    (ni el pedido, ni la factura, ni a quién saldrá al emitir).
+    FacturaClienteError si no se puede de ninguna forma."""
+    return _plan_revincular(session, order, client=client, ejercicio=ejercicio,
+                            codcli=codcli)[0]
+
+
+def _plan_revincular(
+    session: Session, order: Any, *, client: Any, ejercicio: str, codcli: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """`plan_revincular` y la fila de F_FAC leída (None sin factura)."""
     from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
     from app.erp.web_order_company import find_company_for_customer  # noqa: PLC0415
     from app.erp.workflow import is_invoiced  # noqa: PLC0415
@@ -479,14 +600,31 @@ def plan_revincular(
     }
     plan["sin_cambios_crm"] = bool(empresa is not None and actual is not None
                                    and empresa.id == actual.id)
+    vinculo = _texto(empresa.factusol_company_id) if empresa is not None else ""
+    if vinculo and vinculo != code:
+        # Mismo NIF con dos códigos en FACTUSOL: la ficha de BoHub no cambia de
+        # vínculo; el pedido recuerda el código elegido (`cliente_revinculado`).
+        plan["avisos"].append(
+            f"La empresa de BoHub «{empresa.name}» está vinculada al cliente {vinculo} de "
+            f"FACTUSOL (mismo NIF): el pedido queda con esa empresa y la factura, con el "
+            f"cliente {code}.",
+        )
+    row: dict[str, Any] | None = None
     linked = get_linked_invoice(order)
     if linked is not None:
         row = leer_factura(client, serie=linked.serie, codigo=linked.codigo, ejercicio=ejercicio)
         cambios = cambios_cliente_factura(row, cliente)
+        abonada = factura_abonada(order)
+        if abonada:
+            bloqueo = motivo_abonada(linked.numero)
+        elif cambios:
+            bloqueo = bloqueo_cliente_factura(session, row, cliente, client=client,
+                                              ejercicio=ejercicio)
+        else:
+            bloqueo = None
         plan["factura"] = {
-            "numero": linked.numero, "cambios": cambios,
-            "bloqueo": bloqueo_cliente_factura(session, row, cliente) if cambios else None,
-            "avisos": list(AVISOS_CLIENTE_FACTURA) if cambios else [],
+            "numero": linked.numero, "cambios": cambios, "bloqueo": bloqueo, "abonada": abonada,
+            "avisos": list(AVISOS_CLIENTE_FACTURA) if cambios and not abonada else [],
         }
     elif is_invoiced(order):
         plan["avisos"].append(
@@ -496,7 +634,10 @@ def plan_revincular(
     else:
         doc = _documento_origen(client, order, session=session, ejercicio=ejercicio)
         if doc is not None and doc["codcli"] and doc["codcli"] != code:
-            motivo = bloqueo_regimen(doc["row"], cliente, documento=f"El {doc['tipo']}")
+            motivo = bloqueo_regimen(
+                session, doc["row"], cliente, documento=f"El {doc['tipo']}", serie=doc["serie"],
+                anterior=cliente_o_none(client, doc["codcli"], ejercicio=ejercicio),
+            )
             plan["documento"] = {
                 "tipo": doc["tipo"], "numero": doc["numero"], "codcli": doc["codcli"],
                 "bloqueo": (motivo + " Corrige el documento en FACTUSOL antes de facturar."
@@ -508,90 +649,183 @@ def plan_revincular(
                     f"{doc['codcli']}: no se toca, pero la factura saldrá a nombre del cliente "
                     "nuevo.",
                 )
-    return plan
+    # A quién saldría hoy la factura al emitir: el último revinculado o, si no
+    # lo hay, el vínculo de la empresa del pedido.
+    vigente = cliente_revinculado(session, order) or (
+        _texto(actual.factusol_company_id) if actual is not None else "")
+    plan["sin_cambios"] = bool(
+        plan["sin_cambios_crm"] and not (plan["factura"] and plan["factura"]["cambios"])
+        and plan["documento"] is None and vigente == code
+    )
+    return plan, row
+
+
+def factura_cambiada_pedido_no(numero: str) -> str:
+    """Lo que se dice si algo falla DESPUÉS de cambiar la factura en FACTUSOL."""
+    return (f"La factura {numero} ya se cambió en FACTUSOL; el pedido no: vuelve a pulsar "
+            "«Cambiar el cliente» para completarlo.")
 
 
 def aplicar_revincular(
     session: Session, order: Any, *, client: Any, ejercicio: str, codcli: str,
-    campos_esperados: list[str] | None,
+    campos_esperados: dict[str, str] | None, actor: Any = None,
 ) -> dict[str, Any]:
-    """Revincula: primero la factura en FACTUSOL (si cambia y se puede; se
-    relee después para comprobarlo) y, solo si eso fue bien, el pedido en
-    BoHub (empresa del CRM, creada si hace falta). Si lo que hay en FACTUSOL
-    ya no es lo que se previsualizó, no escribe nada. No hace commit."""
+    """Revincula: primero la factura en FACTUSOL (si cambia y se puede) y,
+    solo si eso fue bien, el pedido en BoHub (empresa del CRM, creada si hace
+    falta).
+
+    `campos_esperados` es lo que enseñó la vista previa (campo → valor nuevo):
+    si FACTUSOL ya no da eso, no se escribe nada. En cuanto FACTUSOL acepta el
+    cambio queda la Auditoría `erp.invoice_client_changed` con COMMIT, antes
+    de releer y de tocar BoHub: si algo falla después, consta y el error lo
+    dice. Un reintento con la misma vista previa encuentra la factura ya
+    cambiada, no la escribe otra vez y completa el pedido. Lo de BoHub no hace
+    commit (lo hace quien llama)."""
+    from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.web_order_company import (  # noqa: PLC0415
         WEB_ORDER_SYNC_SOURCE,
         _codcli_free_for,
         _company_from_customer,
     )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.customers import get_customer  # noqa: PLC0415
     from app.models.crm import Company, Contact  # noqa: PLC0415
 
     code = str(codcli).strip()
-    plan = plan_revincular(session, order, client=client, ejercicio=ejercicio, codcli=code)
+    plan, row = _plan_revincular(session, order, client=client, ejercicio=ejercicio,
+                                 codcli=code)
     factura = plan["factura"]
+    if factura and factura["abonada"]:
+        raise FacturaClienteError("factura_abonada", factura["bloqueo"])
     cambios = factura["cambios"] if factura else []
-    if sorted(c["campo"] for c in cambios) != sorted(campos_esperados or []):
-        raise FacturaClienteError(
-            "cambio_en_factusol",
-            "La factura ha cambiado en FACTUSOL desde la vista previa: vuelve a revisarla.",
-        )
+    esperados = {str(k): _texto(v) for k, v in (campos_esperados or {}).items()}
+    ya_cambiada = False
+    if {c["campo"]: c["despues"] for c in cambios} != esperados:
+        # Reintento tras un fallo DESPUÉS de escribir: la factura ya tiene lo
+        # que enseñó la vista previa. No se escribe otra vez.
+        ya_cambiada = bool(esperados and row is not None and not cambios and all(
+            _texto(row.get(campo)) == valor for campo, valor in esperados.items()))
+        if not ya_cambiada:
+            raise FacturaClienteError(
+                "cambio_en_factusol",
+                "La factura ha cambiado en FACTUSOL desde la vista previa: vuelve a revisarla. "
+                "No se ha escrito nada.",
+            )
     if factura and cambios and factura["bloqueo"]:
         raise FacturaClienteError("factura_bloqueada", factura["bloqueo"])
     if plan["documento"] and plan["documento"]["bloqueo"]:
         raise FacturaClienteError("documento_bloqueado", plan["documento"]["bloqueo"])
-    if plan["sin_cambios_crm"] and not cambios:
+    if plan["sin_cambios"]:
         raise FacturaClienteError("sin_cambios", "El pedido ya está con ese cliente.")
 
-    if cambios:
-        linked = factura["numero"]
-        serie, _, cod = linked.partition("-")
-        row = leer_factura(client, serie=int(serie), codigo=int(cod), ejercicio=ejercicio)
-        escribir_cliente_factura(client, row=row, cambios=cambios, ejercicio=ejercicio)
-        despues = leer_factura(client, serie=int(serie), codigo=int(cod), ejercicio=ejercicio)
-        if _texto(despues.get("CLIFAC")) != code and any(c["campo"] == "CLIFAC" for c in cambios):
-            raise FacturaClienteError(
-                "factusol_no_cambio",
-                f"FACTUSOL no ha guardado el cliente nuevo en la {linked}: revísala allí.",
-            )
-
-    creada = False
+    # La ficha del CRM se busca (no se crea) ANTES de escribir en FACTUSOL.
     empresa = (session.get(Company, plan["empresa"]["company_id"])
                if plan["empresa"]["company_id"] else None)
-    if empresa is None:
-        cust = get_customer(client, code, ejercicio=ejercicio) or {}
-        empresa = _company_from_customer(session, code, cust)
-        creada = True
-    elif not (empresa.factusol_company_id or "").strip() and _codcli_free_for(
-        session, code, empresa,
-    ):
-        empresa.factusol_company_id = code
-        empresa.factusol_sync_source = WEB_ORDER_SYNC_SOURCE
-    anterior = order.company_id
-    order.company_id = empresa.id
-    if order.contact_id:
-        contacto = session.get(Contact, order.contact_id)
-        if contacto is not None and not contacto.company_id:
-            contacto.company_id = empresa.id
-    session.flush()
+    cust = (get_customer(client, code, ejercicio=ejercicio) or {}) if empresa is None else {}
+
+    escrita = False
+    if cambios and factura and row is not None:
+        numero = factura["numero"]
+        serie, _, cod = numero.partition("-")
+        respuesta_perdida = False
+        try:
+            escribir_cliente_factura(client, row=row, cambios=cambios, ejercicio=ejercicio)
+        except FactusolError:
+            # Pudo llegar y perderse la respuesta (las escrituras no se
+            # reintentan): se relee y, si ya tiene lo nuevo, cuenta como escrita.
+            try:
+                ahora = leer_factura(client, serie=int(serie), codigo=int(cod),
+                                     ejercicio=ejercicio)
+            except (FacturaClienteError, FactusolError) as exc:
+                raise FacturaClienteError(
+                    "factusol_write_incierto",
+                    f"FACTUSOL no ha respondido al cambiar la {numero} ni al releerla: puede "
+                    "que se haya cambiado. Compruébalo en FACTUSOL antes de volver a intentarlo.",
+                ) from exc
+            if any(_texto(ahora.get(c["campo"])) != _texto(c["despues"]) for c in cambios):
+                raise
+            respuesta_perdida = True
+        escrita = True
+        log = record_event(
+            session, action=INVOICE_CLIENT_CHANGED_EVENT, target_type="order",
+            target_id=order.id, actor=actor,
+            message=(f"Cliente de la factura {numero} cambiado en FACTUSOL: de "
+                     f"{_texto(row.get('CLIFAC')) or '—'} a {code}"),
+            metadata={
+                "order_number": order.order_number, "factura": numero,
+                "from_codcli": _texto(row.get("CLIFAC")) or None, "to_codcli": code,
+                "cambios": [{k: c[k] for k in ("campo", "antes", "despues")} for c in cambios],
+                "comprobada": None,
+                **({"respuesta_perdida": True} if respuesta_perdida else {}),
+                "reason": f"Cliente de la factura {numero}: a {code}",
+            },
+        )
+        session.commit()
+        try:
+            despues = leer_factura(client, serie=int(serie), codigo=int(cod),
+                                   ejercicio=ejercicio)
+        except (FacturaClienteError, FactusolError) as exc:
+            raise FacturaClienteError(
+                "relectura_fallida",
+                f"FACTUSOL no responde al releer la factura. {factura_cambiada_pedido_no(numero)}",
+            ) from exc
+        comprobada = (_texto(despues.get("CLIFAC")) == code
+                      or not any(c["campo"] == "CLIFAC" for c in cambios))
+        anotar_auditoria(log, comprobada=comprobada)
+        session.commit()
+        if not comprobada:
+            raise FacturaClienteError(
+                "factusol_no_cambio",
+                f"FACTUSOL respondió bien pero al releer la {numero} no tiene el cliente nuevo: "
+                "revísala allí. El pedido sigue con su cliente.",
+            )
+
+    try:
+        creada = False
+        if empresa is None:
+            empresa = _company_from_customer(session, code, cust)
+            creada = True
+        elif not (empresa.factusol_company_id or "").strip() and _codcli_free_for(
+            session, code, empresa,
+        ):
+            empresa.factusol_company_id = code
+            empresa.factusol_sync_source = WEB_ORDER_SYNC_SOURCE
+        anterior = order.company_id
+        order.company_id = empresa.id
+        if order.contact_id:
+            contacto = session.get(Contact, order.contact_id)
+            if contacto is not None and not contacto.company_id:
+                contacto.company_id = empresa.id
+        session.flush()
+    except Exception as exc:
+        if not (escrita or ya_cambiada):
+            raise
+        session.rollback()
+        raise FacturaClienteError(
+            "pedido_sin_cambiar", factura_cambiada_pedido_no(factura["numero"]),
+        ) from exc
     return {**plan, "company_id": empresa.id, "company_name": empresa.name,
-            "anterior": anterior, "creada": creada, "escrito_en_factura": bool(cambios)}
+            "anterior": anterior, "creada": creada, "escrito_en_factura": escrita,
+            "factura_ya_cambiada": ya_cambiada}
 
 
 def cliente_para_emitir(
-    client: Any, *, cabecera: dict[str, Any], codcli: str, ejercicio: str,
-    origen: dict[str, Any], documento: str,
+    session: Session, client: Any, *, cabecera: dict[str, Any], codcli: str, ejercicio: str,
+    origen: dict[str, Any], codcli_origen: Any, documento: str, serie: Any,
 ) -> dict[str, Any]:
     """Columnas del bloque de cliente que pisan las copiadas del documento de
     origen cuando el pedido se revinculó a otro cliente (`cliente_revinculado`).
-    `{}` si el documento ya es de ese cliente. FactusolError si el cliente
-    nuevo no casa con el IVA del documento: antes no facturar que facturar
-    con el IVA mal."""
+    FactusolError si el cliente nuevo no casa con el IVA del documento o, para
+    la empresa que emite la `serie`, no es del mismo régimen que el cliente del
+    documento (`codcli_origen`): antes no facturar que facturar con el IVA mal."""
     from app.integrations.factusol.albaran_manual import customer_for_albaran  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
     cliente = customer_for_albaran(client, codcli=codcli, ejercicio=ejercicio)
-    motivo = bloqueo_regimen(origen, cliente, documento=documento)
+    motivo = bloqueo_regimen(
+        session, origen, cliente, documento=documento, serie=serie,
+        anterior=cliente_o_none(client, codcli_origen, ejercicio=ejercicio),
+    )
     if motivo:
         raise FactusolError(
             f"El pedido se revinculó al cliente {codcli}, pero {motivo[0].lower()}{motivo[1:]} "

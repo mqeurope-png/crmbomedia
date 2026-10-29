@@ -426,10 +426,24 @@ facturado. Queda en el historial del pedido y no escribe en FACTUSOL.
       Sin ninguno, no dice nada. Con la factura ya cobrada no propone nada; como
       mucho, dice con qué movimiento se cobró.
     - Si el movimiento ya estaba conciliado en Conciliación y su cobro aún no
-      consta en FACTUSOL, ofrece **«Registrar el cobro con esta fecha»**. Si ya
-      consta (lo registró el script de los cobros, por ejemplo), no lo vuelve a
-      registrar.
-    - **«Ver el movimiento»** abre Conciliación con solo ese movimiento. Y al
+      consta en FACTUSOL, ofrece **«Registrar el cobro con esta fecha»**.
+    - **Nunca se registra dos veces.** BoHub mira en FACTUSOL las líneas de
+      cobro de la factura. Si una tiene el mismo importe y una fecha a menos de
+      7 días, ese cobro ya está apuntado: lo registró el script de los cobros,
+      alguien a mano o la propia ficha.
+      - Lo dice: *«Cobro registrado en FACTUSOL el …»*.
+      - Si el movimiento aún no estaba conciliado, ofrece **«Conciliar con esta
+        factura»**: solo concilia y escribe la hoja, sin registrar otro cobro.
+      - Si esa línea está en **otra cuenta** que la del banco, también lo dice:
+        puede ser otro pago del mismo importe (efectivo, tarjeta). Entonces
+        este se registra con «Registrar cobro en FACTUSOL».
+      - Mientras un cobro mandado desde la ficha sigue en cola, se ve *«En cola
+        en FACTUSOL…»* y no se puede mandar otra vez.
+    - Si FACTUSOL falla o tarda, el movimiento queda conciliado igualmente: el
+      bloque se recarga y vuelve a ofrecer registrar el cobro.
+    - **«Ver el movimiento»** abre Conciliación con solo ese movimiento (solo
+      para quien tiene acceso a Conciliación; los demás ven *«pide a un
+      administrador que…»* donde haga falta repartir o enlazar la cuenta). Y al
       revés: en Conciliación, cada factura conciliada o propuesta lleva el
       enlace a su pedido.
     - Lo ven quienes registran cobros o concilian.
@@ -484,7 +498,11 @@ libre de hasta 255 caracteres.
 - Si a la factura le faltaba del todo la mención de exención, la norma (RD
   1619/2012) apunta a una factura rectificativa: eso lo decide la gestoría.
 - La mención también se puede elegir **al emitir** la factura: campo **«Mención
-  legal»** del diálogo de emisión.
+  legal»** del diálogo de emisión. Va a la primera observación vacía de la
+  factura nueva. Si las dos ya traen texto del pedido o del albarán, no se
+  emite y lo dice: emite sin mención y añádela desde FACTUSOL. Con «Texto
+  libre…» vacío no deja emitir.
+- Una factura con **abono** no admite mención.
 
 #### Cambiar el cliente de un pedido
 
@@ -521,7 +539,23 @@ No se cambia la factura (y no se cambia nada) si:
   nueva desde FACTUSOL;
 - está activo **VERI*FACTU** (Configuración ERP): ahí solo cabe la
   rectificativa;
-- la factura ha cambiado en FACTUSOL desde la vista previa (vuelve a revisarla).
+- la factura ha cambiado en FACTUSOL desde la vista previa (vuelve a revisarla);
+- la factura tiene **abono**.
+
+El régimen de IVA se mira como al emitir: para la empresa que emite esa serie
+(una factura de MQ Europe a un cliente belga es nacional, aunque su ficha diga
+intracomunitario). El cliente nuevo tiene que tener el mismo régimen que el de
+la factura: intracomunitario y exportación no se cambian entre sí. Los clientes
+de Canarias, Ceuta y Melilla marcados «exportación» en FACTUSOL se respetan.
+
+Si la ficha de BoHub con ese CIF está vinculada a **otro código** de FACTUSOL
+(el mismo cliente con dos códigos), lo avisa: el pedido queda con esa ficha y la
+factura, con el cliente que elegiste.
+
+Si FACTUSOL cambia la factura pero algo falla después, el mensaje dice que la
+factura **ya se cambió** y queda en Auditoría: vuelve a pulsar «Cambiar el
+cliente» y se completa lo que faltaba, sin escribir otra vez. El CIF de un
+cliente nuevo tiene que ser válido (no vale un relleno como «...»).
 
 Cambiar el cliente de una factura es de quien **emite facturas**.
 
@@ -1925,7 +1959,8 @@ lo que va a pasar. Secciones destacadas:
   observaciones de una factura desde la ficha del pedido o al emitir: nombre,
   texto (hasta 255 caracteres) y la casilla **«Revisado»**. Las tres de partida
   (Ceuta y Melilla, Canarias, Fuera de la UE) son textos **de referencia sin
-  revisar**: no se aplican hasta que alguien los revise y marque. Se añaden o
+  revisar**: no se aplican hasta que alguien los revise y marque. Si cambias el
+  texto de una revisada, se desmarca: hay que volver a revisarla. Se añaden o
   quitan las que haga falta. Al lado, el interruptor **«VERI*FACTU activo»**
   (apagado): con él encendido no se cambia el cliente de una factura emitida;
   solo cabe la rectificativa desde FACTUSOL.

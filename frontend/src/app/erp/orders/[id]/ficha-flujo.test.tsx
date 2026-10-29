@@ -420,9 +420,11 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     }));
     const user = userEvent.setup();
     render(<ErpOrderDetailPage />);
-    // Hay dos «Enviar factura al cliente» (la cabecera y el hito «Factura
-    // enviada» de la línea de vida): el de la cabecera es el primero.
+    // Con la factura sin enviar, «Enviar factura al cliente» va en el paso
+    // «Factura enviada» de la línea de vida, una sola vez (la cabecera no lo
+    // repite: queda para reenviarla).
     const btns = await screen.findAllByRole("button", { name: "Enviar factura al cliente" });
+    expect(btns).toHaveLength(1);
     const btn = btns[0];
     expect(btn).toBeEnabled();
     // Está junto a «Enviar a SAT» (SAT), en la misma cabecera.
@@ -434,9 +436,7 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     await waitFor(() => expect(getOrderFactusolInvoiceRef).toHaveBeenCalledWith("o-1"));
     const dialog = await screen.findByRole("dialog", { name: "Enviar factura por email" });
     expect(dialog).toHaveTextContent("factura:5-260063 pedido:o-1");
-    // Dos accesos a la MISMA acción (misma previsualización): el de la cabecera
-    // y el incrustado en el hito «Factura enviada» de la línea de vida.
-    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
   });
 
   it("«Enviar factura al cliente» sin factura emitida: deshabilitado y no consulta FACTUSOL", async () => {
@@ -696,9 +696,76 @@ describe("ERP · Ficha del pedido — «Factura enviada», paso 6 antes del cobr
     expect(within(bar).getByRole("button", { name: "Enviar factura al cliente" })).toBeInTheDocument();
     expect(within(bar).getByRole("button", { name: "Ya enviada…" })).toBeInTheDocument();
     expect(within(hito).getAllByRole("button", { name: "Ya enviada…" })).toHaveLength(1);
+    // Ni el hito ni la cabecera lo repiten: una sola vez en toda la ficha.
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Ya enviada…" })).toHaveLength(1);
     // El cobro (paso 7) espera a que la factura esté enviada.
     const cobro = within(list).getByText("Cobro").closest("li") as HTMLElement;
     expect(cobro).toHaveClass("is-pending");
+  });
+
+  it("B2B sin pagar: el paso actual es «Pagado» pero toca enviar la factura → sus botones salen una sola vez, en «Siguiente paso»", async () => {
+    const steps = STEPS.map((s) => (s.key === "pagado"
+      ? { ...s, state: "now", detail: null }
+      : s.key === "factura" ? { ...s, state: "done", detail: "5-260063" } : s));
+    (getOrder as jest.Mock).mockResolvedValue(facturado({
+      payment_status: "pending", invoice_sent: null,
+      workflow: { ...facturado({}, false).workflow, steps },
+    }, false));
+    render(<ErpOrderDetailPage />);
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    const pagado = within(list).getByText("Pagado").closest("li") as HTMLElement;
+    expect(pagado).toHaveAttribute("aria-current", "step");
+    const bar = within(pagado).getByRole("region", { name: "Siguiente paso" });
+    expect(within(bar).getByRole("button", { name: "Enviar factura al cliente" })).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Ya enviada…" })).toBeInTheDocument();
+    // El hito dice que falta, sin repetir los botones; la cabecera tampoco.
+    const hito = within(list).getByText("Factura enviada").closest("li") as HTMLElement;
+    expect(hito).toHaveTextContent("Factura sin enviar al cliente");
+    expect(within(hito).queryByRole("button")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Ya enviada…" })).toHaveLength(1);
+  });
+
+  it("en móvil, con la factura por enviar, sus botones van solo en la barra pegada abajo", async () => {
+    const antes = window.matchMedia;
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("max-width: 767px"), media: q, onchange: null,
+      addListener: () => undefined, removeListener: () => undefined,
+      addEventListener: () => undefined, removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      (getOrder as jest.Mock).mockResolvedValue(facturado({ invoice_sent: null }, false));
+      render(<ErpOrderDetailPage />);
+      const sticky = await screen.findByRole("region", { name: "Acción principal" });
+      expect(within(sticky).getByRole("button", { name: "Enviar factura al cliente" })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: "Ya enviada…" })).toHaveLength(1);
+    } finally {
+      window.matchMedia = antes;
+    }
+  });
+
+  it("muestra: el paso «Factura enviada» no aplica y no dice nada de la factura", async () => {
+    const omitidos = ["pagado", "albaran", "factura", "factura_enviada", "cobro"];
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      order_kind: "sample", factusol_albaran_number: null,
+      workflow: {
+        ...detail().workflow, alerts: [], queue: "listo", queue_label: "Listo",
+        next_action: "marcar_completado", next_action_label: "Marcar completado",
+        next_action_hint: "Muestra: se prepara y se envía desde la Cola SAT.",
+        steps: STEPS.map((s) => (omitidos.includes(s.key)
+          ? { ...s, state: "skipped", detail: "muestra" } : s)),
+      },
+    }));
+    render(<ErpOrderDetailPage />);
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    const hito = within(list).getByText("Factura enviada").closest("li") as HTMLElement;
+    expect(hito).toHaveClass("is-skipped");
+    expect(hito).not.toHaveTextContent(/Cuando se emita la factura/);
+    expect(hito).not.toHaveTextContent(/Factura sin enviar/);
+    expect(within(hito).queryByRole("button")).toBeNull();
   });
 
   it("«Ya enviada…» la marca a mano con fecha y medio (queda quién y cuándo)", async () => {
@@ -722,6 +789,20 @@ describe("ERP · Ficha del pedido — «Factura enviada», paso 6 antes del cobr
     await waitFor(() => expect(api.marcarFacturaEnviada).toHaveBeenCalledWith("o-1", {
       fecha: "2026-09-15", medio: "gmail", nota: null,
     }));
+  });
+
+  it("un pedido completado con la factura sin enviar: «Enviar factura al cliente» sale UNA vez (en el paso, no también en la cabecera)", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(facturado({
+      invoice_sent: null, completed: true,
+      workflow: {
+        ...facturado({}, false).workflow, queue: "listo", queue_label: "Listo",
+        next_action: "ninguna", next_action_label: "", next_action_hint: "Nada pendiente.",
+      },
+    }, false));
+    render(<ErpOrderDetailPage />);
+    await screen.findByRole("list", { name: "Ciclo del pedido" });
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Ya enviada…" })).toHaveLength(1);
   });
 
   it("marcada a mano: dice cómo y quién, y deja quitar la marca", async () => {

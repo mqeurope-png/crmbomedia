@@ -28,7 +28,8 @@ function plan(over: Record<string, unknown> = {}) {
     cliente: NUEVO,
     actual: { company_id: "c-old", nombre: "Cliente Anterior SA", codcli: "1234" },
     empresa: { company_id: "c-new", nombre: "Componentes Ejemplo SL", crear: false },
-    sin_cambios_crm: false, factura: null, documento: null, avisos: [], ...over,
+    sin_cambios_crm: false, sin_cambios: false, factura: null, documento: null, avisos: [],
+    ...over,
   };
 }
 
@@ -75,7 +76,7 @@ describe("RevincularClienteModal", () => {
     expect(cambiar).toBeDisabled();
     await user.click(screen.getByLabelText("Confirmo el cambio de cliente"));
     await user.click(cambiar);
-    await waitFor(() => expect(revincularCliente).toHaveBeenCalledWith("o-1", "4321", []));
+    await waitFor(() => expect(revincularCliente).toHaveBeenCalledWith("o-1", "4321", {}));
     expect(await screen.findByRole("status")).toHaveTextContent(
       "El pedido BOPRIN-9 queda con «Componentes Ejemplo SL» (4321).",
     );
@@ -107,8 +108,10 @@ describe("RevincularClienteModal", () => {
     expect(previa.getByText(/una rectificativa/)).toBeInTheDocument();
     await user.click(screen.getByLabelText("Confirmo el cambio de cliente"));
     await user.click(screen.getByRole("button", { name: "Cambiar el cliente" }));
+    // Manda lo que enseñó (campo → valor nuevo): si FACTUSOL ya no da eso,
+    // el backend no escribe.
     await waitFor(() => expect(revincularCliente).toHaveBeenCalledWith(
-      "o-1", "4321", ["CLIFAC", "CNOFAC"],
+      "o-1", "4321", { CLIFAC: "4321", CNOFAC: "Componentes Ejemplo SL" },
     ));
   });
 
@@ -124,6 +127,29 @@ describe("RevincularClienteModal", () => {
     abrir("2-526090");
     await buscarYElegir(user);
     expect(await screen.findByText(/No se puede cambiar la factura/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cambiar el cliente" })).toBeNull();
+  });
+
+  it("misma ficha de BoHub pero la factura saldrá al cliente elegido: se puede confirmar", async () => {
+    previewRevincularCliente.mockResolvedValue(plan({
+      sin_cambios_crm: true, sin_cambios: false,
+      empresa: { company_id: "c-old", nombre: "Cliente Anterior SA", crear: false },
+      avisos: ["La empresa de BoHub «Cliente Anterior SA» está vinculada al cliente 1234 de FACTUSOL (mismo NIF): el pedido queda con esa empresa y la factura, con el cliente 4321."],
+    }));
+    const user = userEvent.setup();
+    abrir();
+    await buscarYElegir(user);
+    expect(await screen.findByText(/vinculada al cliente 1234 de FACTUSOL/)).toBeInTheDocument();
+    expect(screen.queryByText("El pedido ya está con ese cliente.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cambiar el cliente" })).toBeInTheDocument();
+  });
+
+  it("nada que cambiar: lo dice y no ofrece confirmar", async () => {
+    previewRevincularCliente.mockResolvedValue(plan({ sin_cambios_crm: true, sin_cambios: true }));
+    const user = userEvent.setup();
+    abrir();
+    await buscarYElegir(user);
+    expect(await screen.findByText("El pedido ya está con ese cliente.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Cambiar el cliente" })).toBeNull();
   });
 

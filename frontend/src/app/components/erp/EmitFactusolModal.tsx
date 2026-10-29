@@ -93,8 +93,11 @@ export function EmitFactusolModal({
 
   const libre = mencion === MENCION_LIBRE;
   const elegida = menciones?.find((m) => m.id === mencion) ?? null;
+  // «Texto libre…» sin texto no se emite: saldría sin mención sin avisar.
+  const faltaTexto = libre && !mencionLibre.trim();
 
   function submit() {
+    if (faltaTexto) return;
     onSubmit({
       serie,
       fecfac: fecfac || null,
@@ -203,6 +206,11 @@ export function EmitFactusolModal({
                   />
                 </label>
                 <span className="muted small">{mencionLibre.length}/{maxMencion}</span>
+                {faltaTexto ? (
+                  <p className="form-info small">
+                    Escribe el texto de la mención, o elige otra opción, para poder emitir.
+                  </p>
+                ) : null}
               </>
             ) : null}
             <span className="muted small">
@@ -217,7 +225,8 @@ export function EmitFactusolModal({
             Cancelar
           </button>
           <button type="button" className="button"
-                  onClick={submit} disabled={submitting}>
+                  onClick={submit} disabled={submitting || faltaTexto}
+                  title={faltaTexto ? "Falta el texto de la mención" : undefined}>
             {submitting ? "Generando…" : "Emitir factura"}
           </button>
         </div>

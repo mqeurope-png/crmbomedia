@@ -447,6 +447,85 @@ def test_bandeja_filtro_factura_enviada(session_factory, http) -> None:
     assert {"ARTISJ-A", "ARTISJ-B", "ARTISJ-C"} <= {i["order_number"] for i in todos["items"]}
 
 
+def _facturado(s: Session, oid: str, numero: str) -> None:
+    _order(s, oid=oid, number=f"ARTISJ-{oid.upper()}", payment_status="paid",
+           approved_at=datetime.now(UTC), invoice_status="invoiced_by_erp",
+           factusol_invoice_number=numero)
+
+
+def test_factura_enviada_en_la_hoja_solo_si_es_una_fecha(session_factory, http) -> None:
+    """Un texto en la columna «Factura enviada» de la hoja («sí, por email»)
+    no da la factura por enviada: solo una fecha."""
+    from app.erp.models import SeguimientoOverride
+    from app.erp.workflow import latest_invoice_sent_map
+
+    with session_factory() as s:
+        _facturado(s, "h1", "260301")
+        _facturado(s, "h2", "260302")
+        s.add_all([
+            SeguimientoOverride(order_id="h1", column_key="factura_enviada",
+                                value="sí, por email"),
+            SeguimientoOverride(order_id="h2", column_key="factura_enviada",
+                                value="2026-09-10"),
+        ])
+        s.commit()
+        assert latest_invoice_sent_map(s, ["h1", "h2"]) == {"h2": "2026-09-10"}
+    assert _wf(session_factory, "h1")["queue"] == "factura_por_enviar"
+    assert _wf(session_factory, "h2")["queue"] == "por_cobrar"
+    h = auth_headers(http, "pedidos")
+    assert http.get("/api/erp/orders/h1", headers=h).json()["invoice_sent"] is None
+    sent = http.get("/api/erp/orders/h2", headers=h).json()["invoice_sent"]
+    assert sent["via"] == "hoja" and sent["at"] == "2026-09-10"
+
+
+def test_deshacer_en_el_mismo_segundo_que_la_marca_no_se_pierde(session_factory, http) -> None:
+    """Marca «ya enviada» y su deshacer en el mismo segundo, con el deshacer
+    ordenado antes (ids al azar): sigue deshecha, porque el deshacer dice qué
+    marca anula. Un deshacer antiguo (sin `anula`) quita lo marcado antes."""
+    import json
+
+    from app.erp.workflow import latest_invoice_sent_map
+    from app.models.crm import AuditLog
+
+    t = datetime(2026, 9, 1, 10, 0, 0, tzinfo=UTC)
+    with session_factory() as s:
+        _facturado(s, "u1", "260310")
+        _facturado(s, "u2", "260311")
+        _facturado(s, "u3", "260312")
+        s.add_all([
+            # u1: mismo segundo, el deshacer («aa…») va antes que la marca («zz…»).
+            AuditLog(id="zz-marca-u1", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u1", created_at=t,
+                     metadata_json=json.dumps({"fecha": "2026-09-01", "medio": "papel"})),
+            AuditLog(id="aa-deshacer-u1", action="erp.invoice_marked_unsent",
+                     target_type="order", target_id="u1", created_at=t,
+                     metadata_json=json.dumps({"anula": "zz-marca-u1"})),
+            # u2: deshacer antiguo, sin `anula`, un segundo después: sigue valiendo.
+            AuditLog(id="m-u2", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u2", created_at=t,
+                     metadata_json=json.dumps({"fecha": "2026-09-01"})),
+            AuditLog(id="d-u2", action="erp.invoice_marked_unsent", target_type="order",
+                     target_id="u2", created_at=t.replace(second=1), metadata_json="{}"),
+            # u3: se anula una marca, pero hay otra que sigue en pie.
+            AuditLog(id="m1-u3", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u3", created_at=t,
+                     metadata_json=json.dumps({"fecha": "2026-08-30"})),
+            AuditLog(id="m2-u3", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u3", created_at=t.replace(second=2),
+                     metadata_json=json.dumps({"fecha": "2026-09-02"})),
+            AuditLog(id="d-u3", action="erp.invoice_marked_unsent", target_type="order",
+                     target_id="u3", created_at=t.replace(second=2),
+                     metadata_json=json.dumps({"anula": "m2-u3"})),
+        ])
+        s.commit()
+        assert latest_invoice_sent_map(s, ["u1", "u2", "u3"]) == {"u3": "2026-08-30"}
+    assert _wf(session_factory, "u1")["queue"] == "factura_por_enviar"
+    h = auth_headers(http, "pedidos")
+    assert http.get("/api/erp/orders/u1", headers=h).json()["invoice_sent"] is None
+    assert http.get("/api/erp/orders/u2", headers=h).json()["invoice_sent"] is None
+    assert http.get("/api/erp/orders/u3", headers=h).json()["invoice_sent"]["at"] == "2026-08-30"
+
+
 def test_workflow_no_requiere_envio_es_listo(session_factory) -> None:
     """Un pedido facturado, con la factura enviada y cobrado, marcado «No
     requiere envío», queda «Listo» (con el completado opcional a mano)."""
