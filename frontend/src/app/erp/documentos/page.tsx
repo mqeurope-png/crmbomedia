@@ -545,13 +545,17 @@ export default function FactusolDocumentosPage() {
   /** Acción principal por documento (la que toca según el tipo/estado). */
   function primaryAction(d: FactusolDocument) {
     if (anterior) return null;   // otro ejercicio: solo consulta
-    if (isFacturas && canEdit && !facturaCobrada(d) && d.serie !== null && d.codigo !== null) {
+    if (isFacturas && canEdit && d.serie !== null && d.codigo !== null) {
+      // Cobrada: no se ofrece registrar; el mismo diálogo enseña contra qué
+      // se cobró.
+      const cobrada = facturaCobrada(d);
       return (
         <button
-          type="button" className="button small"
+          type="button" className={cobrada ? "button small secondary" : "button small"}
+          aria-label={cobrada ? `Ver el cobro de ${d.numero}` : undefined}
           onClick={(e) => { e.stopPropagation(); setCobrando(d); }}
         >
-          Registrar cobro
+          {cobrada ? "Ver el cobro" : "Registrar cobro"}
         </button>
       );
     }

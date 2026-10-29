@@ -424,6 +424,30 @@ Lo que queda sin anotar es lo que falta por conciliar.
     y se salta lo ya cobrado.
 
 
+## Una sola herramienta de cobro (29/10/2026)
+
+`RegistrarCobroModal` es el diálogo de cobro de la ficha (y su paso «Cobro»),
+de Conciliación y de ERP · Documentos: mismo texto, mismas comprobaciones y
+mismo apunte en Auditoría.
+
+- El contexto lo da `app/erp/cobro_contexto.py` (en `…/cobro` de la factura y
+  `factusol-cobro` del pedido, con `?movimiento=`): `externa`, `movimiento`
+  (el pedido, o el conciliado cuyo cobro aún no es una línea de FACTUSOL),
+  `hoja` (si se escribirá en la hoja y en cuál) y `cobrado_con`.
+- Con movimiento se escribe por `orders.cobro_con_movimiento`, el de la ficha
+  de siempre (concilia, cobra con la fecha valor y la contrapartida de la
+  cuenta, avisa del posible doble cobro, solo concilia si ya está en
+  FACTUSOL), que ahora vale también por factura:
+  `POST /factusol/documents/facturas/{serie}/{codigo}/cobro-banco`, con su pedido
+  o como externa (Auditoría a la factura).
+- Después escribe la factura en la hoja **en el momento**
+  (`escribir_hoja_del_movimiento` → `drive.escribir_cuenta`, con el cerrojo de
+  la cuenta) para decirlo en el diálogo. Son las reglas del #572: solo celdas
+  vacías, la fila por la identidad del movimiento, nunca reordenar. Un fallo
+  en la hoja no toca el cobro: se devuelve en `hoja`, queda en el movimiento
+  (`hoja_estado`) y en la cuenta, y la cola lo reintenta.
+- El CSV de cobros sigue: es el respaldo del día que la escritura directa falle.
+
 ## Desde la ficha del pedido (30/10/2026)
 
 El paso «Cobro» de la ficha propone el movimiento que pagó la factura del

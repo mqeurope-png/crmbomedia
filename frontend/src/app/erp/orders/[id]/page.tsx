@@ -1265,6 +1265,7 @@ function ErpOrderDetailScreen() {
               const banco = s.key === "cobro" && s.state !== "skipped" && hasInvoice
                 && canOffice && !esMuestra ? (
                   <CobroBancoBlock
+                    orderNumber={order.order_number}
                     orderId={order.id} refreshKey={officeTick} canConfirm={canCobro}
                     canConciliar={can(user, Cap.CONCILIACION)}
                     onDone={() => load()}

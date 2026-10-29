@@ -43,6 +43,7 @@ import {
   type BankExportPlan,
   type BankImportSummary,
   type BankMovement,
+  type BankProposal,
   type BankMovementFilters,
   type BankMovementsPage,
   type BankNoEntendida,
@@ -54,6 +55,7 @@ import {
 import { extractErrorMessage } from "../../lib/errors";
 import { ExportBancoADrive } from "../../components/erp/ExportBancoADrive";
 import { EjercicioSelector, useEjercicio } from "../../components/erp/EjercicioSelector";
+import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 
 const CONFIDENCE_LABEL: Record<BankConfidence, { label: string; tone: string }> = {
   alta: { label: "Alta", tone: "ok" },
@@ -315,6 +317,10 @@ function ConciliacionScreen() {
   const { info: ejercicios, ejercicio, anterior, setEjercicio } = useEjercicio();
   // Un ejercicio anterior es solo consulta: ni confirmar ni elegir.
   const canDecidir = canEdit && (!anterior || !!movimiento);
+  // Cobrar, solo en el ejercicio en curso (es el que lee y escribe FACTUSOL).
+  const canCobrar = can(user, Cap.COBRO_REGISTER) && !anterior;
+  // El cobro de una factura conciliada, con su movimiento (el diálogo único).
+  const [cobrando, setCobrando] = useState<{ mov: BankMovement; rec: BankProposal } | null>(null);
   // «Incluir facturas externas»: apagada al entrar en la pantalla; vive
   // mientras se está en ella (sobrevive a recargar la lista tras confirmar o
   // registrar) y no se guarda en ningún sitio.
@@ -834,6 +840,17 @@ function ConciliacionScreen() {
                             Reabrir
                           </button>
                         ) : null}
+                        {/* La herramienta de cobro, con este movimiento: la misma de
+                            la ficha y de Documentos. Las externas, solo con la casilla. */}
+                        {canCobrar && m.status === "reconciled"
+                          ? m.reconciled.filter((r) => incluirExternas || r.pedido).map((r) => (
+                            <button key={r.id} type="button" className="button small" disabled={busy}
+                              aria-label={`Registrar cobro de la ${r.numero}`}
+                              onClick={() => setCobrando({ mov: m, rec: r })}>
+                              Registrar cobro{m.reconciled.length > 1 ? ` · ${r.numero}` : ""}
+                            </button>
+                          ))
+                          : null}
                       </td>
                     </tr>
                   ))}
@@ -842,6 +859,15 @@ function ConciliacionScreen() {
             )}
           </section>
         </>
+      ) : null}
+
+      {cobrando ? (
+        <RegistrarCobroModal
+          factura={{ serie: cobrando.rec.serie, codigo: cobrando.rec.codigo, numero: cobrando.rec.numero }}
+          movimientoId={cobrando.mov.id}
+          onClose={() => setCobrando(null)}
+          onDone={() => void loadMovements()}
+        />
       ) : null}
 
       {reassignFor ? (

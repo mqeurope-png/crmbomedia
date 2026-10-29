@@ -338,6 +338,8 @@ def order_cobro_info(
         "payment_method_title": order.payment_method_title,
         "warnings": warnings,
         "checked_at": block["checked_at"],
+        # Para el contexto del diálogo (contra qué se cobró); no se enseña.
+        "_lineas": status_info.get("lineas") or [],
     }
 
 
@@ -352,13 +354,16 @@ def refresh_orders_cobro(
         return {}
     fac_rows = client.load_table("F_FAC", filtro="1=1", ejercicio=ejercicio)
     index = load_collections_index(client, ejercicio=ejercicio)
-    return {
+    out = {
         o.id: order_cobro_info(
             session, client, o, ejercicio, fac_rows=fac_rows, index=index,
             fop_names=fop_names,
         )
         for o in targets
     }
+    for info in out.values():
+        info.pop("_lineas", None)
+    return out
 
 
 def mark_order_from_result(

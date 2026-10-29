@@ -3241,6 +3241,36 @@ export type OrderCobroInfo = {
   bohub_cobros?: BohubCobro[];
   /** Pedido y factura con totales distintos (portes, líneas cambiadas…). */
   total_mismatch?: { pedido: number; factura: number; diferencia: number } | null;
+  /** El diálogo único (29/10/2026): la factura no tiene pedido de BoHub. */
+  externa?: boolean;
+  /** El movimiento del banco identificado como su cobro (o el pedido). */
+  movimiento?: CobroMovimiento | null;
+  /** Si al cobrar con ese movimiento también se escribe en la hoja de Drive. */
+  hoja?: { cuenta: string; pestana: string | null; factura: string } | null;
+  /** Contra qué se cobró: sus líneas de cobro y el movimiento de cada una. */
+  cobrado_con?: {
+    fecha: string | null; importe: number; cuenta: string | null;
+    movimiento: CobroBancoMovimiento | null;
+  }[];
+};
+
+/** El movimiento con el que se va a cobrar, en el diálogo único. */
+export type CobroMovimiento = CobroBancoMovimiento & {
+  /** Lo que paga de ESTA factura (su parte si está repartido). */
+  importe_factura: number;
+  conciliado: boolean;
+  /** Su cobro ya está en FACTUSOL: solo se concilia. */
+  ya_en_factusol: boolean;
+};
+
+/** Lo que pasó en la hoja de Drive al cobrar con un movimiento. */
+export type CobroHoja = {
+  cuenta: string;
+  pestana: string | null;
+  estado: "escrita" | "ocupada" | "no_encontrada" | "corrida" | "sin_columna" | "en_cola"
+    | "no_se_escribe" | "error" | "pendiente" | string;
+  detalle?: string;
+  factura?: string | null;
 };
 
 /** Un cobro que registró BoHub en FACTUSOL (según su auditoría): su línea de
@@ -3305,8 +3335,11 @@ export async function waitForAnnulCobroJob(
   return waitForInvoiceCollectionJob(jobId, opts) as never;
 }
 
-export async function getOrderFactusolCobro(orderId: string): Promise<OrderCobroInfo> {
-  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobro`);
+export async function getOrderFactusolCobro(
+  orderId: string, movimientoId?: string,
+): Promise<OrderCobroInfo> {
+  const q = movimientoId ? `?movimiento=${encodeURIComponent(movimientoId)}` : "";
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobro${q}`);
 }
 
 /** Un movimiento del banco visto desde la ficha del pedido. */
@@ -3384,16 +3417,32 @@ export async function getOrderCobroBanco(orderId: string): Promise<CobroBanco> {
  *  pone la factura en la hoja de Drive. Si su cobro ya estaba en FACTUSOL,
  *  solo concilia: `status: "already"` con `fecha_factusol`. 409 `en_cola` si
  *  su cobro sigue en la cola. */
-export async function confirmarCobroBanco(
-  orderId: string, movementId: string, { forzar = false }: { forzar?: boolean } = {},
-): Promise<InvoiceCollectionResponse & {
+/** Lo que devuelve cobrar con un movimiento del banco (ficha o factura). */
+export type CobroBancoResultado = InvoiceCollectionResponse & {
   parcial: boolean; movimiento: CobroBancoMovimiento; fecha_factusol?: string | null;
   cuenta_factusol?: string | null; otra_cuenta?: boolean;
-}> {
+  /** La factura en la hoja de Drive (null si la cuenta no escribe en una). */
+  hoja?: CobroHoja | null;
+};
+
+export async function confirmarCobroBanco(
+  orderId: string, movementId: string, { forzar = false }: { forzar?: boolean } = {},
+): Promise<CobroBancoResultado> {
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cobro-banco`, {
     method: "POST",
     body: JSON.stringify({ movement_id: movementId, confirm: true, forzar }),
   });
+}
+
+/** El mismo cobro con movimiento, por factura (Conciliación, Documentos). */
+export async function cobrarFacturaConMovimiento(
+  serie: number, codigo: number | string, movementId: string,
+  { forzar = false }: { forzar?: boolean } = {},
+): Promise<CobroBancoResultado> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/${serie}/${encodeURIComponent(String(codigo))}/cobro-banco`,
+    { method: "POST", body: JSON.stringify({ movement_id: movementId, confirm: true, forzar }) },
+  );
 }
 
 /** Fase 5 — estado de cobro EN VIVO de UNA factura de FACTUSOL por serie+número,
@@ -3401,10 +3450,11 @@ export async function confirmarCobroBanco(
  *  explorador de documentos. Mismo contrato que `getOrderFactusolCobro` (saldo,
  *  cuenta sugerida, avisos), sin `order_id`/`order_number`. Solo lectura. */
 export async function getFactusolFacturaCobro(
-  serie: number, codigo: number | string,
+  serie: number, codigo: number | string, movimientoId?: string,
 ): Promise<OrderCobroInfo> {
+  const q = movimientoId ? `?movimiento=${encodeURIComponent(movimientoId)}` : "";
   return apiFetch(
-    `/api/erp/factusol/documents/facturas/${serie}/${encodeURIComponent(String(codigo))}/cobro`,
+    `/api/erp/factusol/documents/facturas/${serie}/${encodeURIComponent(String(codigo))}/cobro${q}`,
   );
 }
 

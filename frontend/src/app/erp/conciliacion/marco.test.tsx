@@ -49,6 +49,12 @@ jest.mock("../../lib/erpApi", () => ({
   updateBankAccount: jest.fn(),
 }));
 
+jest.mock("../../components/erp/RegistrarCobroModal", () => ({
+  RegistrarCobroModal: ({ factura, movimientoId }: {
+    factura: { numero: string }; movimientoId: string;
+  }) => <div role="dialog" aria-label="cobro">COBRO {factura.numero} {movimientoId}</div>,
+}));
+
 const mov = (over: Partial<BankMovement>): BankMovement => ({
   id: "m1", account_id: "a1", fecha_oper: "2026-10-20", fecha_valor: "2026-10-20",
   concepto: "ABONO TRANSFERENCIA FIGURANTE", importe: 408.48, saldo: 5691.81,
@@ -140,4 +146,27 @@ it("con la casilla se piden también las externas, se distinguen, y no se apaga 
   await waitFor(() => expect(ultima().status).toBe("reconciled"));
   expect(ultima().externas).toBe(true);
   expect(casilla).toBeChecked();
+});
+
+it("en un movimiento conciliado, «Registrar cobro» abre la herramienta con ese movimiento", async () => {
+  const user = userEvent.setup();
+  const rec = (numero: string, codigo: number, pedido: { id: string; order_number: string } | null) => ({
+    id: `r-${codigo}`, serie: 5, codigo, numero, cliente_nombre: "Cliente figurante", importe: 100,
+    confidence: "alta" as const, reason: "figurante", status: "confirmed" as const, origen: null, pedido,
+  });
+  (listBankMovements as jest.Mock).mockResolvedValue({
+    ...PAGE,
+    items: [
+      mov({ id: "m9", concepto: "CONCILIADO CON PEDIDO", status: "reconciled",
+            reconciled: [rec("5-260090", 260090, { id: "o-1", order_number: "BOPRIN-100090" })] }),
+      mov({ id: "m8", concepto: "CONCILIADO CON EXTERNA", status: "reconciled",
+            reconciled: [rec("5-260092", 260092, null)] }),
+    ],
+  });
+  render(<ConciliacionPage />);
+  await screen.findByText("CONCILIADO CON PEDIDO");
+  // La externa, solo con la casilla.
+  expect(screen.queryByRole("button", { name: "Registrar cobro de la 5-260092" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Registrar cobro de la 5-260090" }));
+  expect(screen.getByRole("dialog", { name: "cobro" })).toHaveTextContent("COBRO 5-260090 m9");
 });
