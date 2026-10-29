@@ -11,13 +11,14 @@ import logging
 import re
 import unicodedata
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.erp.bank.matching import (
+    AMOUNT_TOL,
     DEFAULT_EXCLUSION_PATTERNS,
     extract_payer,
     is_excluded,
@@ -813,6 +814,7 @@ def movement_to_dict(m: BankMovement, recons: list[BankReconciliation]) -> dict[
         "id": m.id,
         "account_id": m.account_id,
         "fecha_oper": m.fecha_oper.isoformat(),
+        "fecha_valor": m.fecha_valor.isoformat() if m.fecha_valor else None,
         "concepto": m.concepto,
         "importe": float(m.importe),
         "saldo": float(m.saldo) if m.saldo is not None else None,
@@ -844,8 +846,12 @@ def list_movements(
     only_incoming: bool = True,
     limit: int = 100,
     offset: int = 0,
+    movement_id: str | None = None,
 ) -> dict[str, Any]:
     q = select(BankMovement)
+    if movement_id:
+        # «Ver el movimiento» desde la ficha del pedido: solo ese.
+        q = q.where(BankMovement.id == movement_id)
     if account_id:
         q = q.where(BankMovement.account_id == account_id)
     if desde:
@@ -867,6 +873,13 @@ def list_movements(
         ).all():
             recons_by_mov.setdefault(r.movement_id, []).append(r)
     items = [movement_to_dict(m, recons_by_mov.get(m.id, [])) for m in rows]
+    # El camino de vuelta: de cada factura conciliada o propuesta, su pedido.
+    pedidos = _pedidos_con_id(session, {
+        (r.serie, r.codigo) for rs in recons_by_mov.values() for r in rs
+    })
+    for item in items:
+        for r in (*item["proposals"], *item["reconciled"]):
+            r["pedido"] = pedidos.get((r["serie"], r["codigo"]))
     if confidence:
         if confidence == "none":
             items = [i for i in items if i["status"] == "pending" and not i["proposals"]]
@@ -975,10 +988,13 @@ def reassign_movement(
     user_id: str | None,
     *,
     learn_payer: bool = False,
+    reason: str = "elegida a mano",
+    origen: str | None = None,
 ) -> dict[str, Any]:
     """Elegir otra factura o REPARTIR entre varias. Sustituye la propuesta y
     queda confirmado (es una decisión explícita). `learn_payer` recuerda
-    pagador → cliente para futuras importaciones."""
+    pagador → cliente para futuras importaciones. `reason`/`origen`: de dónde
+    salió la decisión (la ficha del pedido usa los suyos)."""
     mov = _mov(session, movement_id)
     if not targets:
         raise ValueError("indica al menos una factura")
@@ -1003,8 +1019,9 @@ def reassign_movement(
                 cliente_nombre=t.get("cliente_nombre"),
                 importe=round(float(t["importe"]), 2),
                 confidence=None,
-                reason="elegida a mano",
+                reason=reason,
                 status="proposed",
+                origen=origen,
             )
         )
         session.add(rows[-1])
@@ -1096,7 +1113,231 @@ def confirm_all_high(
     return n
 
 
+# --- desde la ficha del pedido: el movimiento que pagó su factura ---------------------
+
+#: `BankReconciliation.origen` de lo conciliado desde la ficha del pedido.
+ORIGEN_PEDIDO = "pedido"
+#: Hasta cuántos movimientos candidatos se enseñan en la ficha.
+MAX_CANDIDATOS_PEDIDO = 5
+_ORDEN_CONFIANZA = {"alta": 0, "media": 1, "baja": 2}
+#: Margen al buscar desde la fecha del pedido: una transferencia ordenada el
+#: día antes del pedido web también vale.
+_DIAS_ANTES_DEL_PEDIDO = 3
+
+
+def _numero_en_movimiento(mov: BankMovement, serie: int, codigo: int) -> bool:
+    """¿El concepto, las referencias o lo anotado nombran esta factura?
+    «2-526081», o el código suelto «526081» (el que suelen copiar los
+    clientes)."""
+    from app.erp.bank.parsing import _CODIGO_SUELTO_RE, _FACTURA_RE  # noqa: PLC0415
+
+    texto_mov = " ".join(
+        x for x in (mov.concepto, mov.referencia1, mov.referencia2, mov.anotacion_factura) if x
+    )
+    for m in _FACTURA_RE.finditer(texto_mov):
+        if int(m.group(1)) == serie and int(m.group(2)) == codigo:
+            return True
+    return any(int(m.group(1)) == codigo for m in _CODIGO_SUELTO_RE.finditer(texto_mov))
+
+
+def movimiento_pedido_dict(
+    mov: BankMovement, acc: BankAccount | None, contrapartidas: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Lo que la ficha del pedido enseña de un movimiento: fecha valor (la del
+    cobro), importe, cuenta con su contrapartida, y el concepto."""
+    fecha_valor = mov.fecha_valor or mov.fecha_oper
+    return {
+        "id": mov.id,
+        "fecha_oper": mov.fecha_oper.isoformat(),
+        "fecha_valor": fecha_valor.isoformat(),
+        "importe": float(mov.importe),
+        "concepto": mov.concepto,
+        "payer_name": mov.payer_name,
+        "status": mov.status,
+        "cuenta": {
+            "id": acc.id if acc else mov.account_id,
+            "nombre": acc.name if acc else None,
+            "contrapartida_codigo": acc.contrapartida_codigo if acc else None,
+            "contrapartida_nombre": (
+                resolve_name(contrapartidas or {}, acc.contrapartida_codigo) if acc else None
+            ),
+        },
+    }
+
+
+def movimientos_de_factura(
+    session: Session, factura: dict[str, Any], *, desde: date | None = None,
+) -> dict[str, Any]:
+    """El movimiento del banco que pagó una factura, visto desde su pedido.
+
+    `factura` = {serie, codigo, numero, total, saldo_pendiente, cliente_nombre,
+    cliente_codigo}; `desde` = la fecha del pedido (un cobro no llega antes).
+
+    - `conciliados`: los movimientos ya conciliados con esta factura (en
+      Conciliación o desde la ficha).
+    - `candidatos`: movimientos de entrada aún por conciliar que pueden ser su
+      cobro, con su confianza y el porqué. Primero, los que nombran la factura
+      en el concepto; después, lo que ya propuso Conciliación con todas las
+      facturas a la vista; y si no, el casador de siempre contra esta
+      factura (importe exacto + nombre del cliente, parcial…). Lo que solo
+      coincide en el importe sale en confianza baja y solo si no hay nada
+      mejor. Solo cuentas de la serie de la factura (o sin serie).
+
+    Nada se concilia aquí: solo se propone."""
+    serie, codigo = int(factura["serie"]), int(factura["codigo"])
+    total = float(factura.get("total") or 0)
+    saldo = factura.get("saldo_pendiente")
+    saldo = float(saldo) if saldo is not None else total
+    nombres_cp = contrapartida_names(session)
+    filas = session.execute(
+        select(BankReconciliation, BankMovement, BankAccount)
+        .join(BankMovement, BankMovement.id == BankReconciliation.movement_id)
+        .join(BankAccount, BankAccount.id == BankMovement.account_id)
+        .where(BankReconciliation.serie == serie, BankReconciliation.codigo == codigo)
+    ).all()
+    conciliados: list[dict[str, Any]] = []
+    guardadas: dict[str, BankReconciliation] = {}
+    for rec, mov, acc in filas:
+        if rec.status == "confirmed":
+            conciliados.append({
+                **movimiento_pedido_dict(mov, acc, nombres_cp),
+                "importe_conciliado": float(rec.importe),
+                "origen": rec.origen,
+            })
+        elif mov.status == "pending":
+            guardadas[mov.id] = rec
+
+    patterns, payer_map = _rules_snapshot(session)
+    inv = {
+        "serie": serie, "codigo": codigo, "numero": factura.get("numero"),
+        "cliente_codigo": factura.get("cliente_codigo"),
+        "cliente_nombre": factura.get("cliente_nombre"),
+        "fecha": desde.isoformat() if desde else None,
+        "saldo_pendiente": saldo,
+    }
+    q = (
+        select(BankMovement, BankAccount)
+        .join(BankAccount, BankAccount.id == BankMovement.account_id)
+        .where(BankMovement.status == "pending", BankMovement.importe > 0)
+        .where(or_(BankAccount.serie == serie, BankAccount.serie.is_(None)))
+    )
+    if desde:
+        q = q.where(BankMovement.fecha_oper >= desde - timedelta(days=_DIAS_ANTES_DEL_PEDIDO))
+    candidatos: list[dict[str, Any]] = []
+    for mov, acc in session.execute(q):
+        if is_excluded(mov.concepto, mov.payer_name, patterns):
+            continue
+        importe = float(mov.importe)
+        exacto = abs(importe - saldo) <= AMOUNT_TOL
+        solo_importe = False
+        if _numero_en_movimiento(mov, serie, codigo):
+            confianza = "alta" if exacto else "media"
+            motivo = "número de factura en el concepto" + (" + importe exacto" if exacto else "")
+        elif mov.id in guardadas and guardadas[mov.id].confidence:
+            confianza = guardadas[mov.id].confidence
+            motivo = guardadas[mov.id].reason or "propuesto en Conciliación"
+        else:
+            props = propose({
+                "importe": importe, "fecha_oper": mov.fecha_oper, "concepto": mov.concepto,
+                "referencia2": mov.referencia2, "payer": mov.payer_name,
+            }, [inv], payer_map)
+            if not props or (props[0]["serie"], props[0]["codigo"]) != (serie, codigo):
+                continue
+            confianza, motivo = props[0]["confidence"], props[0]["reason"]
+            if motivo.startswith("importe exacto (sin confirmación"):
+                # Contra UNA factura, coincidir solo en el importe dice poco.
+                confianza, motivo, solo_importe = "baja", "solo coincide el importe", True
+        candidatos.append({
+            **movimiento_pedido_dict(mov, acc, nombres_cp),
+            "confianza": confianza,
+            "motivo": motivo,
+            "parcial": importe < saldo - AMOUNT_TOL,
+            "excede": importe > saldo + AMOUNT_TOL,
+            "_solo_importe": solo_importe,
+        })
+    if any(not c["_solo_importe"] for c in candidatos):
+        candidatos = [c for c in candidatos if not c["_solo_importe"]]
+    candidatos.sort(key=lambda c: (_ORDEN_CONFIANZA.get(c["confianza"], 3), c["fecha_valor"]))
+    for c in candidatos:
+        c.pop("_solo_importe")
+    return {
+        "factura": {"serie": serie, "codigo": codigo, "numero": factura.get("numero"),
+                    "total": total, "saldo_pendiente": saldo},
+        "conciliados": conciliados,
+        "candidatos": candidatos[:MAX_CANDIDATOS_PEDIDO],
+    }
+
+
+def conciliar_desde_pedido(
+    session: Session, *, movement_id: str, factura: dict[str, Any], saldo: float,
+    user_id: str | None,
+) -> BankMovement:
+    """Concilia el movimiento con la factura del pedido, igual que desde
+    Conciliación (el mismo hecho, una sola vez): si Conciliación ya lo
+    proponía contra esta factura se confirma esa propuesta; si no, queda como
+    elegido desde la ficha. Lanza ValueError si el movimiento ya es de otra
+    factura, está descartado, o cubre más que lo pendiente (eso se reparte en
+    Conciliación). Idempotente si ya estaba conciliado con esta factura."""
+    mov = _mov(session, movement_id)
+    serie, codigo = int(factura["serie"]), int(factura["codigo"])
+    filas = session.scalars(
+        select(BankReconciliation).where(BankReconciliation.movement_id == mov.id)
+    ).all()
+    if mov.status == "reconciled":
+        if any(r.status == "confirmed" and (r.serie, r.codigo) == (serie, codigo) for r in filas):
+            return mov
+        raise ValueError("ese movimiento ya está conciliado con otra factura")
+    if mov.status == "discarded":
+        raise ValueError("ese movimiento está descartado («no es cobro»): reábrelo en Conciliación")
+    importe = float(mov.importe)
+    if importe > float(saldo) + AMOUNT_TOL:
+        raise ValueError(
+            f"el movimiento ({importe:.2f} €) es mayor que lo pendiente de la factura "
+            f"({float(saldo):.2f} €): si paga varias facturas, repártelo en Conciliación"
+        )
+    propuestas = [r for r in filas if r.status == "proposed"]
+    if (
+        len(propuestas) == 1 and (propuestas[0].serie, propuestas[0].codigo) == (serie, codigo)
+        and abs(float(propuestas[0].importe) - importe) <= AMOUNT_TOL
+    ):
+        _confirm_rows(session, mov, propuestas, user_id)
+        session.commit()
+        return mov
+    reassign_movement(
+        session, mov.id,
+        [{"serie": serie, "codigo": codigo, "numero": factura.get("numero"),
+          "importe": importe, "cliente_nombre": factura.get("cliente_nombre"),
+          "cliente_codigo": factura.get("cliente_codigo")}],
+        user_id, reason="confirmado desde la ficha del pedido", origen=ORIGEN_PEDIDO,
+    )
+    return mov
+
+
 # --- exportación -------------------------------------------------------------------
+
+
+def _pedidos_con_id(
+    session: Session, facturas: set[tuple[int, int]],
+) -> dict[tuple[int, int], dict[str, str]]:
+    """El pedido de BoHub (id y número) de cada factura, por su CODFAC y su
+    serie; el primero si hay varios. Para ir del movimiento al pedido."""
+    from app.erp.models import Order  # noqa: PLC0415
+
+    if not facturas:
+        return {}
+    numeros = {str(codigo) for _, codigo in facturas}
+    out: dict[tuple[int, int], dict[str, str]] = {}
+    for order in session.scalars(
+        select(Order).where(Order.factusol_invoice_number.in_(numeros))
+        .order_by(Order.created_at)
+    ).all():
+        try:
+            clave = (order.factusol_invoice_serie, int(order.factusol_invoice_number))
+        except (TypeError, ValueError):
+            continue
+        if clave in facturas:
+            out.setdefault(clave, {"id": order.id, "order_number": order.order_number})
+    return out
 
 
 def _pedidos_de_facturas(
@@ -1315,9 +1556,12 @@ def export_cobros_csv(
             f"{_ascii(acc.name)} - {mov.fecha_oper.strftime('%d/%m/%Y')} - "
             f"{float(mov.importe):.2f} EUR - {origen} - {concepto}"
         )
+        # La fecha del cobro es la fecha VALOR del movimiento (la que Bart
+        # escribía a mano); sin ella, la de operación.
         writer.writerow([
             r.serie, r.codigo, acc.contrapartida_codigo, "Transferencia",
-            mov.fecha_oper.strftime("%d/%m/%Y"), observaciones[:_MAX_OBSERVACIONES],
+            (mov.fecha_valor or mov.fecha_oper).strftime("%d/%m/%Y"),
+            observaciones[:_MAX_OBSERVACIONES],
         ])
         stats["incluidas"] += 1
     return "\ufeff" + buf.getvalue(), stats

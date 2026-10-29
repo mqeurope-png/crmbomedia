@@ -903,6 +903,15 @@ def emit_invoice(
     cabecera = pcl_row_to_fac_payload(
         pcl, codfac, ejercicio, fecha_emision=fecha_emision, options=options,
     )
+    # Pedido revinculado a otro cliente desde su ficha: la factura sale a él,
+    # no al que lleva el F_PCL (que no se toca).
+    if options.codcli and str(pcl.get("CLIPCL") or "").strip() != options.codcli:
+        from app.erp.factura_cliente import cliente_para_emitir  # noqa: PLC0415
+
+        cabecera.update(cliente_para_emitir(
+            client, cabecera=cabecera, codcli=options.codcli, ejercicio=ejercicio,
+            origen=pcl, documento="El pedido de cliente de FACTUSOL",
+        ))
     lineas = [
         lpc_row_to_lfa_payload(row, codfac, i + 1, ejercicio, serie=serie)
         for i, row in enumerate(lpc_rows)
@@ -1096,6 +1105,13 @@ def _emit_from_albaran(
             overrides["FOPFAC"] = options.fopfac
         if options.comfac:
             overrides["COMFAC"] = options.comfac
+        if options.ob1fac:
+            overrides["OB1FAC"] = options.ob1fac
+        if options.codcli:
+            overrides.update(_cliente_revinculado_albaran(
+                client, codcli=options.codcli, serie=serie_alb, codigo=codigo_alb,
+                ejercicio=ejercicio,
+            ))
     result = convert_document(
         session, client, source_type="albaranes", target_type="facturas",
         tip=serie_alb, cod=codigo_alb, ejercicio=ejercicio,
@@ -1130,6 +1146,27 @@ def _emit_from_albaran(
         "numero": visible_number(result["serie"], result["codigo"]),
         "origin_mark_warning": result.get("origin_mark_warning"),
     }
+
+
+def _cliente_revinculado_albaran(
+    client: FactusolClient, *, codcli: str, serie: int, codigo: int, ejercicio: str,
+) -> dict[str, Any]:
+    """El bloque de cliente de la factura cuando el pedido se revinculó a otro
+    cliente y su albarán sigue con el anterior (el albarán no se toca). `{}`
+    si el albarán ya es de ese cliente."""
+    from app.erp.factura_cliente import cliente_para_emitir  # noqa: PLC0415
+
+    rows = client.load_table("F_ALB", filtro=f"CODALB={int(codigo)}", ejercicio=ejercicio)
+    alb = next((r for r in rows if serie_of_row(r, "TIPALB") == serie), None)
+    if alb is None or str(alb.get("CLIALB") or "").strip() == codcli:
+        return {}
+    # La cabecera de la factura copiará la del albarán por sufijo: se compara
+    # con ella retagueada para mandar solo lo que cambia, con sus tipos.
+    como_factura = {f"{col[:-3]}FAC": val for col, val in alb.items() if col.endswith("ALB")}
+    return cliente_para_emitir(
+        client, cabecera=como_factura, codcli=codcli, ejercicio=ejercicio,
+        origen=alb, documento=f"El albarán {serie}-{int(codigo):06d}",
+    )
 
 
 def _auto_link_factura(

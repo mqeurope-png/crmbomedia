@@ -55,6 +55,12 @@ from app.erp.drive_sheets import (
     parse_service_account_json,
     service_account_email,
 )
+from app.erp.factura_cliente import (
+    MENCIONES_KEY,
+    VERIFACTU_KEY,
+    menciones_config,
+    validate_menciones,
+)
 from app.erp.models import (
     ERP_SETTINGS_SINGLETON_ID,
     ErpException,
@@ -201,6 +207,13 @@ class SettingsIn(BaseModel):
     #: ([{tienda, metodo, coincidencia, contrapartida}], en orden: la primera
     #: que casa). Sustituye a `paypal_contrapartidas_by_store` (heredado).
     contrapartida_rules: list[dict[str, Any]] | None = None
+    #: Menciones legales que se pueden añadir a una factura (en sus
+    #: observaciones) desde la ficha del pedido o al emitir:
+    #: [{id, nombre, texto, revisado}]. Ver `app/erp/factura_cliente.py`.
+    menciones_legales: list[dict[str, Any]] | None = None
+    #: ¿Hay VERI*FACTU activo? Con él no se cambia el cliente de una factura
+    #: emitida (solo cabe la rectificativa). Apagado por defecto.
+    verifactu_activo: bool | None = None
     #: ERP-F6 — orígenes del envío (el «OFI-TER-SAT» del Excel), configurables.
     shipping_origins: list[str] | None = None
     #: ERP-F6 — sincronizado del seguimiento con la hoja de Drive: JSON de la
@@ -553,6 +566,9 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         # Reglas tienda × método de pago (las guardadas o, si nunca se
         # guardaron, las iniciales: PayPal por tienda migrado + Mollie).
         "contrapartida_rules": contrapartida_rules_config(_series(cfg)),
+        # Menciones legales de factura y el interruptor de VERI*FACTU.
+        "menciones_legales": menciones_config(_series(cfg).get(MENCIONES_KEY)),
+        "verifactu_activo": bool(_series(cfg).get(VERIFACTU_KEY)),
         # ERP-F6: orígenes del envío + estado del Drive. De las credenciales
         # SOLO sale el client_email (para que Bart comparta la hoja con él);
         # el JSON cifrado no se devuelve nunca.
@@ -758,6 +774,8 @@ def update_settings(
             or payload.contrapartidas is not None
             or payload.paypal_contrapartidas_by_store is not None
             or payload.contrapartida_rules is not None
+            or payload.menciones_legales is not None
+            or payload.verifactu_activo is not None
             or payload.shipping_origins is not None
             or payload.drive_reference_prefer_albaran is not None
             or payload.seguimiento_reconcile_enabled is not None
@@ -892,6 +910,13 @@ def update_settings(
                 series["contrapartidas"] = validate_contrapartidas(payload.contrapartidas)
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
+        if payload.menciones_legales is not None:
+            try:
+                series[MENCIONES_KEY] = validate_menciones(payload.menciones_legales)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        if payload.verifactu_activo is not None:
+            series[VERIFACTU_KEY] = bool(payload.verifactu_activo)
         if payload.paypal_contrapartidas_by_store is not None:
             mapping: dict[str, str] = {}
             for store, code in payload.paypal_contrapartidas_by_store.items():

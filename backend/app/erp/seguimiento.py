@@ -778,7 +778,10 @@ SITUACION_LABELS: dict[str, str] = {
     "incidencias": "Incidencia",
     "por_revisar": "Por revisar",
     "por_facturar": "Por facturar",
+    "factura_por_enviar": "Factura por enviar",
     "por_cobrar": "Por cobrar",
+    # Cola retirada (hoy «Factura por enviar» / Cola SAT): por si queda en
+    # alguna foto antigua.
     "por_enviar": "Por enviar",
     "listo": "Listo",
     SITUACION_REEMBOLSADO: "Reembolsado",
@@ -787,14 +790,14 @@ SITUACION_LABELS: dict[str, str] = {
 #: «Reembolsado» va al final: es informativo, no trabajo pendiente.
 SITUACION_ORDER: dict[str, int] = {
     "incidencias": 0, "por_revisar": 1, "por_facturar": 2,
-    "por_cobrar": 3, "por_enviar": 4, "listo": 5,
+    "factura_por_enviar": 3, "por_cobrar": 4, "por_enviar": 4, "listo": 5,
     SITUACION_REEMBOLSADO: 6,
 }
 #: Tono de color de la celda Situación (letras del sistema de diseño `--st-*`):
 #: rojo(r) · ámbar(a) · azul(b) · teal(t) · verde(g) · neutro(n).
 SITUACION_TONE: dict[str, str] = {
     "incidencias": "r", "por_revisar": "a", "por_facturar": "b",
-    "por_cobrar": "b", "por_enviar": "t", "listo": "g",
+    "factura_por_enviar": "t", "por_cobrar": "b", "por_enviar": "t", "listo": "g",
     SITUACION_REEMBOLSADO: "n",
 }
 #: Relleno/tinta de la celda Situación en el Excel (hex del sistema de diseño,
@@ -803,6 +806,7 @@ SITUACION_FILL: dict[str, tuple[str, str]] = {
     "incidencias": ("FDEAEA", "B42318"),
     "por_revisar": ("FDF1DD", "8A5C00"),
     "por_facturar": ("E8F0FF", "2451C7"),
+    "factura_por_enviar": ("E6F5F3", "0F766E"),
     "por_cobrar": ("E8F0FF", "2451C7"),
     "por_enviar": ("E6F5F3", "0F766E"),
     "listo": ("E7F6EC", "1F7A45"),
@@ -1203,12 +1207,14 @@ def build_rows(
     # de la factura por email.
     from app.erp.workflow import (  # noqa: PLC0415
         QUEUE_INCIDENCIAS,
-        latest_invoice_emailed_map,
+        latest_invoice_sent_map,
         workflows_for,
     )
 
     wf_map = workflows_for(session, orders)
-    emailed_map = latest_invoice_emailed_map(session, [o.id for o in orders])
+    # Enviada por email o marcada a mano en la ficha; lo apuntado en la hoja
+    # lo aplica el espejo encima (override).
+    emailed_map = latest_invoice_sent_map(session, [o.id for o in orders], con_hoja=False)
     incidencia_ids = [
         oid for oid, wf in wf_map.items() if wf.get("queue") == QUEUE_INCIDENCIAS
     ]
@@ -1383,8 +1389,8 @@ def build_rows(
             #: Fecha de la factura (emisión registrada en BoHub); reutiliza el
             #: hecho real del evento de factura, sin leer FECFAC en vivo.
             "fecha_factura": _iso_date(_fecha_factura(o)),
-            #: Fecha del envío de la factura por email al cliente
-            #: (`erp.invoice_emailed`), o None si no se envió.
+            #: Fecha del envío de la factura al cliente (por email desde
+            #: BoHub o marcada «ya enviada» a mano en la ficha), o None.
             "factura_enviada": emailed,
             #: Estado de cobro FACTUSOL (contable, ya persistido).
             "cobro": cobro,

@@ -347,6 +347,8 @@ def list_movements(
     ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    #: «Ver el movimiento» desde la ficha del pedido: solo ese movimiento.
+    movimiento: str | None = Query(default=None, max_length=36),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
@@ -360,6 +362,7 @@ def list_movements(
         status=status_,
         limit=limit,
         offset=offset,
+        movement_id=movimiento,
     )
 
 

@@ -68,6 +68,20 @@ def contrapartidas_endpoint(
     }
 
 
+@router.get("/menciones-legales")
+def menciones_legales_endpoint(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Las menciones legales de factura (Configuración ERP): las revisadas
+    se pueden aplicar; las de referencia sin revisar se enseñan, pero no."""
+    _ = current_user
+    from app.erp.factura_cliente import MAX_MENCION, menciones, verifactu_activo  # noqa: PLC0415
+
+    return {"items": menciones(session), "max": MAX_MENCION,
+            "verifactu_activo": verifactu_activo(session)}
+
+
 @router.get("/{name}")
 def catalog_endpoint(
     name: str,

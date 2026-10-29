@@ -48,22 +48,27 @@ from app.erp.sample_orders import is_sample_order
 
 QUEUE_POR_REVISAR = "por_revisar"
 QUEUE_POR_FACTURAR = "por_facturar"
+#: Facturado pero la factura aún no ha llegado al cliente (ni por email desde
+#: BoHub ni marcada como enviada a mano). Sustituye a la antigua «Por enviar»,
+#: que contaba lo pendiente de cerrar tras el cobro: el envío del paquete se
+#: sigue en la Cola SAT, que es donde se prepara, se embala y se manda.
+QUEUE_FACTURA_POR_ENVIAR = "factura_por_enviar"
 QUEUE_POR_COBRAR = "por_cobrar"
-QUEUE_POR_ENVIAR = "por_enviar"
 QUEUE_INCIDENCIAS = "incidencias"
 QUEUE_LISTO = "listo"
 
-#: Orden de las colas en la bandeja (el de la maqueta).
+#: Orden de las colas en la bandeja: el del ciclo (facturar → enviar la
+#: factura → cobrar).
 QUEUES: tuple[str, ...] = (
-    QUEUE_POR_REVISAR, QUEUE_POR_FACTURAR, QUEUE_POR_COBRAR,
-    QUEUE_POR_ENVIAR, QUEUE_INCIDENCIAS, QUEUE_LISTO,
+    QUEUE_POR_REVISAR, QUEUE_POR_FACTURAR, QUEUE_FACTURA_POR_ENVIAR,
+    QUEUE_POR_COBRAR, QUEUE_INCIDENCIAS, QUEUE_LISTO,
 )
 
 QUEUE_LABELS: dict[str, str] = {
     QUEUE_POR_REVISAR: "Por revisar",
     QUEUE_POR_FACTURAR: "Por facturar",
+    QUEUE_FACTURA_POR_ENVIAR: "Factura por enviar",
     QUEUE_POR_COBRAR: "Por cobrar",
-    QUEUE_POR_ENVIAR: "Por enviar",
     QUEUE_INCIDENCIAS: "Incidencias",
     QUEUE_LISTO: "Listo",
 }
@@ -73,6 +78,7 @@ QUEUE_LABELS: dict[str, str] = {
 ACTION_LABELS: dict[str, str] = {
     "aprobar": "Aprobar",
     "emitir_factura": "Emitir factura",
+    "enviar_factura": "Enviar factura al cliente",
     "registrar_cobro": "Registrar cobro",
     # Lote 2 C: «Crear envío» ya no es un botón; subir la etiqueta ES el envío
     # (la subida mueve el transporte a label_created). Con la etiqueta ya
@@ -459,21 +465,22 @@ def _open_exception(
 # --- cola + siguiente acción -------------------------------------------------
 
 
-def _next_step(order: Order) -> tuple[str, str, str]:
+def _next_step(order: Order, *, factura_enviada: bool = False) -> tuple[str, str, str]:
     """`(cola, acción, explicación)` del pedido según por dónde va el ciclo.
 
-    El orden es el del ciclo real: revisar → facturar → cobrar → enviar →
-    completar. No decide nada nuevo: cada rama refleja el estado que ya
-    gobierna los botones de la ficha."""
+    El orden es el del ciclo real: revisar → facturar → enviar la factura →
+    cobrar → completar. No decide nada nuevo: cada rama refleja el estado que
+    ya gobierna los botones de la ficha. El envío del PAQUETE no es una cola de
+    la bandeja: se sigue en la Cola SAT."""
     # Muestra / envío no facturable: se salta TODO el tramo fiscal (aprobar,
-    # facturar, cobrar). Lo único que queda es prepararla y enviarla, así que
-    # va directa al tramo de envío/completado — y nunca entra en las colas
-    # «Por facturar» ni «Por cobrar», que se calculan aquí mismo.
+    # facturar, enviar la factura, cobrar). Lo único que queda es prepararla y
+    # enviarla desde la Cola SAT y darla por completada — y nunca entra en las
+    # colas «Por facturar», «Factura por enviar» ni «Por cobrar».
     if is_sample_order(order):
         if order.completed_at is None:
             return (
-                QUEUE_POR_ENVIAR, "marcar_completado",
-                "Muestra: prepárala y envíala desde el taller; "
+                QUEUE_LISTO, "marcar_completado",
+                "Muestra: se prepara y se envía desde la Cola SAT; "
                 "márcala completada cuando salga.",
             )
         return (QUEUE_LISTO, "ninguna", "Muestra enviada.")
@@ -487,8 +494,9 @@ def _next_step(order: Order) -> tuple[str, str, str]:
     # «Por facturar» ni «Por cobrar».
     if is_no_charge(order) and order.completed_at is None:
         return (
-            QUEUE_POR_ENVIAR, "marcar_completado",
-            "Envío sin cobro: prepáralo y márcalo completado cuando salga.",
+            QUEUE_LISTO, "marcar_completado",
+            "Envío sin cobro: se prepara desde la Cola SAT; márcalo completado "
+            "cuando salga.",
         )
     if is_no_charge(order):
         return (QUEUE_LISTO, "ninguna", "Envío sin cobro completado.")
@@ -496,6 +504,14 @@ def _next_step(order: Order) -> tuple[str, str, str]:
         return (
             QUEUE_POR_FACTURAR, "emitir_factura",
             "Emite la factura en FACTUSOL.",
+        )
+    # La factura se envía ANTES de cobrarla (el orden real): mientras no ha
+    # llegado al cliente, el pedido no está listo, cobrado o no.
+    if not factura_enviada:
+        return (
+            QUEUE_FACTURA_POR_ENVIAR, "enviar_factura",
+            "Envía la factura al cliente, o márcala como enviada si ya se la "
+            "mandaste por otro lado (papel, Gmail, con el albarán).",
         )
     # Cobro: SIEMPRE manual («Registrar cobro»), y solo tiene sentido cuando
     # hay una factura FACTUSOL sobre la que registrarlo. Una factura marcada
@@ -507,12 +523,9 @@ def _next_step(order: Order) -> tuple[str, str, str]:
             if is_paid(order) else
             "Registra el cobro de la factura en FACTUSOL.",
         )
-    # Lo obligatorio ya está (facturado y cobrado, o facturado si el cobro no
-    # aplica). El envío al taller (SAT) es OPCIONAL y ya no bloquea: el pedido
-    # está listo para darse por completado. La cola «Por enviar» agrupa a los
-    # que aún no se han cerrado (donde se sube la etiqueta / marca recogido si
-    # procede, desde la sección «Envío y seguimiento» de la ficha), pero su
-    # ausencia no impide completar.
+    # Lo obligatorio ya está (facturado, factura enviada y cobrado, o sin cobro
+    # que aplique). El envío del paquete se sigue en la Cola SAT y no bloquea:
+    # el pedido está listo para darse por completado.
     if not order.completed_at:
         # «No requiere envío»: no cuenta como pendiente de envío, así que sale
         # de la cola «Por enviar» y queda como listo (con el completado opcional
@@ -532,9 +545,9 @@ def _next_step(order: Order) -> tuple[str, str, str]:
                 "Facturado, cobrado y entregado: márcalo como completado.",
             )
         return (
-            QUEUE_POR_ENVIAR, "marcar_completado",
-            "Facturado y cobrado: márcalo como completado. El envío al taller "
-            "es opcional (Envío y seguimiento).",
+            QUEUE_LISTO, "marcar_completado",
+            "Facturado, factura enviada y cobrado: márcalo como completado. El "
+            "envío del paquete se sigue en la Cola SAT.",
         )
     return QUEUE_LISTO, "ninguna", "Nada pendiente."
 
@@ -548,13 +561,14 @@ def order_workflow(
     consumen tal cual."""
     company = _company_of(session, order, ctx)
     alerts = order_alerts(session, order, ctx=ctx)
-    # Fecha del último envío de la factura por email (hito «Factura enviada»):
-    # del contexto en la bandeja (sin N+1), o una query en la ficha.
+    # Cuándo llegó la factura al cliente (paso «Factura enviada»): por email
+    # desde BoHub, marcada a mano o apuntada en la hoja de Seguimiento. Del
+    # contexto en la bandeja (sin N+1), o una query en la ficha.
     if ctx is not None:
-        invoice_emailed_at = ctx.invoice_emailed.get(order.id)
+        invoice_sent_at = ctx.invoice_emailed.get(order.id)
     else:
-        invoice_emailed_at = latest_invoice_emailed_map(session, [order.id]).get(order.id)
-    queue, action, explain = _next_step(order)
+        invoice_sent_at = latest_invoice_sent_map(session, [order.id]).get(order.id)
+    queue, action, explain = _next_step(order, factura_enviada=bool(invoice_sent_at))
     # Quién emitiría este pedido: su serie decide el régimen de IVA.
     emisor = _issuer_of_order(session, order)
     blocking = [a for a in alerts if a["blocking"]]
@@ -592,9 +606,9 @@ def order_workflow(
         "next_action_hint": explain,
         "alerts": alerts,
         "blocked": bool(blocking),
-        # Pasos de la línea de vida: los obligatorios (hasta Cobro) + el hito
-        # opcional «Factura enviada». El SAT/«Enviado» ya no es un paso.
-        "steps": order_steps(order, invoice_emailed_at=invoice_emailed_at),
+        # Pasos de la línea de vida, todos obligatorios: … → Factura →
+        # Factura enviada → Cobro. El SAT/«Enviado» no es un paso.
+        "steps": order_steps(order, invoice_emailed_at=invoice_sent_at),
         "regime": company_regime(company, issuer_iso2=emisor),
         # Cliente del pedido: lo que la ficha enseña en cabecera (país +
         # régimen) y en el bloque FACTUSOL (nº de cliente o «sin vincular»).
@@ -633,6 +647,12 @@ def _company_block(
 #: Evento de AuditLog que registra `invoice_email.send_invoice_email` al mandar
 #: la factura por email al cliente (mismo que `orders._invoice_emailed`).
 INVOICE_EMAILED_EVENT = "erp.invoice_emailed"
+#: «Ya enviada»: la factura se mandó por fuera de BoHub (en papel, desde
+#: Gmail, con el albarán) y alguien lo marca a mano en la ficha. Metadata:
+#: `factura`, `fecha` (cuándo se envió), `medio`, `nota`.
+INVOICE_MARKED_SENT_EVENT = "erp.invoice_marked_sent"
+#: Deshacer esa marca (un error al marcar). No deshace un envío por email.
+INVOICE_UNMARKED_SENT_EVENT = "erp.invoice_marked_unsent"
 
 
 def latest_invoice_emailed_map(
@@ -657,6 +677,57 @@ def latest_invoice_emailed_map(
         ).group_by(AuditLog.target_id)
     )
     return {tid: dt.isoformat() for tid, dt in rows if dt is not None}
+
+
+def latest_invoice_sent_map(
+    session: Session, order_ids: list[str], *, con_hoja: bool = True,
+) -> dict[str, str]:
+    """`{order_id: fecha ISO}` de cuándo llegó la factura al cliente, por
+    pedido: el último envío por email desde BoHub, la marca «ya enviada» hecha a
+    mano en la ficha (con la fecha que se dijo; deshecha si después se
+    desmarcó) o la fecha apuntada en la columna «Factura enviada» de la hoja de
+    Seguimiento (`con_hoja=False` la deja fuera: el espejo de Seguimiento
+    pone su propio valor y aplica encima lo de la hoja). Gana la más reciente.
+    Tres queries para todos los pedidos."""
+    if not order_ids:
+        return {}
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import SeguimientoOverride  # noqa: PLC0415
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    out = latest_invoice_emailed_map(session, order_ids)
+    manual: dict[str, str | None] = {}
+    for tid, action, created_at, meta_json in session.execute(
+        select(AuditLog.target_id, AuditLog.action, AuditLog.created_at,
+               AuditLog.metadata_json)
+        .where(
+            AuditLog.action.in_([INVOICE_MARKED_SENT_EVENT, INVOICE_UNMARKED_SENT_EVENT]),
+            AuditLog.target_type == "order",
+            AuditLog.target_id.in_(order_ids),
+        ).order_by(AuditLog.created_at, AuditLog.id)
+    ):
+        if action == INVOICE_UNMARKED_SENT_EVENT:
+            manual[tid] = None
+            continue
+        try:
+            fecha = (json.loads(meta_json or "{}") or {}).get("fecha")
+        except (TypeError, ValueError):
+            fecha = None
+        manual[tid] = str(fecha) if fecha else (created_at.isoformat() if created_at else None)
+    hoja = session.execute(
+        select(SeguimientoOverride.order_id, SeguimientoOverride.value).where(
+            SeguimientoOverride.order_id.in_(order_ids),
+            SeguimientoOverride.column_key == "factura_enviada",
+        )
+    ) if con_hoja else ()
+    for tid, value in hoja:
+        if (value or "").strip() and not manual.get(tid):
+            manual[tid] = value.strip()
+    for tid, fecha in manual.items():
+        if fecha and (tid not in out or fecha[:10] > out[tid][:10]):
+            out[tid] = fecha
+    return out
 
 
 class WorkflowContext:
@@ -700,8 +771,8 @@ class WorkflowContext:
                 ).group_by(ErpException.order_id)
             )
             counts = {oid: int(n) for oid, n in rows}
-        emailed = latest_invoice_emailed_map(session, order_ids)
-        return cls(companies, counts, emailed)
+        sent = latest_invoice_sent_map(session, order_ids)
+        return cls(companies, counts, sent)
 
 
 def _company_of(
@@ -716,23 +787,19 @@ def _company_of(
     return session.get(Company, order.company_id)
 
 
-#: Pasos OBLIGATORIOS del ciclo, en orden (la «línea de vida» del pedido). El
-#: SAT/«Enviado» YA NO es un paso obligatorio (es un hito opcional: hay pedidos
-#: que no pasan por el taller) — vive en la sección «Envío y seguimiento» de la
-#: ficha. El recuento «Paso N de N» y el «completado» solo cuentan estos.
+#: Pasos OBLIGATORIOS del ciclo, en orden (la «línea de vida» del pedido). La
+#: factura se envía al cliente ANTES de cobrarla, que es el orden real. El
+#: SAT/«Enviado» no es un paso (hay pedidos que no pasan por el taller): vive en
+#: la sección «Envío y seguimiento» de la ficha y en la Cola SAT.
 STEP_KEYS: tuple[str, ...] = (
-    "creado", "pagado", "aprobado", "albaran", "factura", "cobro",
+    "creado", "pagado", "aprobado", "albaran", "factura", "factura_enviada", "cobro",
 )
-#: Hitos OPCIONALES: se enseñan en la línea de vida pero NO cuentan para el
-#: «Paso N de N» ni bloquean el «completado» (informativos). Hoy: el envío de la
-#: factura por email al cliente.
-OPTIONAL_STEP_KEYS: tuple[str, ...] = ("factura_enviada",)
 #: Pasos que NO APLICAN en una muestra / envío no facturable: no se cobra ni se
 #: factura, así que su ciclo es «Creado → (Preparación) → Enviado». Se pintan
 #: en gris igual que el albarán de un pedido web. «Aprobado» NO está aquí: la
 #: muestra entra a la Cola SAT al crearse, así que ese paso se cumple de verdad.
 SAMPLE_SKIPPED_STEPS: frozenset[str] = frozenset(
-    {"pagado", "albaran", "factura", "cobro"}
+    {"pagado", "albaran", "factura", "factura_enviada", "cobro"}
 )
 STEP_LABELS: dict[str, str] = {
     "creado": "Creado", "pagado": "Pagado", "aprobado": "Aprobado",
@@ -762,16 +829,15 @@ def order_steps(
     order: Order, *, invoice_emailed_at: str | None = None,
 ) -> list[dict[str, Any]]:
     """Estado de cada paso de la línea de vida: `done` (hecho, con su detalle),
-    `now` (el primero pendiente OBLIGATORIO), `pending` o `skipped`.
+    `now` (el primero pendiente), `pending` o `skipped`.
 
-    Pasos obligatorios: Creado → Pagado → Aprobado → Albarán → Factura → Cobro.
-    El albarán es opcional en un pedido WEB (lo crea WooCommerce, no BoHub): si
-    no hay número se marca `skipped` («no aplica») y nunca es el paso actual.
-
-    Tras ellos va el hito OPCIONAL «Factura enviada» (al cliente por email,
-    `invoice_emailed_at`): informativo, `optional=True`, nunca es `now` ni
-    cuenta para el «Paso N de N» ni bloquea el completado. El SAT/«Enviado» ya
-    no es un paso: vive en la sección «Envío y seguimiento»."""
+    Pasos: Creado → Pagado → Aprobado → Albarán → Factura → Factura enviada →
+    Cobro. El albarán es opcional en un pedido WEB (lo crea WooCommerce, no
+    BoHub): si no hay número se marca `skipped` («no aplica») y nunca es el
+    paso actual. «Factura enviada» (`invoice_emailed_at`: por email desde
+    BoHub, marcada a mano o apuntada en la hoja) es obligatorio: sin enviar la
+    factura el pedido no está listo. El SAT/«Enviado» no es un paso: vive en la
+    sección «Envío y seguimiento»."""
     done: dict[str, tuple[bool, str]] = {
         "creado": (True, _fecha(order.placed_at or order.created_at)),
         "pagado": (is_paid(order), "" if not is_paid(order) else _importe(order)),
@@ -781,6 +847,7 @@ def order_steps(
             order.factusol_albaran_number or "",
         ),
         "factura": (is_invoiced(order), _factura_detail(order)),
+        "factura_enviada": (bool(invoice_emailed_at), _fecha_iso(invoice_emailed_at)),
         "cobro": (is_cobrada(order), "cobrada" if is_cobrada(order) else ""),
     }
     steps: list[dict[str, Any]] = []
@@ -806,22 +873,6 @@ def order_steps(
             "key": key, "label": STEP_LABELS[key], "state": state,
             "detail": detail or None, "optional": False,
         })
-    # Hito opcional «Factura enviada»: hecho (con la fecha) si ya se mandó por
-    # email; si no, pendiente (la ficha enseña el botón «Enviar factura al
-    # cliente» cuando ya hay factura). Nunca es `now` ni cuenta como obligatorio.
-    steps.append({
-        "key": "factura_enviada", "label": STEP_LABELS["factura_enviada"],
-        # En una muestra no hay factura que enviar: el hito tampoco aplica.
-        "state": (
-            "skipped" if is_sample_order(order)
-            else "done" if invoice_emailed_at else "pending"
-        ),
-        "detail": (
-            "no facturable" if is_sample_order(order)
-            else _fecha_iso(invoice_emailed_at) if invoice_emailed_at else None
-        ),
-        "optional": True,
-    })
     return steps
 
 

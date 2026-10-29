@@ -492,9 +492,62 @@ INVOICE_EMAILED_EVENT = "erp.invoice_emailed"
 def _invoice_emailed(session: Session, o: Order) -> dict[str, Any]:
     """Último envío de la factura del pedido por email al cliente: fecha ISO
     (`invoice_emailed_at`, None si nunca) y destinatarios de ESE envío
-    (`invoice_emailed_to`, [] si ninguno). Una sola consulta (el AuditLog más
-    reciente `erp.invoice_emailed` del pedido). Solo en el detalle de la ficha,
-    no en la bandeja."""
+    (`invoice_emailed_to`, [] si ninguno); y `invoice_sent`, cuándo llegó la
+    factura al cliente por cualquier vía (`via`: email, a mano u hoja), con
+    quién lo marcó si fue a mano. Solo en el detalle de la ficha."""
+    return {**_invoice_emailed_by_email(session, o), "invoice_sent": _invoice_sent(session, o)}
+
+
+def _invoice_sent(session: Session, o: Order) -> dict[str, Any] | None:
+    """Cuándo y cómo llegó la factura al cliente (el paso «Factura enviada»)."""
+    from app.erp.models import SeguimientoOverride  # noqa: PLC0415
+    from app.erp.workflow import INVOICE_EMAILED_EVENT as EMAILED  # noqa: PLC0415
+    from app.erp.workflow import (  # noqa: PLC0415
+        INVOICE_MARKED_SENT_EVENT,
+        INVOICE_UNMARKED_SENT_EVENT,
+    )
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    logs = list(session.scalars(
+        select(AuditLog).where(
+            AuditLog.action.in_([EMAILED, INVOICE_MARKED_SENT_EVENT,
+                                 INVOICE_UNMARKED_SENT_EVENT]),
+            AuditLog.target_type == "order",
+            AuditLog.target_id == o.id,
+        ).order_by(AuditLog.created_at, AuditLog.id)
+    ))
+    email: dict[str, Any] | None = None
+    manual: dict[str, Any] | None = None
+    for log in logs:
+        try:
+            meta = json.loads(log.metadata_json) if log.metadata_json else {}
+        except (TypeError, ValueError):
+            meta = {}
+        meta = meta if isinstance(meta, dict) else {}
+        if log.action == EMAILED:
+            email = {"at": log.created_at.isoformat(), "via": "email",
+                     "by": log.actor_email, "to": meta.get("to") or []}
+        elif log.action == INVOICE_MARKED_SENT_EVENT:
+            manual = {"at": str(meta.get("fecha") or log.created_at.isoformat()),
+                      "via": "manual", "by": log.actor_email,
+                      "marked_at": log.created_at.isoformat(),
+                      "medio": meta.get("medio"), "nota": meta.get("nota")}
+        else:
+            manual = None
+    if manual is None:
+        valor = session.scalar(select(SeguimientoOverride.value).where(
+            SeguimientoOverride.order_id == o.id,
+            SeguimientoOverride.column_key == "factura_enviada",
+        ))
+        if (valor or "").strip():
+            manual = {"at": valor.strip(), "via": "hoja", "by": None}
+    candidatos = [x for x in (email, manual) if x]
+    if not candidatos:
+        return None
+    return max(candidatos, key=lambda x: str(x["at"])[:10])
+
+
+def _invoice_emailed_by_email(session: Session, o: Order) -> dict[str, Any]:
     from app.models.crm import AuditLog  # noqa: PLC0415
 
     log = session.scalars(
@@ -1035,7 +1088,7 @@ def list_orders(
     # PRIMARIA de la bandeja. Los filtros de estado siguen como refinamiento.
     queue: str | None = Query(
         default=None,
-        pattern="^(por_revisar|por_facturar|por_cobrar|por_enviar|incidencias|listo)$",
+        pattern="^(por_revisar|por_facturar|factura_por_enviar|por_cobrar|incidencias|listo)$",
     ),
     # Fase 3 (ficha de empresa): pedidos de UNA empresa, con su `workflow`,
     # para la «actividad reciente».
@@ -1090,23 +1143,13 @@ def list_orders(
         )
     elif cobro:
         stmt = stmt.where(Order.factusol_cobro_status == cobro)
-    if invoice_email:
-        from app.models.crm import AuditLog  # noqa: PLC0415
-
-        emailed_ids = select(AuditLog.target_id).where(
-            AuditLog.action == INVOICE_EMAILED_EVENT,
-            AuditLog.target_type == "order",
-        )
-        if invoice_email == "enviada":
-            stmt = stmt.where(Order.id.in_(emailed_ids))
-        else:  # no_enviada: hay factura emitida pero NO se ha enviado
-            stmt = stmt.where(
-                or_(
-                    Order.factusol_invoice_number.isnot(None),
-                    Order.invoice_status.in_(list(_INVOICED_FILTER)),
-                ),
-                Order.id.notin_(emailed_ids),
-            )
+    if invoice_email == "no_enviada":
+        # Sin factura no aplica. Si está enviada se decide abajo, con el mismo
+        # dato que la línea de vida (email, marca a mano u hoja).
+        stmt = stmt.where(or_(
+            Order.factusol_invoice_number.isnot(None),
+            Order.invoice_status.in_(list(_INVOICED_FILTER)),
+        ))
     if preparation:
         stmt = stmt.where(Order.preparation_status == preparation)
     if transport:
@@ -1154,13 +1197,20 @@ def list_orders(
     # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
     # la ficha.
     from app.erp.workflow import (  # noqa: PLC0415
+        WorkflowContext,
         is_paid,
-        latest_invoice_emailed_map,
+        order_workflow,
         queue_counts,
-        workflows_for,
     )
 
-    flows = workflows_for(session, rows)
+    ctx = WorkflowContext.for_orders(session, rows)
+    flows = {o.id: order_workflow(session, o, ctx=ctx) for o in rows}
+    # «Factura enviada» (email, marca a mano u hoja), el mismo dato del paso.
+    sent = ctx.invoice_emailed
+    if invoice_email == "enviada":
+        rows = [o for o in rows if sent.get(o.id)]
+    elif invoice_email == "no_enviada":
+        rows = [o for o in rows if not sent.get(o.id)]
     counts = queue_counts(flows)
     if queue:
         rows = [o for o in rows if flows[o.id]["queue"] == queue]
@@ -1172,13 +1222,10 @@ def list_orders(
         rows.sort(key=lambda o: not (is_paid(o) or payment_not_required(o)))
     rows = rows[:limit]
     names = customer_names(session, rows)
-    # «Factura enviada» de la bandeja: fecha del último envío por email (dato ya
-    # registrado), en una query para todas las filas mostradas.
-    emailed = latest_invoice_emailed_map(session, [o.id for o in rows])
     items = [
         {
             **_serialise_summary(
-                o, names.get(o.id), invoice_emailed_at=emailed.get(o.id),
+                o, names.get(o.id), invoice_emailed_at=sent.get(o.id),
             ),
             "workflow": flows[o.id],
         }
@@ -1979,6 +2026,305 @@ def _is_office(user: User) -> bool:
     return has_capability(user, Cap.ORDERS_CREATE)
 
 
+# --- El cobro, propuesto desde el banco (30/10/2026) -----------------------------
+
+
+def _factura_para_banco(session: Session, order: Order) -> dict[str, Any] | None:
+    """La factura del pedido como la necesita el casador del banco: clave,
+    número, total y saldo (lo último que se leyó de FACTUSOL, o el total del
+    pedido) y el cliente. None si el pedido no tiene una factura utilizable."""
+    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    linked = get_linked_invoice(order)
+    if linked is None:
+        return None
+    try:
+        bloque = (json.loads(order.packing_json) if order.packing_json else {}).get(
+            "factusol_cobro") or {}
+    except (TypeError, ValueError, AttributeError):
+        bloque = {}
+    total = bloque.get("total")
+    total = float(total) if total is not None else float(order.total_amount or 0)
+    saldo = bloque.get("saldo_pendiente")
+    saldo = float(saldo) if saldo is not None else total
+    nombres = customer_names(session, [order]).get(order.id) or {}
+    company = session.get(Company, order.company_id) if order.company_id else None
+    return {
+        "serie": linked.serie, "codigo": linked.codigo, "numero": linked.numero,
+        "total": total, "saldo_pendiente": saldo,
+        "cliente_nombre": nombres.get("company_name") or nombres.get("contact_name"),
+        "cliente_codigo": (company.factusol_company_id or None) if company else None,
+    }
+
+
+@router.get("/{order_id}/cobro-banco")
+def cobro_banco(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """El movimiento del banco que pagó la factura del pedido (el paso de
+    cobro de la ficha). Reutiliza el casador de la conciliación, empezando por
+    el número de factura en el concepto: devuelve lo ya conciliado con esta
+    factura y los candidatos con su confianza y el porqué. Ya cobrada: no
+    propone nada. Sin movimiento: lista vacía (la ficha no dice nada). Solo
+    lee; los datos del banco, solo para quien registra cobros o concilia."""
+    from app.erp.bank import service as bank_service  # noqa: PLC0415
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+    from app.erp.workflow import is_cobrada  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    if not (has_capability(current_user, Cap.COBRO_REGISTER)
+            or has_capability(current_user, Cap.CONCILIACION)):
+        return {"aplica": False, "motivo": "sin_permiso"}
+    if is_sample_order(order):
+        return {"aplica": False, "motivo": "muestra"}
+    factura = _factura_para_banco(session, order)
+    if factura is None:
+        return {"aplica": False, "motivo": "sin_factura"}
+    desde = order.placed_at or order.created_at
+    res = bank_service.movimientos_de_factura(
+        session, factura, desde=desde.date() if desde else None,
+    )
+    cobrada = is_cobrada(order)
+    if cobrada:
+        res["candidatos"] = []
+    estado = (
+        "cobrada" if cobrada else "conciliado" if res["conciliados"]
+        else "candidatos" if res["candidatos"] else "nada"
+    )
+    return {"aplica": True, "estado": estado, "cobrada": cobrada, **res}
+
+
+class CobroBancoIn(BaseModel):
+    """Confirmar el cobro con un movimiento del banco."""
+
+    movement_id: str = Field(min_length=1, max_length=36)
+    confirm: bool = False
+
+
+@router.post("/{order_id}/cobro-banco", status_code=202)
+def confirmar_cobro_banco(
+    order_id: str,
+    payload: CobroBancoIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_cobro_register),
+) -> dict[str, Any]:
+    """«Marcar cobrado con esta fecha»: el movimiento del banco queda
+    conciliado con la factura del pedido (igual que desde Conciliación: el
+    mismo hecho, una vez, y por tanto se escribe en la hoja de Drive) y se
+    registra el cobro en FACTUSOL con la FECHA VALOR del banco y la
+    contrapartida de su cuenta, por el mismo camino que «Registrar cobro»
+    (comprobación en vivo, cola `factusol:writes`, Auditoría). Un movimiento
+    menor que lo pendiente es un cobro PARCIAL: se registra ese importe, no el
+    total. Exige `confirm`."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.api.bank import _encolar_hoja  # noqa: PLC0415
+    from app.erp.api.factusol import (  # noqa: PLC0415
+        InvoiceCollectionPayload,
+        register_invoice_collection_endpoint,
+    )
+    from app.erp.bank import service as bank_service  # noqa: PLC0415
+    from app.erp.models import BankAccount, BankMovement  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient, FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.collections_write import collection_status  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Registrar un cobro requiere confirmación explícita.",
+        })
+    factura = None if is_sample_order(order) else _factura_para_banco(session, order)
+    if factura is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "sin_factura", "detail": "El pedido no tiene una factura que cobrar.",
+        })
+    mov = session.get(BankMovement, payload.movement_id)
+    if mov is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "movimiento_no_existe", "detail": "Ese movimiento no existe.",
+        })
+    acc = session.get(BankAccount, mov.account_id)
+    if acc is None or not acc.contrapartida_codigo:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "sin_contrapartida",
+            "detail": (f"La cuenta {acc.name if acc else ''} no tiene contrapartida de cobro: "
+                       "enlázala en Conciliación → Cuentas."),
+        })
+    serie, codigo, numero = factura["serie"], factura["codigo"], factura["numero"]
+    try:
+        info = collection_status(
+            FactusolClient.from_settings(), serie=serie, codigo=codigo,
+            ejercicio=ejercicio_for(session),
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unreachable",
+            "detail": f"No se ha podido leer la factura en FACTUSOL: {str(exc)[:160]}",
+        }) from exc
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable",
+            "detail": "No se ha podido consultar FACTUSOL: prueba en un momento.",
+        }) from exc
+    if info is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_not_found", "detail": f"No existe la factura {numero} en FACTUSOL.",
+        })
+    if info["ya_cobrada"]:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "ya_cobrada", "detail": f"La factura {numero} ya consta cobrada en FACTUSOL.",
+        })
+    saldo = float(info["saldo_pendiente"])
+    try:
+        bank_service.conciliar_desde_pedido(
+            session, movement_id=mov.id, factura=factura, saldo=saldo, user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "movimiento_no_valido", "detail": str(exc)[:1].upper() + str(exc)[1:] + ".",
+        }) from exc
+    importe = round(float(mov.importe), 2)
+    parcial = importe < saldo - 0.005
+    fecha = (mov.fecha_valor or mov.fecha_oper).isoformat()
+    try:
+        res = register_invoice_collection_endpoint(
+            serie, codigo,
+            InvoiceCollectionPayload(
+                confirm=True, cuenta=acc.contrapartida_codigo, fecha=fecha,
+                forma="Transferencia", importe=importe if parcial else None,
+                observaciones=f"Cobro visto en el banco: {acc.name} {fecha}"[:255],
+            ),
+            session=session, current_user=current_user,
+        )
+    except HTTPException as exc:
+        detalle = exc.detail.get("detail") if isinstance(exc.detail, dict) else exc.detail
+        raise HTTPException(exc.status_code, {
+            "code": "cobro_no_encolado",
+            "detail": (f"El movimiento queda conciliado con la {numero}, pero el cobro no se ha "
+                       f"podido mandar a FACTUSOL ({detalle}). Vuelve a pulsar «Registrar el "
+                       "cobro con esta fecha»."),
+        }) from exc
+    _encolar_hoja(session, {acc.id})
+    record_event(
+        session, action="erp.order_cobro_banco", target_type="order", target_id=order.id,
+        actor=current_user,
+        message=f"Cobro de {importe:.2f} € de la {numero} con el movimiento del banco del {fecha}",
+        metadata={
+            "order_number": order.order_number, "factura": numero, "movement_id": mov.id,
+            "fecha_valor": fecha, "importe": importe, "parcial": parcial,
+            "cuenta": acc.name, "contrapartida": acc.contrapartida_codigo,
+            "job_id": res.get("job_id"),
+            "reason": (f"{'Cobro parcial' if parcial else 'Cobro'} de {importe:.2f} € visto en "
+                       f"{acc.name} el {(mov.fecha_valor or mov.fecha_oper).strftime('%d/%m/%Y')}"),
+        },
+    )
+    session.commit()
+    return {
+        **res, "parcial": parcial,
+        "movimiento": bank_service.movimiento_pedido_dict(mov, acc),
+    }
+
+
+class FacturaEnviadaIn(BaseModel):
+    """«Ya enviada»: la factura se mandó al cliente por fuera de BoHub."""
+
+    confirm: bool = False
+    #: Cuándo se envió (por defecto, hoy).
+    fecha: date | None = None
+    medio: str = Field(default="otro", pattern="^(papel|gmail|albaran|otro)$")
+    nota: str | None = Field(default=None, max_length=255)
+
+
+#: Cómo se mandó la factura cuando se marca a mano.
+MEDIO_FACTURA_LABEL: dict[str, str] = {
+    "papel": "en papel", "gmail": "desde Gmail", "albaran": "con el albarán",
+    "otro": "por otro medio",
+}
+
+
+@router.post("/{order_id}/factura-enviada")
+def marcar_factura_enviada(
+    order_id: str,
+    payload: FacturaEnviadaIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_order_manage),
+) -> dict[str, Any]:
+    """Marca a mano que la factura ya llegó al cliente (se mandó en papel,
+    desde Gmail, con el albarán…): el paso «Factura enviada» queda hecho con
+    esa fecha. Queda en Auditoría (quién y cuándo) y en el historial del
+    pedido. Solo BoHub: no escribe en FACTUSOL ni manda nada."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.linked_invoice import invoice_label  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+    from app.erp.workflow import INVOICE_MARKED_SENT_EVENT, is_invoiced  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required", "detail": "Confirma antes de marcarla como enviada.",
+        })
+    if is_sample_order(order) or not is_invoiced(order):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "sin_factura", "detail": "El pedido no tiene factura que enviar.",
+        })
+    fecha = payload.fecha or datetime.now(UTC).date()
+    if fecha > datetime.now(UTC).date() + timedelta(days=1):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "fecha_futura", "detail": "La fecha de envío no puede ser futura.",
+        })
+    factura = invoice_label(order) or order.factusol_invoice_number
+    record_event(
+        session, action=INVOICE_MARKED_SENT_EVENT, target_type="order", target_id=order.id,
+        actor=current_user,
+        message=f"Factura {factura} marcada como enviada {MEDIO_FACTURA_LABEL[payload.medio]}",
+        metadata={
+            "order_number": order.order_number, "factura": factura,
+            "fecha": fecha.isoformat(), "medio": payload.medio,
+            "nota": (payload.nota or "").strip() or None,
+            "reason": (f"Enviada {MEDIO_FACTURA_LABEL[payload.medio]} el "
+                       f"{fecha.strftime('%d/%m/%Y')}"),
+        },
+    )
+    session.commit()
+    return _serialise_detail(session, order, current_user)
+
+
+@router.post("/{order_id}/factura-enviada/deshacer")
+def desmarcar_factura_enviada(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_order_manage),
+) -> dict[str, Any]:
+    """Deshace la marca «ya enviada» (un error al marcarla). No deshace un
+    envío por email: ese ya llegó."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.workflow import INVOICE_UNMARKED_SENT_EVENT  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
+    enviada = _invoice_sent(session, order)
+    if not enviada or enviada.get("via") != "manual":
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_marcada",
+            "detail": "La factura no está marcada a mano como enviada.",
+        })
+    record_event(
+        session, action=INVOICE_UNMARKED_SENT_EVENT, target_type="order", target_id=order.id,
+        actor=current_user, message="Desmarcada «factura enviada»",
+        metadata={"order_number": order.order_number, "antes": enviada.get("at"),
+                  "reason": "Se quita la marca «ya enviada»"},
+    )
+    session.commit()
+    return _serialise_detail(session, order, current_user)
+
+
 @router.post("/{order_id}/complete")
 def complete_order(
     order_id: str,
@@ -2774,6 +3120,10 @@ class EmitFactusolInvoicePayload(BaseModel):
     fecfac: str | None = Field(default=None, max_length=10)
     fopfac: str | None = Field(default=None, max_length=10)
     comfac: str | None = Field(default=None, max_length=500)
+    #: Mención legal (Configuración ERP) o texto libre → primera observación
+    #: de la factura (`OB1FAC`). Uno de los dos, o ninguno.
+    mencion_id: str | None = Field(default=None, max_length=60)
+    mencion_texto: str | None = Field(default=None, max_length=255)
 
 
 @router.post("/{order_id}/emit-factusol-invoice", status_code=202)
@@ -2803,9 +3153,26 @@ def emit_factusol_invoice(
             "detail": "El pedido está marcado como facturado fuera del ERP",
         })
 
+    from app.erp.factura_cliente import (  # noqa: PLC0415
+        FacturaClienteError,
+        cliente_revinculado,
+        mencion_aplicable,
+    )
     from app.integrations.factusol.jobs import enqueue_emit_invoice  # noqa: PLC0415
 
     options = (payload or EmitFactusolInvoicePayload()).model_dump()
+    mencion_id, mencion_texto = options.pop("mencion_id"), options.pop("mencion_texto")
+    if mencion_id or (mencion_texto or "").strip():
+        try:
+            options["ob1fac"], _ = mencion_aplicable(
+                session, mencion_id=mencion_id, texto_libre=mencion_texto,
+            )
+        except FacturaClienteError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+                "code": exc.code, "detail": str(exc),
+            }) from exc
+    # Revinculado desde la ficha: la factura sale al cliente nuevo.
+    options["codcli"] = cliente_revinculado(session, order)
     try:
         job_id = enqueue_emit_invoice(order.id, current_user.id, options=options)
     except Exception as exc:  # noqa: BLE001 — Redis caído, etc.

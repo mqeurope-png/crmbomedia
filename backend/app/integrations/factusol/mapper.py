@@ -179,6 +179,14 @@ class FacturaOptions:
     #: CODPCL del pedido de cliente origen → `PEDFAC` (trazabilidad). Lo
     #: rellena el service, no el modal.
     pedfac: Any = None
+    #: Mención legal elegida en el modal (Ceuta y Melilla, Canarias…) →
+    #: `OB1FAC`, la primera observación de la factura. Ver
+    #: `app/erp/factura_cliente.py`.
+    ob1fac: str | None = None
+    #: Cliente de FACTUSOL al que se REVINCULÓ el pedido desde su ficha: la
+    #: factura sale a él aunque el documento de origen (F_PCL / albarán) lleve
+    #: otro. Lo rellena la API (`factura_cliente.cliente_revinculado`).
+    codcli: str | None = None
 
     @classmethod
     def from_payload(cls, data: dict[str, Any] | None) -> FacturaOptions:
@@ -273,6 +281,8 @@ def pcl_row_to_fac_payload(
         payload["FOPFAC"] = opts.fopfac
     if opts.comfac is not None:
         payload["COMFAC"] = opts.comfac
+    if opts.ob1fac:
+        payload["OB1FAC"] = opts.ob1fac
     return filter_to_real_columns(payload, FAC_COLUMNS, tabla="F_FAC")
 
 

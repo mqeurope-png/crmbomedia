@@ -42,6 +42,18 @@ def _aware(value: datetime | None) -> datetime:
     return value
 
 
+#: Título legible de los eventos de auditoría que se ven en el historial del
+#: pedido (los demás salen con su nombre interno, como hasta ahora).
+AUDIT_TITLES: dict[str, str] = {
+    "erp.invoice_marked_sent": "Factura marcada como enviada al cliente",
+    "erp.invoice_marked_unsent": "Desmarcada «factura enviada»",
+    "erp.order_cobro_banco": "Cobro registrado con el movimiento del banco",
+    "erp.invoice_mention_added": "Mención añadida a la factura",
+    "erp.order_client_relinked": "Cliente del pedido cambiado",
+    "erp.order_customer_created": "Cliente creado en FACTUSOL",
+}
+
+
 def _event(
     *, type_: str, at: datetime, title: str,
     detail: dict[str, Any] | None = None, actor_user_id: str | None = None,
@@ -130,7 +142,7 @@ def order_timeline(
             )
         ):
             events.append(_event(
-                type_="audit", at=a.created_at, title=a.action,
+                type_="audit", at=a.created_at, title=AUDIT_TITLES.get(a.action, a.action),
                 detail=json.loads(a.metadata_json) if a.metadata_json else {},
                 actor_user_id=a.actor_user_id,
             ))
