@@ -904,10 +904,26 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 **Pestañas:** **«Presupuestos»**, **«Pedidos cliente»**, **«Albaranes»** y
 **«Facturas»** (por defecto se abre en Facturas).
 
-- Filtro **«Solo sin vincular»** — muestra los documentos que aún no tienen un
-  pedido de BoHub.
-- Otros filtros: buscador, cliente/CIF/email, serie, fechas, **«Ciclo»** (p. ej.
-  *Sin facturar* / *Facturado*) y **«Cobro»**.
+- **«Ejercicio»** — la pantalla arranca en el **ejercicio en curso** (el de
+  FACTUSOL, el que está en Configuración ERP). Puedes elegir uno anterior para
+  consultarlo. Mientras estás en otro ejercicio, el selector se pone en ámbar,
+  sale un aviso arriba con **«Volver a …»**, y la lista es **solo consulta**:
+  no se ofrece cobrar, crear pedido ni vincular, y no se abre el detalle ni el
+  PDF.
+- **Albaranes y facturas: por defecto, solo los que tienen pedido de BoHub.**
+  Los que solo están en FACTUSOL (sin pedido detrás) se ven marcando **«Incluir
+  facturas externas (solo FACTUSOL, sin pedido)»**. La casilla dice cuántos son
+  («· 12 fuera» apagada, «· 12» encendida). Las filas externas llevan **«Externa ·
+  sin pedido»**. La casilla está **apagada cada vez que entras** en la pantalla.
+  Mientras estás en ella sigue encendida aunque la lista se recargue. No se
+  guarda en ningún sitio. Con ella apagada, una factura externa ni sale ni se
+  puede cobrar desde aquí.
+- Filtro **«Solo sin vincular»** — en presupuestos y pedidos de cliente, y en
+  albaranes y facturas con las externas incluidas: deja solo los que aún no
+  tienen un pedido de BoHub.
+- Otros filtros: buscador, cliente/CIF/email, serie, fechas (dentro del
+  ejercicio; vacías de entrada), **«Ciclo»** (p. ej. *Sin facturar* /
+  *Facturado*) y **«Cobro»**.
 - **«Registrar cobro»** (en Facturas) — apunta el cobro de esa factura en
   FACTUSOL.
 - **«Crear pedido»** — crea un pedido de BoHub a partir del documento. Desde un
@@ -1907,6 +1923,27 @@ qué dirección compartirla: como **Lector** si BoHub solo la lee, como
   pedido vacías) y entran en BoHub en el acto. Ninguna fila que ya estuviera
   se toca. Da igual que la hoja tenga el concepto cortado: se reconoce el
   movimiento por fecha, importe y saldo.
+
+**Ejercicio y facturas externas.** La lista arranca en el **ejercicio en
+curso**: salen los movimientos de ese año y los contadores cuentan esos. Un
+ejercicio anterior se elige en **«Ejercicio»**, y la pantalla avisa mientras
+estás en él. El extracto sale **entero** siempre: todos los movimientos del
+ejercicio salen y cuentan en «por conciliar». Lo que se acota es **lo que se
+ofrece**:
+
+- **Sin «Incluir facturas externas»** (así está al entrar), las propuestas y la
+  búsqueda de «Elegir otra» solo dan facturas **con pedido de BoHub**.
+- Un movimiento que solo encaja con facturas externas sale **«Sin
+  propuesta»**, con una línea que dice que hay una factura externa que encaja
+  y no se está ofreciendo.
+- El botón **«N por conciliar solo casan con facturas externas»** deja la
+  lista solo con esos.
+- **«Confirmar todas las de confianza alta»** confirma solo lo que se ve.
+- Con la casilla encendida entran también las externas, marcadas **«Externa ·
+  sin pedido»**. La casilla no se apaga al recargar la lista, pero vuelve
+  apagada cada vez que entras en la pantalla.
+- Lo **ya conciliado no se esconde nunca**, sea contra un pedido o contra una
+  factura externa.
 
 **Revisar.** Igual que siempre: propuestas con su confianza, «Confirmar»,
 «Elegir otra / repartir», «No es un cobro de cliente» y «Confirmar todas las

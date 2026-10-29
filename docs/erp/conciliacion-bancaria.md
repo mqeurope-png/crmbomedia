@@ -301,6 +301,22 @@ registros, los errores y el estado guardado de cada pasada
 identificadores de movimiento. Los errores de Google se traducen sin su
 texto. Los tests y las capturas usan figurantes.
 
+## El marco: ejercicio y facturas externas (29/10/2026)
+
+- **Ejercicio.** Es el de FACTUSOL (cada ejercicio es una base de datos; BoHub
+  lee el de Configuración ERP, `app.erp.ejercicio`). `list_movements(ejercicio=)`
+  deja los movimientos de ese año (fecha de operación) y los contadores también.
+  «Ver el movimiento» desde la ficha no se acota.
+- **Solo pedidos de BoHub.** Sin `externas`, las propuestas contra una factura
+  sin pedido no se ofrecen (`_ocultar_externas`): se quitan de `proposals` y se
+  cuentan en `externas_ocultas`, y la confianza sale de lo que queda.
+  `counters.solo_externas` cuenta los pendientes que solo casan con externas, y
+  `solo_externas=true` filtra a esos. `confirm-high` confirma solo lo que se ve
+  (con su `ejercicio` y `externas`). Ningún movimiento se esconde por la casilla
+  y lo conciliado (`reconciled`) no se toca.
+- Las propuestas se siguen calculando igual (contra todas las facturas
+  pendientes): lo que cambia es qué se enseña y qué se ofrece.
+
 ## Duplicados
 
 La clave sale de cuenta, fecha, importe, concepto y saldo.

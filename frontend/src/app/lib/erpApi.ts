@@ -2862,6 +2862,8 @@ export type FactusolDocumentFilters = {
   /** Lote 2 · PR-2 — `false` = «solo sin vincular» (sin pedido de BoHub);
    *  `true` = solo los vinculados. Se aplica antes de paginar. */
   linked?: boolean;
+  /** El ejercicio de FACTUSOL que se lee (por defecto, el en curso). */
+  ejercicio?: string;
   limit?: number;
   offset?: number;
 };
@@ -2878,7 +2880,18 @@ export type FactusolDocumentList = {
   fetched_at?: string | null;
   /** Antigüedad (s) del índice del ciclo cacheado; `null` si no cargó. */
   cycle_index_age_seconds?: number | null;
+  /** El ejercicio leído y el en curso. */
+  ejercicio?: string;
+  ejercicio_en_curso?: string;
 };
+
+/** El ejercicio en curso (el de FACTUSOL, Configuración ERP) y los que ofrece
+ *  el selector, del en curso hacia atrás. */
+export type Ejercicios = { en_curso: string; ejercicios: string[] };
+
+export async function getEjercicios(): Promise<Ejercicios> {
+  return apiFetch("/api/erp/factusol/ejercicios");
+}
 
 export async function listFactusolDocuments(
   docType: FactusolDocType, filters: FactusolDocumentFilters = {},
@@ -5144,6 +5157,8 @@ export type BankMovement = {
   hoja_pedido?: string | null;
   confidence: BankConfidence | null;
   proposals: BankProposal[];
+  /** Propuestas contra facturas externas que no se ofrecen (casilla apagada). */
+  externas_ocultas?: number;
   reconciled: BankProposal[];
 };
 
@@ -5155,6 +5170,9 @@ export type BankCounters = {
   reconciled: number;
   discarded: number;
   pending_amount: number;
+  /** Por conciliar que solo casan con facturas externas (sin pedido): 0 con
+   *  la casilla de externas encendida. */
+  solo_externas?: number;
 };
 
 export type BankMovementsPage = {
@@ -5342,16 +5360,30 @@ export type BankMovementFilters = {
   hasta?: string;
   confidence?: BankConfidence | "none";
   status?: BankMovement["status"];
+  /** El ejercicio: los movimientos de ese año. */
+  ejercicio?: string;
+  /** «Incluir facturas externas»: sin ella, solo se proponen facturas con pedido. */
+  externas?: boolean;
+  /** Solo los que casan únicamente con facturas externas (el contador pulsado). */
+  solo_externas?: boolean;
   limit?: number;
   offset?: number;
 };
 
 export async function listBankMovements(filters: BankMovementFilters = {}): Promise<BankMovementsPage> {
-  return apiFetch(`/api/erp/bank/movements${qs(filters)}`);
+  const { externas, solo_externas, ...rest } = filters;
+  return apiFetch(`/api/erp/bank/movements${qs({
+    ...rest,
+    externas: externas === undefined ? undefined : String(externas),
+    solo_externas: solo_externas ? "true" : undefined,
+  })}`);
 }
 
-export async function confirmBankMovement(id: string): Promise<BankMovement> {
-  return apiFetch(`/api/erp/bank/movements/${id}/confirm`, { method: "POST" });
+/** Confirma la propuesta. Sin `externas` (la casilla apagada), el backend no
+ *  confirma nada contra una factura externa que no se está enseñando. */
+export async function confirmBankMovement(id: string, externas = true): Promise<BankMovement> {
+  return apiFetch(`/api/erp/bank/movements/${id}/confirm?externas=${String(externas)}`,
+    { method: "POST" });
 }
 
 export type BankReassignTarget = {
@@ -5388,8 +5420,16 @@ export async function reopenBankMovement(id: string): Promise<BankMovement> {
 }
 
 /** Acción en bloque (un clic): confirma las propuestas de confianza alta. */
-export async function confirmAllHighBank(accountId?: string): Promise<{ confirmed: number }> {
-  const q = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+/** Confirma las de confianza alta de lo que se ve: el ejercicio elegido y,
+ *  sin `externas`, solo las propuestas contra facturas con pedido. */
+export async function confirmAllHighBank(
+  accountId?: string, opts: { externas?: boolean; ejercicio?: string } = {},
+): Promise<{ confirmed: number }> {
+  const q = qs({
+    account_id: accountId,
+    externas: opts.externas === undefined ? undefined : String(opts.externas),
+    ejercicio: opts.ejercicio,
+  });
   return apiFetch(`/api/erp/bank/movements/confirm-high${q}`, { method: "POST" });
 }
 

@@ -24,6 +24,7 @@ jest.mock("../../lib/errors", () => ({
     err instanceof Error && err.message ? err.message : fallback,
 }));
 jest.mock("../../lib/erpApi", () => ({
+  getEjercicios: jest.fn(() => Promise.resolve({ en_curso: "2026", ejercicios: ["2026", "2025"] })),
   confirmAllHighBank: jest.fn(),
   confirmBankMovement: jest.fn(),
   createBankAccount: jest.fn(),
@@ -114,7 +115,10 @@ describe("Conciliación bancaria — del movimiento al pedido", () => {
   it("sin ?movimiento= carga con los filtros de siempre", async () => {
     render(<ConciliacionPage />);
     await screen.findByRole("link", { name: "BOPRIN-100015" });
-    expect(listBankMovements).toHaveBeenCalledWith({ status: "pending", limit: 200 });
+    // Los de siempre, en el ejercicio en curso y sin facturas externas.
+    expect(listBankMovements).toHaveBeenCalledWith({
+      status: "pending", limit: 200, ejercicio: "2026", externas: false, solo_externas: false,
+    });
     expect(screen.queryByText("Mostrando un solo movimiento")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Estado")).toBeInTheDocument();
   });
@@ -125,7 +129,7 @@ describe("Conciliación bancaria — del movimiento al pedido", () => {
     render(<ConciliacionPage />);
     expect(await screen.findByText("Mostrando un solo movimiento")).toBeInTheDocument();
     // Sin el «Pendiente» por defecto: el movimiento puede estar ya conciliado.
-    expect(listBankMovements).toHaveBeenCalledWith({ movimiento: "m1" });
+    expect(listBankMovements).toHaveBeenCalledWith({ movimiento: "m1", externas: false });
     expect(listBankMovements).not.toHaveBeenCalledWith(expect.objectContaining({ status: "pending" }));
     expect(screen.getByRole("link", { name: "Ver todos" })).toHaveAttribute("href", "/erp/conciliacion");
     expect(screen.queryByLabelText("Estado")).not.toBeInTheDocument();

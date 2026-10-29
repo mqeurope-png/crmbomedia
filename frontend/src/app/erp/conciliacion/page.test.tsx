@@ -23,6 +23,7 @@ jest.mock("../../lib/errors", () => ({
     err instanceof Error && err.message ? err.message : fallback,
 }));
 jest.mock("../../lib/erpApi", () => ({
+  getEjercicios: jest.fn(() => Promise.resolve({ en_curso: "2026", ejercicios: ["2026", "2025"] })),
   confirmAllHighBank: jest.fn(),
   confirmBankMovement: jest.fn(),
   createBankAccount: jest.fn(),
