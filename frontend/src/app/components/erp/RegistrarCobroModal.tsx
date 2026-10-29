@@ -1,16 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ApiError } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import { ModalCloseButton } from "../ModalCloseButton";
 import { useModalBehaviour } from "../useModalBehaviour";
 import {
+  cobrarFacturaConMovimiento,
+  confirmarCobroBanco,
   getContrapartidas,
   getFactusolFacturaCobro,
   getFactusolFormasPago,
   getOrderFactusolCobro,
   registerInvoiceCollection,
   waitForInvoiceCollectionJob,
+  type CobroBancoResultado,
+  type CobroHoja,
   type Contrapartida,
   type FormaPago,
   type OrderCobroInfo,
@@ -24,11 +29,53 @@ function eur(n: number | null | undefined): string {
   return n == null ? "—" : `${n.toFixed(2)} €`;
 }
 
-/** «Registrar cobro en FACTUSOL» — modal COMPARTIDO por la ficha del pedido, la
- *  fila de la bandeja y (Fase 5) el explorador de documentos. Reutiliza el motor
- *  F-4-B tal cual: el cobro se registra con `POST /factusol/documents/facturas/
- *  {serie}/{codigo}/collection` (solo `F_LCO` + `ESTFAC=2`, cola
- *  `factusol:writes`, idempotente).
+/** DD/MM/AAAA del tramo de fecha de un ISO. */
+function dmy(iso: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? "");
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "—";
+}
+
+/** Lo que pasó en la hoja de Drive, en una frase. El cobro ya está hecho: un
+ *  fallo aquí se avisa, no lo deshace. */
+function fraseHoja(h: CobroHoja, numero: string): { texto: string; ok: boolean } {
+  const donde = `la hoja de Drive de ${h.cuenta}${h.pestana ? ` (pestaña ${h.pestana})` : ""}`;
+  switch (h.estado) {
+    case "escrita":
+      return { ok: true, texto: `Escrita la ${numero} en la columna «factura» de ${donde}.` };
+    case "ocupada":
+      return { ok: true, texto: `La celda «factura» de esa fila en ${donde} ya tenía algo escrito: no se ha tocado.` };
+    case "no_encontrada":
+      return { ok: false, texto: `No se ha encontrado la fila de ese movimiento en ${donde}: no se ha escrito nada. Se reintenta en el repaso diario.` };
+    case "en_cola":
+      return { ok: true, texto: `${h.detalle ?? "Se escribe en un momento"} (${donde}).` };
+    case "pendiente":
+      return { ok: true, texto: `La fila de ese movimiento ha cambiado en ${donde} mientras se escribía: se escribe en la siguiente pasada.` };
+    case "corrida":
+      return { ok: false, texto: `La fila de ese movimiento está corrida en ${donde} (la factura no cae en su columna): no se ha escrito. Arréglala en la hoja.` };
+    case "sin_columna":
+      return { ok: false, texto: `${donde[0].toUpperCase()}${donde.slice(1)} no tiene columna «factura»: no se ha escrito.` };
+    default:
+      return { ok: false, texto: `El cobro está registrado, pero ${donde} no se ha podido escribir: ${h.detalle ?? "error"}. Queda anotado y se reintenta.` };
+  }
+}
+
+/** «Registrar cobro en FACTUSOL» — LA herramienta de cobro (29/10/2026): el mismo
+ *  diálogo, texto, comprobaciones y apunte en Auditoría desde la ficha del
+ *  pedido (y su paso «Cobro» con el movimiento del banco), la bandeja,
+ *  Conciliación y ERP · Documentos.
+ *
+ *  Con un movimiento del banco identificado (`movimientoId`, o el conciliado
+ *  con la factura que aún no está en FACTUSOL) el cobro va con SU fecha valor y
+ *  la contrapartida de su cuenta, concilia el movimiento y escribe la factura
+ *  en la hoja de Drive de esa cuenta: el diálogo lo dice antes y cuenta después
+ *  qué pasó en la hoja (un fallo allí no deshace el cobro). Ya cobrada: no se
+ *  ofrece registrar; se enseña contra qué se cobró. Una factura externa (sin
+ *  pedido de BoHub) lo dice en una línea.
+ *
+ *  Sin movimiento reutiliza el motor F-4-B tal cual: `POST /factusol/documents/
+ *  facturas/{serie}/{codigo}/collection` (solo `F_LCO` + `ESTFAC`, cola
+ *  `factusol:writes`, idempotente). Con movimiento, `cobro-banco` (el de la
+ *  ficha, también por factura), que concilia y llama a ese mismo motor.
  *
  *  Se abre de dos formas: con un pedido de BoHub (`orderId`/`orderNumber`, que
  *  resuelve su factura) o con una factura de FACTUSOL directa (`factura`,
@@ -40,6 +87,7 @@ export function RegistrarCobroModal({
   orderId,
   orderNumber,
   factura,
+  movimientoId,
   onClose,
   onDone,
 }: {
@@ -47,6 +95,8 @@ export function RegistrarCobroModal({
   orderNumber?: string;
   /** Fase 5 — cobro de una factura de FACTUSOL sin pedido de BoHub. */
   factura?: { serie: number; codigo: number | string; numero: string };
+  /** El movimiento del banco con el que se cobra (ficha, Conciliación). */
+  movimientoId?: string;
   onClose: () => void;
   /** Se llama con el estado re-comprobado tras registrar (o si ya estaba cobrada). */
   onDone?: (info: OrderCobroInfo) => void;
@@ -58,9 +108,9 @@ export function RegistrarCobroModal({
   const reload = useCallback(
     (): Promise<OrderCobroInfo> =>
       facSerie !== undefined && facCodigo !== undefined
-        ? getFactusolFacturaCobro(facSerie, facCodigo)
-        : getOrderFactusolCobro(orderId as string),
-    [facSerie, facCodigo, orderId],
+        ? getFactusolFacturaCobro(facSerie, facCodigo, movimientoId)
+        : getOrderFactusolCobro(orderId as string, movimientoId),
+    [facSerie, facCodigo, orderId, movimientoId],
   );
   const [info, setInfo] = useState<OrderCobroInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,6 +128,16 @@ export function RegistrarCobroModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  // Con el movimiento del banco (si lo hay) salvo que se pida registrarlo sin él.
+  const [sinMovimiento, setSinMovimiento] = useState(false);
+  // FACTUSOL ya tiene un cobro igual suelto: «es otro pago» se confirma aparte.
+  const [dobleCobro, setDobleCobro] = useState<string | null>(null);
+  const [otroPago, setOtroPago] = useState(false);
+  const [hoja, setHoja] = useState<{ texto: string; ok: boolean } | null>(null);
+  // El backend ha frenado el cobro con el movimiento por un posible doble
+  // cobro o un cobro en cola: ya no se ofrece registrarlo «sin el movimiento»
+  // (sería saltarse esa comprobación).
+  const [sinSalida, setSinSalida] = useState(false);
   const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   useEffect(() => {
@@ -94,6 +154,15 @@ export function RegistrarCobroModal({
         // Bloque B: si al dar de alta el pedido se apuntó la fecha del pago,
         // se prellena aquí (si no, se queda «hoy»).
         if (res.suggested_fecha) setFecha(res.suggested_fecha);
+        // Con el movimiento del banco: SU fecha valor, la cuenta de su banco y
+        // lo que paga de esta factura.
+        const m = res.movimiento;
+        if (m) {
+          setFecha(m.fecha_valor);
+          if (m.cuenta.contrapartida_codigo) setCuenta(m.cuenta.contrapartida_codigo);
+          setImporte(Math.min(m.importe_factura, res.saldo_pendiente ?? m.importe_factura).toFixed(2));
+          setForma("Transferencia");
+        }
       })
       .catch((e) => {
         if (alive) setLoadError(extractErrorMessage(e, "No se pudo consultar la factura en FACTUSOL."));
@@ -113,6 +182,10 @@ export function RegistrarCobroModal({
   const pendiente = info?.status === "pendiente";
   const cobrada = info?.status === "cobrada";
   const invoice = info?.invoice ?? null;
+  const mov = !sinMovimiento ? info?.movimiento ?? null : null;
+  // Su cobro ya está en FACTUSOL: solo se concilia el movimiento.
+  const soloConciliar = !!mov?.ya_en_factusol;
+  const sinContrapartida = !!mov && !mov.cuenta.contrapartida_codigo;
   const cuentaNombre = cuentas.find((c) => c.codigo === cuenta)?.nombre
     ?? (info?.suggested_cuenta?.codigo === cuenta ? info?.suggested_cuenta?.nombre : undefined)
     ?? cuenta;
@@ -123,10 +196,74 @@ export function RegistrarCobroModal({
   const importeExcede = importeOk && saldo != null && importeNum > saldo + 0.005;
   const parcial = importeOk && !importeExcede && saldo != null && importeNum < saldo - 0.005;
   const canSubmit = pendiente && !!invoice?.serie && !!cuenta && !!fecha && confirm && !busy
-    && !success && importeOk && !importeExcede;
+    && !success && importeOk && !importeExcede && !sinContrapartida
+    && (!dobleCobro || otroPago);
+
+  /** Con el movimiento del banco: lo mismo desde la ficha que por factura. */
+  async function submitConMovimiento() {
+    if (!info || !mov || !invoice || invoice.serie == null || invoice.codigo == null) return;
+    setBusy(true);
+    setError(null);
+    let res: CobroBancoResultado;
+    try {
+      res = orderId
+        ? await confirmarCobroBanco(orderId, mov.id, { forzar: otroPago })
+        : await cobrarFacturaConMovimiento(invoice.serie, invoice.codigo, mov.id, { forzar: otroPago });
+    } catch (e) {
+      if (e instanceof ApiError && (e.code === "posible_doble_cobro" || e.code === "en_cola")) {
+        setSinSalida(true);
+      }
+      if (e instanceof ApiError && e.code === "posible_doble_cobro") {
+        setDobleCobro(extractErrorMessage(e, "Puede ser un doble cobro."));
+      } else {
+        setError(extractErrorMessage(e, "No se pudo registrar el cobro con ese movimiento."));
+        if (e instanceof ApiError && e.code === "cobro_no_encolado") onDone?.(info);
+      }
+      setBusy(false);
+      return;
+    }
+    if (res.hoja) setHoja(fraseHoja(res.hoja, res.numero));
+    const conciliado = `El movimiento queda conciliado con la ${res.numero}`;
+    try {
+      if (res.status === "already") {
+        setSuccess(`El cobro ya constaba en FACTUSOL${res.fecha_factusol ? ` (${dmy(res.fecha_factusol)}`
+          + `${res.cuenta_factusol ? `, cuenta ${res.cuenta_factusol}` : ""})` : ""}: no se ha `
+          + `registrado otra vez. ${conciliado}.`);
+      } else if (!res.job_id) {
+        setError(`${conciliado}, pero FACTUSOL no devolvió el trabajo del cobro: vuelve a mirarlo en unos segundos.`);
+      } else {
+        const st = await waitForInvoiceCollectionJob(res.job_id);
+        if (st.status === "pending") {
+          setError(`El cobro sigue en cola en FACTUSOL. ${conciliado}. Vuelve a mirarlo en unos segundos.`);
+        } else if (st.status === "failed" || (!st.result.registered && st.result.status !== "already")) {
+          const motivo = st.status === "failed" ? st.error ?? "error" : st.result.motivo ?? st.result.status;
+          setError(`${conciliado}, pero FACTUSOL no ha registrado el cobro (${motivo}).`);
+        } else {
+          setSuccess(res.parcial
+            ? `Cobro parcial de ${eur(res.importe)} registrado en FACTUSOL con fecha ${dmy(res.movimiento.fecha_valor)} `
+              + `(cuenta ${res.contrapartida?.nombre ?? cuentaNombre}). ${conciliado}.`
+            : `Cobro de ${eur(res.importe)} registrado en FACTUSOL con fecha ${dmy(res.movimiento.fecha_valor)} `
+              + `(cuenta ${res.contrapartida?.nombre ?? cuentaNombre}): la ${res.numero} consta cobrada. ${conciliado}.`);
+        }
+      }
+      const fresh = await reload();
+      setInfo(fresh);
+      onDone?.(fresh);
+    } catch (e) {
+      setError(`${conciliado}, pero no se ha podido comprobar el cobro en FACTUSOL `
+        + `(${extractErrorMessage(e, "error")}).`);
+      onDone?.(info);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit() {
     if (!info || !invoice || invoice.serie == null || invoice.codigo == null) return;
+    if (mov) {
+      await submitConMovimiento();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -207,6 +344,12 @@ export function RegistrarCobroModal({
               {info.status === "unresolved" || info.status === "not_found" ? (
                 <p className="form-info" role="status">{info.detail}</p>
               ) : null}
+              {info.externa ? (
+                <p className="form-info small erp-cobro-externa" role="note">
+                  Factura externa: no hay pedido de BoHub detrás. La trazabilidad se queda en
+                  FACTUSOL.
+                </p>
+              ) : null}
               {invoice && (pendiente || cobrada) ? (
                 <div className="erp-cobro-target">
                   <p>
@@ -231,18 +374,90 @@ export function RegistrarCobroModal({
                     </p>
                   ) : null}
                   {cobrada ? (
-                    <p>
-                      <span className="badge ok">Cobrado FACTUSOL</span>{" "}
-                      <span className="muted small">
-                        La factura ya consta cobrada en FACTUSOL: no se registra un segundo cobro.
-                      </span>
-                    </p>
+                    <>
+                      <p>
+                        <span className="badge ok">Cobrado FACTUSOL</span>{" "}
+                        <span className="muted small">
+                          La factura ya consta cobrada en FACTUSOL: no se registra un segundo cobro.
+                        </span>
+                      </p>
+                      {(info.cobrado_con ?? []).length ? (
+                        <ul className="small erp-cobro-cobrado-con" aria-label="Contra qué se cobró">
+                          {(info.cobrado_con ?? []).map((c, i) => (
+                            <li key={i}>
+                              {dmy(c.fecha)} · {eur(c.importe)}
+                              {c.cuenta ? ` · cuenta ${c.cuenta}` : ""}
+                              {c.movimiento
+                                ? ` · movimiento del banco del ${dmy(c.movimiento.fecha_valor)}`
+                                  + `${c.movimiento.cuenta.nombre ? ` (${c.movimiento.cuenta.nombre})` : ""}`
+                                : " · sin movimiento del banco"}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </>
                   ) : null}
                 </div>
               ) : null}
               {(info.warnings ?? []).map((w) => (
                 <p key={w} className="form-info" role="alert">⚠ {w}</p>
               ))}
+              {pendiente && mov ? (
+                <div className="erp-cobro-movimiento" aria-label="Movimiento del banco">
+                  <p className="small">
+                    Con el movimiento del banco del <strong>{dmy(mov.fecha_valor)}</strong>{" "}
+                    (fecha valor) · <strong>{eur(mov.importe_factura)}</strong>
+                    {mov.cuenta.nombre ? ` · ${mov.cuenta.nombre}` : ""}
+                    {mov.concepto ? <> · <span className="muted">«{mov.concepto}»</span></> : null}
+                  </p>
+                  <p className="muted small">
+                    La fecha del cobro es la fecha valor del banco y la cuenta, la de ese banco.
+                    {success || soloConciliar || sinSalida ? null : (
+                      <>
+                        {" "}
+                        <button type="button" className="button small tertiary"
+                          disabled={busy} onClick={() => setSinMovimiento(true)}>
+                          Registrar sin este movimiento
+                        </button>
+                      </>
+                    )}
+                  </p>
+                  {sinContrapartida ? (
+                    <p className="form-error small" role="alert">
+                      La cuenta {mov.cuenta.nombre} no tiene contrapartida de cobro: enlázala en
+                      Conciliación → Cuentas antes.
+                    </p>
+                  ) : null}
+                  {soloConciliar ? (
+                    <p className="form-info small" role="note">
+                      Este cobro ya consta en FACTUSOL: al confirmar solo se concilia el movimiento
+                      con la factura; no se registra otra vez.
+                    </p>
+                  ) : null}
+                  {info.hoja ? (
+                    <p className="form-info small erp-cobro-hoja" role="note">
+                      También se escribirá <strong>{info.hoja.factura}</strong> en la columna
+                      «factura» de la fila de este movimiento en la hoja de Drive de{" "}
+                      <strong>{info.hoja.cuenta}</strong>
+                      {info.hoja.pestana ? ` (pestaña ${info.hoja.pestana})` : ""}, solo si esa celda
+                      está vacía. Si la hoja falla, el cobro en FACTUSOL no se deshace.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {dobleCobro ? (
+                <>
+                  <p className="form-error small" role="alert">{dobleCobro}</p>
+                  <label className="field-toggle">
+                    <input
+                      type="checkbox" aria-label="Es otro pago: registrarlo igualmente"
+                      checked={otroPago} disabled={busy}
+                      onChange={(e) => setOtroPago(e.target.checked)}
+                    />
+                    <span>Es otro pago distinto: registrarlo igualmente.</span>
+                  </label>
+                </>
+              ) : null}
               {pendiente ? (
                 <div className="modal-form">
                   <label>
@@ -250,7 +465,7 @@ export function RegistrarCobroModal({
                     <select
                       aria-label="Cuenta del cobro"
                       value={cuenta}
-                      disabled={busy || !!success}
+                      disabled={busy || !!success || !!mov}
                       onChange={(e) => setCuenta(e.target.value)}
                     >
                       <option value="">— elige la cuenta —</option>
@@ -282,7 +497,7 @@ export function RegistrarCobroModal({
                       type="date"
                       aria-label="Fecha del cobro"
                       value={fecha}
-                      disabled={busy || !!success}
+                      disabled={busy || !!success || !!mov}
                       onChange={(e) => setFecha(e.target.value)}
                     />
                   </label>
@@ -291,7 +506,7 @@ export function RegistrarCobroModal({
                     <select
                       aria-label="Forma de pago"
                       value={forma}
-                      disabled={busy || !!success}
+                      disabled={busy || !!success || !!mov}
                       onChange={(e) => setForma(e.target.value)}
                     >
                       <option value="">— sin indicar —</option>
@@ -307,7 +522,7 @@ export function RegistrarCobroModal({
                       type="number" inputMode="decimal" step="0.01" min="0.01"
                       aria-label="Importe del cobro"
                       value={importe}
-                      disabled={busy || !!success}
+                      disabled={busy || !!success || !!mov}
                       onChange={(e) => setImporte(e.target.value)}
                     />
                   </label>
@@ -327,18 +542,18 @@ export function RegistrarCobroModal({
                       aria-label="Observaciones del cobro"
                       maxLength={255}
                       value={observaciones}
-                      disabled={busy || !!success}
+                      disabled={busy || !!success || !!mov}
                       onChange={(e) => setObservaciones(e.target.value)}
                     />
                   </label>
-                  <p className="muted small erp-cobro-summary">
+                  {soloConciliar ? null : <p className="muted small erp-cobro-summary">
                     Se escribirá <strong>1 línea de cobro en F_LCO</strong> de la factura{" "}
                     {invoice?.numero}: <strong>{importeOk ? eur(importeNum) : "—"}</strong> con fecha{" "}
                     {fecha || "—"} en la cuenta <strong>{cuentaNombre || "—"}</strong>
                     {forma ? ` (${forma})` : ""}, y la factura pasará a{" "}
                     {parcial ? "cobro parcial (ESTFAC=1)" : "cobrada (ESTFAC=2)"}.
                     No se toca ninguna otra cosa en FACTUSOL.
-                  </p>
+                  </p>}
                   <label className="field-toggle">
                     <input
                       type="checkbox"
@@ -355,6 +570,12 @@ export function RegistrarCobroModal({
           ) : null}
           {error ? <p className="form-error">{error}</p> : null}
           {success ? <p className="form-success" role="status">{success}</p> : null}
+          {hoja ? (
+            <p className={hoja.ok ? "form-info small" : "form-error small"}
+               role={hoja.ok ? "status" : "alert"} aria-label="La hoja de Drive">
+              {hoja.texto}
+            </p>
+          ) : null}
         </div>
         <div className="modal-actions">
           <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
@@ -368,7 +589,9 @@ export function RegistrarCobroModal({
               title={!confirm ? "Marca la confirmación para poder registrar" : undefined}
               onClick={() => void submit()}
             >
-              {busy ? "Registrando…" : "Registrar cobro"}
+              {soloConciliar
+                ? (busy ? "Conciliando…" : "Conciliar")
+                : (busy ? "Registrando…" : "Registrar cobro")}
             </button>
           ) : null}
         </div>

@@ -2,18 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ApiError } from "../../lib/api";
-import { extractErrorMessage } from "../../lib/errors";
 import {
-  confirmarCobroBanco,
   getOrderCobroBanco,
-  waitForInvoiceCollectionJob,
   type BankConfidence,
   type CobroBanco,
   type CobroBancoCandidato,
   type CobroBancoConciliado,
   type CobroBancoMovimiento,
 } from "../../lib/erpApi";
+import { RegistrarCobroModal } from "./RegistrarCobroModal";
 
 /** DD/MM/AAAA del tramo de fecha de un ISO (sin zona horaria). */
 function dmy(iso: string | null | undefined): string {
@@ -31,11 +28,6 @@ const CONFIANZA: Record<BankConfidence, { label: string; tone: string }> = {
   media: { label: "Confianza media", tone: "warn" },
   baja: { label: "Confianza baja", tone: "muted" },
 };
-
-/** Fecha de su línea de cobro si ya está en FACTUSOL (solo candidatos). */
-function yaEnFactusol(m: CobroBancoCandidato | CobroBancoConciliado): string | null {
-  return "ya_en_factusol" in m ? m.ya_en_factusol : null;
-}
 
 /** «Ver el movimiento»: la Conciliación con solo ese movimiento. */
 export function movimientoHref(id: string): string {
@@ -59,9 +51,11 @@ function MovimientoLinea({ m, importe }: { m: CobroBancoMovimiento; importe?: nu
  *  Busca el movimiento del banco que pagó la factura del pedido —el mismo
  *  casador que Conciliación, empezando por el nº de factura en el concepto— y
  *  lo enseña con su confianza y el porqué. «Marcar cobrado con esta fecha»
- *  concilia el movimiento con la factura, registra el cobro en FACTUSOL con
- *  la FECHA VALOR del banco y la contrapartida de su cuenta, y pone la factura
- *  en la hoja de Drive del banco; antes, se dice todo eso y se confirma.
+ *  abre LA herramienta de cobro (`RegistrarCobroModal`, la misma de
+ *  Conciliación y Documentos) con ese movimiento: concilia, registra el cobro
+ *  en FACTUSOL con la FECHA VALOR del banco y la contrapartida de su cuenta, y
+ *  pone la factura en la hoja de Drive del banco; antes, lo dice todo y se
+ *  confirma.
  *
  *  Sin movimiento, no se dice nada. Varios candidatos: se enseñan todos y no
  *  se preselecciona ninguno. Menor que lo pendiente: es un cobro parcial y se
@@ -69,9 +63,11 @@ function MovimientoLinea({ m, importe }: { m: CobroBancoMovimiento; importe?: nu
  *  esta factura»). Ya cobrada: no se propone nada; como mucho, con qué
  *  movimiento se cobró. */
 export function CobroBancoBlock({
-  orderId, refreshKey = 0, canConfirm, canConciliar, onDone,
+  orderId, orderNumber, refreshKey = 0, canConfirm, canConciliar, onDone,
 }: {
   orderId: string;
+  /** Para el título del diálogo de cobro. */
+  orderNumber?: string;
   /** Sube con cada recarga de la ficha: se vuelve a pedir. */
   refreshKey?: number;
   /** Quien registra cobros (`erp.cobro.register`): ve el botón. */
@@ -83,13 +79,8 @@ export function CobroBancoBlock({
   onDone?: () => void;
 }) {
   const [data, setData] = useState<CobroBanco | null>(null);
+  // El movimiento elegido: abre el diálogo de cobro con él.
   const [elegido, setElegido] = useState<CobroBancoCandidato | CobroBancoConciliado | null>(null);
-  const [confirmo, setConfirmo] = useState(false);
-  // Hay un cobro suelto igual en FACTUSOL: «es otro pago» se confirma aparte.
-  const [otroPago, setOtroPago] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hecho, setHecho] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -120,15 +111,25 @@ export function CobroBancoBlock({
             .join("; ")}. Si alguno es el pago de un movimiento de aquí, no lo registres otra vez.
         </div>
       ) : null}
-      {error ? <p className="form-error small">{error}</p> : null}
-      {hecho ? <p className="form-success small" role="status">{hecho}</p> : null}
     </>
   );
 
-  if (!data || !data.aplica || data.estado === "nada") return null;
+  // El diálogo de cobro se queda abierto aunque al terminar la factura pase a
+  // cobrada (si no, se llevaría el resultado y lo de la hoja).
+  const panel = elegido ? (
+    <RegistrarCobroModal
+      orderId={orderId}
+      orderNumber={orderNumber ?? (data && data.aplica ? data.factura.numero : undefined)}
+      movimientoId={elegido.id}
+      onClose={() => { setElegido(null); setTick((n) => n + 1); }}
+      onDone={() => { setTick((n) => n + 1); onDone?.(); }}
+    />
+  ) : null;
+
+  if (!data || !data.aplica || data.estado === "nada") return panel;
 
   if (data.estado === "cobrada") {
-    if (data.conciliados.length === 0 && !hecho) return null;
+    if (data.conciliados.length === 0) return panel;
     return (
       <div className="erp-cobro-banco is-done" aria-label="Cobro en el banco">
         {data.conciliados.length ? (
@@ -141,173 +142,12 @@ export function CobroBancoBlock({
           </div>
         ))}
         {mensajes}
+        {panel}
       </div>
     );
   }
 
   const saldo = data.factura.saldo_pendiente;
-  const numero = data.factura.numero;
-
-  /** Lo que se registraría con ese movimiento (su parte de ESTA factura). */
-  function importeDe(m: CobroBancoCandidato | CobroBancoConciliado): number {
-    const base = "importe_conciliado" in m ? m.importe_conciliado : m.importe;
-    return Math.min(base, saldo);
-  }
-
-  async function registrar() {
-    if (!elegido) return;
-    setBusy(true);
-    setError(null);
-    setHecho(null);
-    let res: Awaited<ReturnType<typeof confirmarCobroBanco>>;
-    try {
-      res = await confirmarCobroBanco(orderId, elegido.id, {
-        forzar: !!elegido.posible_doble && otroPago,
-      });
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo registrar el cobro con ese movimiento."));
-      setBusy(false);
-      if (e instanceof ApiError && e.code === "cobro_no_encolado") {
-        // El movimiento SÍ quedó conciliado (falló mandar el cobro): se cierra
-        // el panel y se recarga, para ofrecer registrarlo de nuevo.
-        setElegido(null);
-        setConfirmo(false);
-        setOtroPago(false);
-        setTick((n) => n + 1);
-        onDone?.();
-      }
-      // Cualquier otro error: no se ha conciliado nada y el panel sigue abierto.
-      return;
-    }
-    // El movimiento ya queda conciliado: pase lo que pase en FACTUSOL, se
-    // cierra el panel y se recarga (si no, seguiría como candidato).
-    const conciliado = `El movimiento queda conciliado con la ${numero}`;
-    try {
-      if (res.status === "already") {
-        const cuando = res.fecha_factusol ? ` (registrado el ${dmy(res.fecha_factusol)}`
-          + `${res.cuenta_factusol ? ` en la cuenta ${res.cuenta_factusol}` : ""})` : "";
-        setHecho(`El cobro ya constaba en FACTUSOL${cuando}: el movimiento queda conciliado `
-          + `con la ${numero}.`
-          + (res.otra_cuenta
-            ? " Está apuntado en otra cuenta que la de este banco: si era otro pago, registra "
-              + "este con «Registrar cobro en FACTUSOL»."
-            : ""));
-      } else if (!res.job_id) {
-        setError(`${conciliado}, pero FACTUSOL no devolvió el trabajo del cobro: vuelve a `
-          + "mirar la ficha en unos segundos.");
-      } else {
-        const st = await waitForInvoiceCollectionJob(res.job_id);
-        if (st.status === "pending") {
-          setError("El cobro sigue en cola en FACTUSOL: el movimiento ya está conciliado. "
-            + "Vuelve a mirar la ficha en unos segundos.");
-        } else if (st.status === "finished" && st.result.status === "already") {
-          setHecho(`La ${numero} ya constaba cobrada en FACTUSOL: no se ha registrado nada. `
-            + `${conciliado}.`);
-        } else if (st.status === "failed" || !st.result.registered) {
-          const motivo = st.status === "failed"
-            ? st.error ?? "error"
-            : st.result.motivo ?? st.result.status;
-          setError(`${conciliado}, pero FACTUSOL no ha registrado el cobro (${motivo}). `
-            + "Vuelve a intentarlo con «Registrar el cobro con esta fecha».");
-        } else {
-          setHecho(res.parcial
-            ? `Cobro parcial de ${eur(res.importe)} registrado con fecha ${dmy(res.movimiento.fecha_valor)}.`
-              + ` Quedan ${eur(Math.max(saldo - res.importe, 0))} pendientes de la ${numero}.`
-            : `Cobro de ${eur(res.importe)} registrado con fecha ${dmy(res.movimiento.fecha_valor)}:`
-              + ` la ${numero} consta cobrada.`);
-        }
-      }
-    } catch (e) {
-      setError(`${conciliado}, pero no se ha podido comprobar el cobro en FACTUSOL `
-        + `(${extractErrorMessage(e, "error")}): vuelve a mirar la ficha en unos segundos.`);
-    } finally {
-      setElegido(null);
-      setConfirmo(false);
-      setOtroPago(false);
-      setBusy(false);
-      setTick((n) => n + 1);
-      onDone?.();
-    }
-  }
-
-  // Su cobro ya está en FACTUSOL: confirmar solo concilia.
-  const soloConciliar = elegido ? yaEnFactusol(elegido) !== null : false;
-  const panel = elegido ? (
-    <div className="erp-cobro-banco-confirm" role="group" aria-label="Confirmar el cobro">
-      <p>Al confirmar:</p>
-      <ul>
-        {soloConciliar ? null : (
-          <li>
-            se registra en FACTUSOL un cobro de <strong>{eur(importeDe(elegido))}</strong> de la{" "}
-            {numero} con fecha <strong>{dmy(elegido.fecha_valor)}</strong> (la fecha valor del
-            banco) en la cuenta{" "}
-            <strong>
-              {elegido.cuenta.contrapartida_codigo ?? "—"}
-              {elegido.cuenta.contrapartida_nombre ? ` · ${elegido.cuenta.contrapartida_nombre}` : ""}
-            </strong>
-            , forma de pago Transferencia;
-          </li>
-        )}
-        <li>el movimiento queda conciliado con la {numero}, igual que desde Conciliación;</li>
-        <li>la factura se escribe en la hoja de Drive del banco ({elegido.cuenta.nombre ?? "su cuenta"}).</li>
-      </ul>
-      {!soloConciliar && importeDe(elegido) < saldo - 0.005 ? (
-        <p className="form-info small" role="alert">
-          Es un cobro PARCIAL: quedarán {eur(saldo - importeDe(elegido))} pendientes y la factura
-          no se marca cobrada.
-        </p>
-      ) : null}
-      {!elegido.cuenta.contrapartida_codigo ? (
-        <p className="form-error small" role="alert">
-          La cuenta {elegido.cuenta.nombre} no tiene contrapartida de cobro:{" "}
-          {canConciliar
-            ? "enlázala en Conciliación → Cuentas antes."
-            : "pide a un administrador que la enlace en Conciliación → Cuentas."}
-        </p>
-      ) : null}
-      {!soloConciliar && elegido.posible_doble ? (
-        <>
-          <p className="form-error small" role="alert">
-            Ojo: en FACTUSOL ya hay un cobro de {eur(importeDe(elegido))} de esta factura que no
-            es de ningún movimiento del banco. Puede ser este mismo pago, apuntado a mano: si lo
-            es, no lo registres otra vez.
-          </p>
-          <label className="field-toggle">
-            <input
-              type="checkbox" aria-label="Es otro pago: registrarlo igualmente"
-              checked={otroPago} disabled={busy} onChange={(e) => setOtroPago(e.target.checked)}
-            />
-            <span>Es otro pago distinto: registrarlo igualmente.</span>
-          </label>
-        </>
-      ) : null}
-      <label className="field-toggle">
-        <input
-          type="checkbox" aria-label="Confirmo el cobro con este movimiento"
-          checked={confirmo} disabled={busy} onChange={(e) => setConfirmo(e.target.checked)}
-        />
-        <span>Confirmo que este movimiento es el cobro de la {numero}.</span>
-      </label>
-      <div className="erp-cobro-banco-actions">
-        <button
-          type="button" className="button small"
-          disabled={!confirmo || busy || !elegido.cuenta.contrapartida_codigo
-            || (!soloConciliar && !!elegido.posible_doble && !otroPago)}
-          onClick={() => void registrar()}
-        >
-          {soloConciliar
-            ? (busy ? "Conciliando…" : "Conciliar")
-            : (busy ? "Registrando…" : "Registrar el cobro")}
-        </button>
-        <button
-          type="button" className="button small secondary" disabled={busy}
-          onClick={() => { setElegido(null); setConfirmo(false); setOtroPago(false); setError(null); }}
-        >
-          Cancelar
-        </button>
-      </div>
-    </div>
-  ) : null;
 
   const varios = data.candidatos.length > 1;
 

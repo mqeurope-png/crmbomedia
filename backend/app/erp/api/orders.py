@@ -2282,17 +2282,7 @@ def confirmar_cobro_banco(
     total. Si su cobro ya está en FACTUSOL (una línea con ese importe y fecha
     cercana), no se registra otra vez: solo se concilia (`status: already`).
     Exige `confirm`."""
-    from app.core.audit import record_event  # noqa: PLC0415
-    from app.erp.api.bank import _encolar_hoja  # noqa: PLC0415
-    from app.erp.api.factusol import (  # noqa: PLC0415
-        InvoiceCollectionPayload,
-        register_invoice_collection_endpoint,
-    )
-    from app.erp.bank import service as bank_service  # noqa: PLC0415
     from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
-    from app.integrations.factusol.client import FactusolClient, FactusolError  # noqa: PLC0415
-    from app.integrations.factusol.collections_write import collection_status  # noqa: PLC0415
-    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
     order = _get_order(session, order_id, current_user)
     if not payload.confirm:
@@ -2304,6 +2294,38 @@ def confirmar_cobro_banco(
     if factura is None:
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "sin_factura", "detail": "El pedido no tiene una factura que cobrar.",
+        })
+    return cobro_con_movimiento(
+        session, factura=factura, order=order, payload=payload, current_user=current_user,
+    )
+
+
+def cobro_con_movimiento(
+    session: Session, *, factura: dict[str, Any], order: Order | None, payload: CobroBancoIn,
+    current_user: User,
+) -> dict[str, Any]:
+    """El cobro de una factura con un movimiento del banco identificado, entre
+    por donde se entre (la ficha del pedido, Conciliación o ERP · Documentos):
+    concilia el movimiento con la factura, registra el cobro en FACTUSOL con la
+    fecha valor y la contrapartida de su cuenta (por «Registrar cobro», con
+    sus comprobaciones y su Auditoría) y escribe la factura en la hoja de Drive
+    de esa cuenta. `order`: el pedido de BoHub de la factura, o None si es una
+    factura externa (solo FACTUSOL). Exige `payload.confirm`."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.api.bank import _encolar_hoja  # noqa: PLC0415
+    from app.erp.api.factusol import (  # noqa: PLC0415
+        InvoiceCollectionPayload,
+        register_invoice_collection_endpoint,
+    )
+    from app.erp.bank import service as bank_service  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient, FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.collections_write import collection_status  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Registrar un cobro requiere confirmación explícita.",
         })
     mov = session.get(BankMovement, payload.movement_id)
     if mov is None:
@@ -2439,11 +2461,12 @@ def confirmar_cobro_banco(
         }) from exc
     _encolar_hoja(session, {acc.id})
     record_event(
-        session, action="erp.order_cobro_banco", target_type="order", target_id=order.id,
+        session, action="erp.order_cobro_banco", **_objetivo_auditoria(order, numero),
         actor=current_user,
         message=f"Cobro de {importe:.2f} € de la {numero} con el movimiento del banco del {fecha}",
         metadata={
-            "order_number": order.order_number, "factura": numero, "movement_id": mov.id,
+            "order_number": order.order_number if order else None, "externa": order is None,
+            "factura": numero, "movement_id": mov.id,
             "fecha_valor": fecha, "importe": importe, "parcial": parcial,
             "cuenta": acc.name, "contrapartida": acc.contrapartida_codigo,
             "registrado": res.get("status") == "queued", "job_id": res.get("job_id"),
@@ -2457,11 +2480,77 @@ def confirmar_cobro_banco(
         "movimiento": bank_service.movimiento_pedido_dict(
             mov, acc, bank_service.contrapartida_names(session),
         ),
+        "hoja": escribir_hoja_del_movimiento(session, acc, mov.id),
     }
 
 
+def _anotar_fallo_hoja(session: Session, account_id: str, detalle: str) -> None:
+    """Deja constancia en la cuenta de que la hoja no se escribió (lo que no
+    anota `escribir_cuenta`, que solo recoge los errores de Drive y de
+    lectura). El movimiento sigue `pendiente` de hoja: la cola lo reintenta."""
+    from app.erp.bank.drive import _ahora, _guardar_resultado  # noqa: PLC0415
+
+    try:
+        session.rollback()
+        acc = session.get(BankAccount, account_id)
+        if acc is None:
+            return
+        anterior = json.loads(acc.drive_resultado_json) if acc.drive_resultado_json else {}
+        _guardar_resultado(acc, {**anterior, "escritura": {
+            "error": detalle, "origen": "cobro", "at": _ahora().isoformat(),
+        }})
+        session.commit()
+    except Exception:  # noqa: BLE001 — anotarlo tampoco tumba el cobro
+        session.rollback()
+
+
+def _objetivo_auditoria(order: Order | None, numero: str) -> dict[str, str]:
+    """El apunte en Auditoría va al pedido; el de una factura externa, a ella."""
+    if order is not None:
+        return {"target_type": "order", "target_id": order.id}
+    return {"target_type": "document", "target_id": numero}
+
+
+def escribir_hoja_del_movimiento(
+    session: Session, acc: BankAccount, movement_id: str,
+) -> dict[str, Any] | None:
+    """Tras el cobro, la factura en la hoja de Drive de la cuenta, en la fila
+    de ese movimiento: el circuito de siempre (`drive.escribir_cuenta`: solo
+    celdas vacías, la fila por la identidad del movimiento, nunca reordenar).
+    Ahora mismo y no en la cola, para decirlo en el diálogo. Un fallo aquí NO
+    toca el cobro de FACTUSOL: se dice y queda anotado en el movimiento
+    (`hoja_estado`) y en la cuenta, y la cola lo reintenta. None si la cuenta
+    no escribe en una hoja (no hay nada que decir)."""
+    from app.erp.bank.drive import FORMATO_XLSX, cerrojo, escribir_cuenta  # noqa: PLC0415
+
+    if not acc.drive_file_id or not acc.drive_escribir:
+        return None
+    base = {"cuenta": acc.name, "pestana": acc.drive_pestana}
+    if acc.drive_formato == FORMATO_XLSX:
+        return {**base, "estado": "no_se_escribe",
+                "detalle": "La hoja es un .xlsx subido: BoHub no escribe en él."}
+    try:
+        with cerrojo(acc.id) as cogido:
+            if not cogido:
+                return {**base, "estado": "en_cola", "detalle": (
+                    "Hay otra escritura en marcha en esa hoja: se escribe en un momento.")}
+            stats = escribir_cuenta(session, acc, origen="cobro")
+    except Exception as exc:  # noqa: BLE001 — la hoja nunca tumba el cobro
+        logger.warning("cobro: la hoja de la cuenta %s no se ha podido escribir (%s)",
+                       acc.id, type(exc).__name__)
+        detalle = "No se ha podido escribir en la hoja ahora; se reintenta en la cola."
+        _anotar_fallo_hoja(session, acc.id, detalle)
+        return {**base, "estado": "error", "detalle": detalle}
+    session.expire_all()
+    mov = session.get(BankMovement, movement_id)
+    estado = (mov.hoja_estado if mov else None) or "error"
+    if stats.get("error") and estado != "escrita":
+        return {**base, "estado": "error", "detalle": str(stats["error"])[:300]}
+    return {**base, "estado": estado, "factura": mov.hoja_factura if mov else None}
+
+
 def _cobro_banco_ya_en_factusol(
-    session: Session, order: Order, factura: dict[str, Any], mov: BankMovement,
+    session: Session, order: Order | None, factura: dict[str, Any], mov: BankMovement,
     acc: BankAccount, linea: dict[str, Any], *, saldo: float, importe: float,
     ya_conciliado: bool, actor: User,
 ) -> dict[str, Any]:
@@ -2494,12 +2583,13 @@ def _cobro_banco_ya_en_factusol(
     fecha_mov = mov.fecha_valor or mov.fecha_oper
     _encolar_hoja(session, {acc.id})
     record_event(
-        session, action="erp.order_cobro_banco", target_type="order", target_id=order.id,
+        session, action="erp.order_cobro_banco", **_objetivo_auditoria(order, numero),
         actor=actor,
         message=(f"Movimiento del banco del {fecha_mov.isoformat()} conciliado con la {numero}: "
                  f"su cobro ya estaba en FACTUSOL ({fecha_factusol})"),
         metadata={
-            "order_number": order.order_number, "factura": numero, "movement_id": mov.id,
+            "order_number": order.order_number if order else None, "externa": order is None,
+            "factura": numero, "movement_id": mov.id,
             "fecha_valor": fecha_mov.isoformat(), "importe": importe, "parcial": parcial,
             "cuenta": acc.name, "contrapartida": acc.contrapartida_codigo,
             "registrado": False, "ya_en_factusol": fecha_factusol,
@@ -2516,6 +2606,7 @@ def _cobro_banco_ya_en_factusol(
         "movimiento": bank_service.movimiento_pedido_dict(
             mov, acc, bank_service.contrapartida_names(session),
         ),
+        "hoja": escribir_hoja_del_movimiento(session, acc, mov.id),
     }
 
 
@@ -3545,6 +3636,8 @@ def refresh_factusol_cobros(
 @router.get("/{order_id}/factusol-cobro")
 def order_factusol_cobro(
     order_id: str,
+    #: El movimiento del banco con el que se va a cobrar (la ficha).
+    movimiento: str | None = Query(default=None, max_length=36),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
@@ -3599,6 +3692,16 @@ def order_factusol_cobro(
                 "factura": round(float(info["total"]), 2),
                 "diferencia": diferencia,
             }
+    lineas = info.pop("_lineas", [])
+    if invoice.get("serie") is not None and invoice.get("codigo") is not None:
+        # El diálogo único: movimiento del banco, hoja y contra qué se cobró.
+        from app.erp.cobro_contexto import contexto_cobro  # noqa: PLC0415
+
+        extra.update(contexto_cobro(
+            session, serie=int(invoice["serie"]), codigo=int(invoice["codigo"]),
+            numero=str(invoice.get("numero") or ""), lineas=lineas,
+            ya_cobrada=info.get("status") == "cobrada", movement_id=movimiento,
+        ))
     return {**base, **info, **extra, "persisted_status": order.factusol_cobro_status}
 
 

@@ -645,7 +645,24 @@ después.
   (*«Este pedido aún no está en FACTUSOL…»*), aparece **«Volver a comprobar»**:
   vuelve a buscarlo en FACTUSOL (solo lee) y, en cuanto está, **«Emitir
   factura»** vuelve a estar disponible.
-- **«Registrar cobro en FACTUSOL»** — eliges la **cuenta/contrapartida**, la
+- **«Registrar cobro en FACTUSOL»** — **es la misma ventana** se entre por
+  donde se entre: la ficha del pedido (también desde «Marcar cobrado con esta
+  fecha» del paso Cobro), Conciliación («Registrar cobro» en un movimiento
+  conciliado) o ERP · Documentos. Mismo texto, mismas comprobaciones, mismo
+  apunte en Auditoría.
+  - **Con el movimiento del banco identificado** (el que eliges, o el ya
+    conciliado con la factura que aún no está en FACTUSOL), la fecha es su
+    **fecha valor** y la cuenta, la de ese banco (no se cambian; «Registrar sin
+    este movimiento» vuelve al cobro de siempre). Además, la ventana dice que
+    **también escribirá el nº de factura en la hoja de Drive** de ese banco, en
+    la fila de ese movimiento y solo si la celda «factura» está vacía. Al
+    terminar dice qué pasó en la hoja; si la hoja falla, **el cobro de
+    FACTUSOL queda registrado igual**, se avisa y se reintenta en el repaso.
+  - **Ya cobrada**: no se ofrece registrar; se enseña **contra qué se cobró**
+    (fecha, importe, cuenta y el movimiento del banco, si lo hay).
+  - **Factura externa** (sin pedido de BoHub): lo dice en una línea, porque la
+    trazabilidad se queda en FACTUSOL.
+  - Como siempre: eliges la **cuenta/contrapartida**, la
   fecha y la forma de pago, marcas la casilla de confirmación y pulsas
   **«Registrar cobro»** (es un apunte contable en FACTUSOL). Si al dar de alta
   el pedido ya apuntaste el pago (forma, cuenta y fecha), la ventana **viene
@@ -924,8 +941,10 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 - Otros filtros: buscador, cliente/CIF/email, serie, fechas (dentro del
   ejercicio; vacías de entrada), **«Ciclo»** (p. ej. *Sin facturar* /
   *Facturado*) y **«Cobro»**.
-- **«Registrar cobro»** (en Facturas) — apunta el cobro de esa factura en
-  FACTUSOL.
+- **«Registrar cobro»** (en Facturas) — la misma ventana de cobro de la
+  ficha: apunta el cobro de esa factura en FACTUSOL (con el movimiento del
+  banco, si está conciliado: fecha valor y hoja de Drive). En una factura ya
+  cobrada el botón es **«Ver el cobro»**: enseña contra qué se cobró.
 - **«Crear pedido»** — crea un pedido de BoHub a partir del documento. Desde un
   presupuesto o pedido de cliente te lleva al alta ya rellenada; desde un
   albarán o factura abre primero el **resumen** de lo que se va a crear

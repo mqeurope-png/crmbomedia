@@ -1536,10 +1536,72 @@ def register_invoice_collection_endpoint(
     return {"status": "queued", "job_id": job_id, **meta}
 
 
+@router.post("/documents/facturas/{serie}/{codigo}/cobro-banco", status_code=202)
+def factura_cobro_banco(
+    serie: int,
+    codigo: int,
+    payload: dict[str, Any] = Body(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_cobro_register),
+) -> dict[str, Any]:
+    """El cobro de una factura con su movimiento del banco, desde Conciliación o
+    ERP · Documentos: lo MISMO que desde la ficha del pedido
+    (`orders.cobro_con_movimiento`: concilia, registra en FACTUSOL con la fecha
+    valor y escribe en la hoja), con su pedido si lo tiene o como factura
+    externa si no."""
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from app.erp.api.orders import (  # noqa: PLC0415
+        CobroBancoIn,
+        _get_order,
+        cobro_con_movimiento,
+    )
+    from app.erp.bank.service import _pedidos_con_id  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.collections_write import collection_status  # noqa: PLC0415
+
+    try:
+        datos = CobroBancoIn.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "payload", "detail": "Falta el movimiento o la confirmación.",
+        }) from exc
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        info = collection_status(client, serie=serie, codigo=codigo, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_cobro_failed") from exc
+    if info is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_not_found",
+            "detail": f"No existe la factura {serie}-{int(codigo):06d} en FACTUSOL.",
+        })
+    pedido = _pedidos_con_id(session, {(serie, int(codigo))}).get((serie, int(codigo)))
+    # Con su pedido, las mismas comprobaciones que desde la ficha: el acceso
+    # al pedido web y que no sea una muestra.
+    order = _get_order(session, pedido["id"], current_user) if pedido else None
+    if order is not None and is_sample_order(order):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "sin_factura",
+            "detail": "El pedido es una muestra: no tiene factura que cobrar.",
+        })
+    factura = {
+        "serie": serie, "codigo": int(codigo), "numero": info["numero"],
+        "total": info["total"], "saldo_pendiente": info["saldo_pendiente"],
+        "cliente_nombre": info["cliente"] or None, "cliente_codigo": info["cliente_codigo"],
+    }
+    return cobro_con_movimiento(
+        session, factura=factura, order=order, payload=datos, current_user=current_user,
+    )
+
+
 @router.get("/documents/facturas/{serie}/{codigo}/cobro")
 def factura_cobro_info(
     serie: int,
     codigo: int,
+    #: El movimiento del banco con el que se va a cobrar (Conciliación).
+    movimiento: str | None = Query(default=None, max_length=36),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
@@ -1550,6 +1612,7 @@ def factura_cobro_info(
     equivalente por factura de `GET /orders/{id}/factusol-cobro`. Solo lectura:
     este endpoint NO escribe nada en FACTUSOL."""
     _ = current_user
+    from app.erp.cobro_contexto import contexto_cobro  # noqa: PLC0415
     from app.erp.factusol_cobro import suggest_for_invoice  # noqa: PLC0415
     from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
@@ -1608,6 +1671,13 @@ def factura_cobro_info(
         "suggested_fecha": sug["suggested_fecha"],
         "order_number": sug["order_number"],
         "warnings": warnings,
+        # El diálogo único: externa, movimiento del banco, hoja y contra qué
+        # se cobró (`app.erp.cobro_contexto`).
+        **contexto_cobro(
+            session, serie=serie, codigo=int(codigo), numero=numero,
+            lineas=status_info.get("lineas") or [], ya_cobrada=status_info["ya_cobrada"],
+            movement_id=movimiento,
+        ),
     }
 
 
