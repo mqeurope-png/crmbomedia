@@ -171,6 +171,7 @@ from app.erp.api import genei_router as erp_genei_router  # noqa: E402
 from app.erp.api import ia_router as erp_ia_router  # noqa: E402
 from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import ofertas_router as erp_ofertas_router  # noqa: E402
+from app.erp.api import order_correcciones_router as erp_order_correcciones_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
 from app.erp.api import pedidos_web_router as erp_pedidos_web_router  # noqa: E402
@@ -188,6 +189,8 @@ app.include_router(erp_orders_router)
 # «Traer pedido web»: los `on-hold` de las tiendas, traídos a mano.
 app.include_router(erp_pedidos_web_router)
 app.include_router(erp_order_timeline_router)
+# Corregir lo emitido desde la ficha: mención legal y cliente (30/10/2026).
+app.include_router(erp_order_correcciones_router)
 app.include_router(erp_sat_router)
 app.include_router(erp_exceptions_router)
 app.include_router(erp_woocommerce_admin_router)

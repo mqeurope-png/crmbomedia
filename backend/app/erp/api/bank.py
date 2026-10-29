@@ -347,6 +347,8 @@ def list_movements(
     ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    #: «Ver el movimiento» desde la ficha del pedido: solo ese movimiento.
+    movimiento: str | None = Query(default=None, max_length=36),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
@@ -360,6 +362,7 @@ def list_movements(
         status=status_,
         limit=limit,
         offset=offset,
+        movement_id=movimiento,
     )
 
 
@@ -567,9 +570,16 @@ def export_cobros_csv(
     _ = current_user
     try:
         client, ejercicio = _factusol(session)
+        facturas = service.pending_invoices(client, ejercicio)
         saldos = {
             (int(f["serie"]), int(f["codigo"])): float(f["saldo_pendiente"] or 0)
-            for f in service.pending_invoices(client, ejercicio)
+            for f in facturas
+        }
+        # Con el total se sabe lo ya cobrado (total − saldo): un cobro parcial
+        # registrado desde la ficha no vuelve a entrar por el mismo movimiento.
+        totales = {
+            (int(f["serie"]), int(f["codigo"])): float(f["total"])
+            for f in facturas if f.get("total") is not None
         }
     except Exception as exc:  # noqa: BLE001 — sin FACTUSOL no se sabe qué falta por cobrar
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
@@ -578,7 +588,8 @@ def export_cobros_csv(
                        "sabe qué falta por cobrar. Prueba de nuevo en un momento."),
         }) from exc
     data, stats = service.export_cobros_csv(
-        session, saldos=saldos, account_id=account_id, desde=desde, hasta=hasta,
+        session, saldos=saldos, totales=totales, account_id=account_id, desde=desde,
+        hasta=hasta,
     )
     suffix = f"_{desde or ''}_{hasta or ''}".rstrip("_")
     cabeceras = {

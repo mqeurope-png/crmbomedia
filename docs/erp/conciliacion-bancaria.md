@@ -330,11 +330,21 @@ Lo que queda sin anotar es lo que falta por conciliar.
   - Incluye lo conciliado y no descartado, una fila por factura.
   - `cuenta` es la contrapartida de cobro de la cuenta del banco (8 Sabadell
     Streamtec, 2 Belfius MQ Europe, 6 Sabadell Bomedia).
-  - `forma` es «Transferencia» y `fecha` es la del movimiento.
+  - `forma` es «Transferencia» y `fecha` es la **fecha valor** del movimiento
+    (la de operación si no la trae). Hasta el 30/10/2026 era la de operación.
   - El script no lleva importe: registra el **saldo entero** de la factura.
     Por eso se lee FACTUSOL (`pending_invoices`, solo lectura) y entra cada
     factura cuyo saldo pendiente cuadra con lo conciliado de ella (aunque
     venga de dos movimientos). Sin FACTUSOL, 503: no se sabe qué falta.
+  - Lo ya cobrado (total − saldo) se descuenta de todo lo conciliado de la
+    factura, sin el filtro de cuenta ni de fechas. Así, tras un cobro parcial
+    registrado desde la ficha, la factura no vuelve a entrar por ese mismo
+    movimiento (el script registraría lo que el cliente aún debe). Cuando se
+    concilia el resto, entra, con la fecha valor del último pago.
+  - Pagada en varios movimientos, la fila (cuenta, fecha y observaciones)
+    sale del último. Si los pagos vienen de cuentas con contrapartidas
+    distintas, se deja fuera (`No-Cuadran`): el script registra una sola línea
+    en una cuenta.
   - Se dejan fuera, y se cuentan en las cabeceras `X-Cobros-*` (la pantalla
     las dice en el aviso):
     - `Parciales`: lo conciliado no llega al saldo;
@@ -347,3 +357,63 @@ Lo que queda sin anotar es lo que falta por conciliar.
   - Respeta la cuenta y las fechas de los filtros.
   - **No escribe en FACTUSOL.** El script simula primero, lee el saldo en vivo
     y se salta lo ya cobrado.
+
+
+## Desde la ficha del pedido (30/10/2026)
+
+El paso «Cobro» de la ficha propone el movimiento que pagó la factura del
+pedido. Es el mismo casador, pero visto desde la factura
+(`service.movimientos_de_factura`):
+
+- **Qué movimientos mira:** los de entrada aún pendientes, en cuentas de la
+  serie de la factura (o sin serie), desde 3 días antes de la fecha del pedido.
+  Un web se paga antes de facturarse. Fuera los excluidos.
+- **En qué orden los prueba:**
+  1. el nº de factura en el concepto o en lo anotado («2-526081» o el código
+     suelto): alta con importe exacto, media si no;
+  2. si no, lo que Conciliación ya proponía;
+  3. si no, `propose()` contra esta factura sola. Coincidir solo en el importe
+     baja a confianza baja («solo coincide el importe»), y se descarta si hay
+     algo mejor.
+- **Las marcas:** `parcial` (menor que lo pendiente) y `excede` (mayor, se
+  reparte en Conciliación).
+
+**Confirmar** (`POST /api/erp/orders/{id}/cobro-banco`, `erp.cobro.register`):
+
+1. Lee la factura en vivo (`collection_status`).
+2. **Concilia** el movimiento con la factura (`conciliar_desde_pedido`). Si
+   Conciliación lo proponía, confirma esa propuesta; si no, queda como elegida
+   desde la ficha (`origen = "pedido"`).
+3. Marca y encola la **hoja de Drive**, como cualquier conciliación.
+4. Registra el **cobro** por el endpoint F-4-B: fecha valor, contrapartida de
+   la cuenta, Transferencia y, si es parcial, ese importe.
+5. Auditoría `erp.order_cobro_banco` (target `order`).
+
+**Nunca dos veces.** Antes de registrar, se casan los movimientos de la
+factura (los conciliados y el que se confirma) con sus líneas de cobro en
+FACTUSOL (`casar_lineas_de_cobro`):
+
+- casa el mismo importe (±0,01) con una fecha a ±7 días de la fecha valor o
+  de operación;
+- cada línea vale para un solo movimiento, y se reparten para casar los más
+  posibles, primero las de la misma contrapartida que la cuenta del banco.
+
+Si el movimiento ya tiene su línea, no se registra: se concilia (si no lo
+estaba) y responde `status: "already"`, con la fecha y la cuenta de la línea,
+y avisa si es otra cuenta. Un cobro mandado desde la ficha que sigue en cola
+(menos de 30 minutos y su trabajo aún pendiente) bloquea otro igual (409
+`en_cola`); uno fallido se puede reintentar. Si no se puede encolar, el
+movimiento queda conciliado y se dice (`cobro_no_encolado`).
+
+**Cobros sueltos.** Las líneas de cobro de FACTUSOL que no casan con ningún
+movimiento (efectivo, tarjeta, o un pago apuntado a mano con otra fecha) se
+enseñan en la ficha (`cobros_sueltos`). Si una tiene el mismo importe que lo
+que se va a registrar, puede ser ese mismo pago: el POST responde 409
+`posible_doble_cobro` y no hace nada, salvo que llegue `forzar` (la persona
+marcó «es otro pago distinto»).
+
+Los números de otros documentos del concepto («PROFORMA 526090», «pedido
+1234») no cuentan como facturas al buscar la factura en el concepto.
+
+La vuelta: `GET /api/erp/bank/movements?movimiento=<id>` filtra un movimiento,
+y cada propuesta o conciliación lleva `pedido: {id, order_number}`.

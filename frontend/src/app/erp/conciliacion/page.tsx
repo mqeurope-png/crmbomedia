@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
 import { useModalBehaviour } from "../../components/useModalBehaviour";
@@ -64,6 +66,12 @@ const STATUS_LABEL: Record<BankMovement["status"], string> = {
 
 function eur(n: number | null | undefined): string {
   return n === null || n === undefined ? "—" : `${n.toFixed(2)} €`;
+}
+
+/** «2026-10-03» → «03/10/2026» (sin pasar por Date: es una fecha, sin hora). */
+function fechaCorta(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return y && m && d ? `${d}/${m}/${y}` : iso;
 }
 
 /** El resultado de importar un extracto: lo importado, lo que entró casado
@@ -246,10 +254,22 @@ function TraidaDeDrive({ traida: t }: { traida: BankDriveTraida }) {
   );
 }
 
+/** `useSearchParams` exige Suspense en el app router (`?movimiento=`). */
+export default function ConciliacionPage() {
+  return (
+    <Suspense fallback={<main className="shell shell-wide"><p className="muted">Cargando…</p></main>}>
+      <ConciliacionScreen />
+    </Suspense>
+  );
+}
+
 /** ERP-F4-A — Conciliación bancaria. Importa el extracto, PROPONE el casado
  *  con las facturas pendientes y deja que la persona decida. Nada se concilia
- *  solo. NO escribe en FACTUSOL (eso va en F-4-B). */
-export default function ConciliacionPage() {
+ *  solo. NO escribe en FACTUSOL (eso va en F-4-B). Con `?movimiento=<id>`
+ *  («Ver el movimiento» de la ficha del pedido) enseña solo ese. */
+function ConciliacionScreen() {
+  const searchParams = useSearchParams();
+  const movimiento = searchParams?.get("movimiento") || undefined;
   const [user, setUser] = useState<User | null>(null);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [suggested, setSuggested] = useState<BankAccountSuggestion[]>([]);
@@ -275,11 +295,13 @@ export default function ConciliacionPage() {
 
   const loadMovements = useCallback(async () => {
     try {
-      setPage(await listBankMovements({ ...filters, limit: 200 }));
+      // Un movimiento concreto va sin los demás filtros: puede estar ya
+      // conciliado y el estado por defecto es «Pendiente».
+      setPage(await listBankMovements(movimiento ? { movimiento } : { ...filters, limit: 200 }));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron cargar los movimientos."));
     }
-  }, [filters]);
+  }, [filters, movimiento]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -499,7 +521,7 @@ export default function ConciliacionPage() {
                 type="button"
                 className="button small secondary"
                 disabled={busy}
-                title="Lo conciliado y no descartado cuyo saldo en FACTUSOL cuadra, para registrar_cobros_lote.ps1 (simula primero y se salta lo ya cobrado). No escribe en FACTUSOL."
+                title="Lo conciliado y no descartado cuyo saldo en FACTUSOL cuadra, para registrar_cobros_lote.ps1 (simula primero y se salta lo ya cobrado). Cada cobro va con la fecha valor del movimiento. No escribe en FACTUSOL."
                 onClick={async () => {
                   setBusy(true);
                   setError(null);
@@ -548,59 +570,68 @@ export default function ConciliacionPage() {
           </section>
 
           <section className="erp-card">
-            <div className="erp-doc-filters">
-              <label className="field">
-                <span>Desde</span>
-                <input type="date" aria-label="Desde" value={filters.desde ?? ""}
-                  onChange={(e) => setFilters((f) => ({ ...f, desde: e.target.value || undefined }))} />
-              </label>
-              <label className="field">
-                <span>Hasta</span>
-                <input type="date" aria-label="Hasta" value={filters.hasta ?? ""}
-                  onChange={(e) => setFilters((f) => ({ ...f, hasta: e.target.value || undefined }))} />
-              </label>
-              <label className="field">
-                <span>Confianza</span>
-                <select aria-label="Confianza" value={filters.confidence ?? ""}
-                  onChange={(e) => setFilters((f) => ({
-                    ...f, confidence: (e.target.value || undefined) as BankMovementFilters["confidence"],
-                  }))}>
-                  <option value="">Todas</option>
-                  <option value="alta">Alta</option>
-                  <option value="media">Media</option>
-                  <option value="baja">Baja</option>
-                  <option value="none">Sin propuesta</option>
-                </select>
-              </label>
-              <label className="field">
-                <span>Estado</span>
-                <select aria-label="Estado" value={filters.status ?? ""}
-                  onChange={(e) => setFilters((f) => ({
-                    ...f, status: (e.target.value || undefined) as BankMovementFilters["status"],
-                  }))}>
-                  <option value="">Todos</option>
-                  <option value="pending">Pendiente</option>
-                  <option value="reconciled">Conciliado</option>
-                  <option value="discarded">Descartado</option>
-                </select>
-              </label>
-              {canEdit ? (
-                <button
-                  type="button"
-                  className="button small"
-                  disabled={busy}
-                  onClick={() => {
-                    if (!window.confirm("¿Confirmar TODAS las propuestas de confianza alta? Es una decisión tuya, no automática.")) return;
-                    void act("Confirmadas las de confianza alta.", () => confirmAllHighBank(filters.account_id));
-                  }}
-                >
-                  Confirmar todas las de confianza alta
-                </button>
-              ) : null}
-            </div>
+            {movimiento ? (
+              <div className="erp-doc-filters">
+                <span className="badge info">Mostrando un solo movimiento</span>
+                <Link href="/erp/conciliacion" className="button small secondary">Ver todos</Link>
+              </div>
+            ) : (
+              <div className="erp-doc-filters">
+                <label className="field">
+                  <span>Desde</span>
+                  <input type="date" aria-label="Desde" value={filters.desde ?? ""}
+                    onChange={(e) => setFilters((f) => ({ ...f, desde: e.target.value || undefined }))} />
+                </label>
+                <label className="field">
+                  <span>Hasta</span>
+                  <input type="date" aria-label="Hasta" value={filters.hasta ?? ""}
+                    onChange={(e) => setFilters((f) => ({ ...f, hasta: e.target.value || undefined }))} />
+                </label>
+                <label className="field">
+                  <span>Confianza</span>
+                  <select aria-label="Confianza" value={filters.confidence ?? ""}
+                    onChange={(e) => setFilters((f) => ({
+                      ...f, confidence: (e.target.value || undefined) as BankMovementFilters["confidence"],
+                    }))}>
+                    <option value="">Todas</option>
+                    <option value="alta">Alta</option>
+                    <option value="media">Media</option>
+                    <option value="baja">Baja</option>
+                    <option value="none">Sin propuesta</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Estado</span>
+                  <select aria-label="Estado" value={filters.status ?? ""}
+                    onChange={(e) => setFilters((f) => ({
+                      ...f, status: (e.target.value || undefined) as BankMovementFilters["status"],
+                    }))}>
+                    <option value="">Todos</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="reconciled">Conciliado</option>
+                    <option value="discarded">Descartado</option>
+                  </select>
+                </label>
+                {canEdit ? (
+                  <button
+                    type="button"
+                    className="button small"
+                    disabled={busy}
+                    onClick={() => {
+                      if (!window.confirm("¿Confirmar TODAS las propuestas de confianza alta? Es una decisión tuya, no automática.")) return;
+                      void act("Confirmadas las de confianza alta.", () => confirmAllHighBank(filters.account_id));
+                    }}
+                  >
+                    Confirmar todas las de confianza alta
+                  </button>
+                ) : null}
+              </div>
+            )}
 
             {!page ? <p className="muted">Cargando…</p> : page.items.length === 0 ? (
-              <p className="muted">Sin movimientos que casen los filtros.</p>
+              <p className="muted">
+                {movimiento ? "No se encuentra ese movimiento." : "Sin movimientos que casen los filtros."}
+              </p>
             ) : (
               <table className="data-table erp-bank-table">
                 <thead>
@@ -617,7 +648,13 @@ export default function ConciliacionPage() {
                 <tbody>
                   {page.items.map((m) => (
                     <tr key={m.id} className={`is-${m.status}`}>
-                      <td>{m.fecha_oper}</td>
+                      <td>
+                        {m.fecha_oper}
+                        {/* La fecha valor es con la que se registra el cobro. */}
+                        {m.fecha_valor && m.fecha_valor !== m.fecha_oper ? (
+                          <div className="muted small">valor {fechaCorta(m.fecha_valor)}</div>
+                        ) : null}
+                      </td>
                       <td>
                         <div>{m.concepto}</div>
                         {m.payer_name ? <div className="muted small">Pagador: {m.payer_name}</div> : null}
@@ -630,10 +667,26 @@ export default function ConciliacionPage() {
                           <ul className="erp-bank-proposals">
                             {(m.status === "reconciled" ? m.reconciled : m.proposals).map((p) => (
                               <li key={p.id}>
-                                <strong>{p.numero}</strong> · {p.cliente_nombre ?? "—"} · {eur(p.importe)}
+                                <strong>{p.numero}</strong>
+                                {/* El camino de vuelta: de la factura a la ficha de su pedido. */}
+                                {p.pedido ? (
+                                  <>
+                                    {" · "}
+                                    <Link href={`/erp/orders/${encodeURIComponent(p.pedido.id)}`}
+                                      title="Abrir la ficha del pedido">
+                                      {p.pedido.order_number}
+                                    </Link>
+                                  </>
+                                ) : null}
+                                {" · "}{p.cliente_nombre ?? "—"} · {eur(p.importe)}
                                 {p.origen === "extracto" ? (
                                   <span className="badge info small" title="Bart lo anotó a mano en la columna factura del extracto">
                                     {" "}anotado en el extracto
+                                  </span>
+                                ) : null}
+                                {p.origen === "pedido" ? (
+                                  <span className="badge info small" title="Se confirmó desde la ficha del pedido">
+                                    {" "}desde la ficha del pedido
                                   </span>
                                 ) : null}
                                 {p.reason ? <div className="muted small">{p.reason}</div> : null}

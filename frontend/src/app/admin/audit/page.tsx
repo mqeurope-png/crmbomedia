@@ -38,6 +38,7 @@ const ACTION_PREFIXES: { value: string; label: string }[] = [
   { value: "gdpr.", label: "GDPR" },
   { value: "backup.", label: "Backups" },
   { value: "company.", label: "Empresas" },
+  { value: "erp.", label: "ERP (pedidos, facturas, cobros)" },
 ];
 
 const TARGET_TYPES: string[] = [
@@ -45,6 +46,7 @@ const TARGET_TYPES: string[] = [
   "user",
   "contact",
   "company",
+  "order",
   "workflow",
   "pipeline",
   "pipeline_stage",

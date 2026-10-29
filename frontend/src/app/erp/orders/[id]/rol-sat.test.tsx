@@ -116,7 +116,7 @@ function muestra() {
     company_id: null, invoice_status: "not_invoiced", factusol_invoice_number: null,
     factusol_cobro_status: null,
     workflow: {
-      ...detail().workflow, queue: "por_enviar", queue_label: "Por enviar",
+      ...detail().workflow, queue: "listo", queue_label: "Listo",
       next_action: "marcar_completado", next_action_label: "Marcar completado",
       next_action_hint: "Muestra: prepárala y envíala desde el taller.", company: null,
       steps: [

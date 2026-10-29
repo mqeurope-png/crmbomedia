@@ -19,7 +19,15 @@ import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
+import { CobroBancoBlock } from "../../../components/erp/CobroBancoBlock";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
+import {
+  FacturaEnviadaBotones,
+  FacturaEnviadaHito,
+  MarcarFacturaEnviadaModal,
+} from "../../../components/erp/FacturaEnviada";
+import { MencionFacturaModal } from "../../../components/erp/MencionFacturaModal";
+import { RevincularClienteModal } from "../../../components/erp/RevincularClienteModal";
 import { OrderFactusolClientPanel } from "../../../components/erp/OrderFactusolClientPanel";
 import {
   VINCULAR_EMPRESA_PANEL_ID,
@@ -156,13 +164,6 @@ function hace(iso: string, now: number = Date.now()): string {
   return `el ${new Date(iso).toLocaleDateString("es-ES")}`;
 }
 
-/** Fecha DD/MM/AAAA a partir de un ISO (se lee el tramo de fecha directamente,
- *  sin zona horaria: el mismo día que muestra el backend). */
-function formatDMY(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : "—";
-}
-
 /** Media query como estado (SSR: false). El molde de la ficha decide con
  *  esto qué paneles abre por defecto y si la acción principal va pegada
  *  abajo (móvil). */
@@ -274,6 +275,11 @@ function ErpOrderDetailScreen() {
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
+  // «Ya enviada» (factura mandada por fuera), mención legal en la factura
+  // emitida y «Cambiar cliente» (30/10/2026).
+  const [marcarEnviadaOpen, setMarcarEnviadaOpen] = useState(false);
+  const [mencionOpen, setMencionOpen] = useState(false);
+  const [revincularOpen, setRevincularOpen] = useState(false);
   const [albaranSignal, setAlbaranSignal] = useState(0);
   // Lote 2 C: «Subir etiqueta» desde «Siguiente paso» abre el selector de la
   // etiqueta de «Documentos de envío» (la subida es el antiguo «Crear envío»).
@@ -546,6 +552,17 @@ function ErpOrderDetailScreen() {
             {emitPhase === "working" ? "Generando…" : label}
           </button>
         ) : null;
+      case "enviar_factura":
+        // Paso 6: mandarla por email desde aquí, o marcarla como ya enviada
+        // si se mandó por otro lado (papel, Gmail, con el albarán).
+        return (
+          <FacturaEnviadaBotones
+            emailBusy={emailBusy}
+            label={label}
+            onSend={canEmit && canEmailClient ? openInvoiceEmail : undefined}
+            onMark={canEditOrder ? () => setMarcarEnviadaOpen(true) : undefined}
+          />
+        );
       case "registrar_cobro": {
         // Misma lógica que el botón del panel FACTUSOL: el estado en vivo
         // manda (cobrada fuera de BoHub → no ofrecer un segundo cobro).
@@ -883,13 +900,16 @@ function ErpOrderDetailScreen() {
                 Enviar a SAT
               </button>
             ) : null}
-            {canEmit && canEmailClient ? (
+            {canEmit && canEmailClient && !(hasInvoice && !order.invoice_sent) ? (
               <>
                 {/* «Enviar factura al cliente»: la factura de FACTUSOL en PDF,
                     desde el alias de la TIENDA del pedido (o de la serie), en
                     el idioma del pedido/cliente, con previsualización
                     obligatoria antes de enviar y registro en el timeline.
-                    Sin factura emitida queda deshabilitado (no oculto). */}
+                    Sin factura emitida queda deshabilitado (no oculto). Con
+                    factura sin enviar, el botón está en el paso «Factura
+                    enviada» o en «Siguiente paso» (no se repite); aquí queda
+                    para reenviarla. */}
                 <button
                   type="button"
                   className="button small secondary"
@@ -1225,18 +1245,33 @@ function ErpOrderDetailScreen() {
               const nowBar = s.state === "now" ? (
                 <NextActionBar workflow={wf} embedded>{isMobile ? null : stepAction}</NextActionBar>
               ) : null;
-              // El hito OPCIONAL «Factura enviada»: enviada (con fecha) o
-              // pendiente, con el botón «Enviar factura al cliente» incrustado
-              // cuando ya hay factura. No bloquea el completado.
-              const enviada = s.key === "factura_enviada" ? (
-                <InvoiceEmailedHito
+              // Paso 6, «Factura enviada» (antes del cobro): enviada (con
+              // fecha y cómo) o pendiente, con «Enviar factura al cliente» y
+              // «Ya enviada…» cuando no es lo que toca (si lo es, ya están en
+              // «Siguiente paso», aunque el paso actual sea otro, p. ej.
+              // «Pagado» en un B2B sin pagar). Omitido (muestra): nada.
+              const enviada = s.key === "factura_enviada" && s.state !== "skipped" ? (
+                <FacturaEnviadaHito
                   order={order} hasInvoice={hasInvoice}
+                  isNow={wf.next_action === "enviar_factura"}
                   emailBusy={emailBusy}
                   onSend={canEmit && canEmailClient ? openInvoiceEmail : undefined}
+                  onMark={canEditOrder ? () => setMarcarEnviadaOpen(true) : undefined}
+                  onUndone={(o) => { setOrder(o); load(); }}
                 />
               ) : null;
-              if (!nowBar && !enviada) return null;
-              return <>{nowBar}{enviada}</>;
+              // Paso 7, «Cobro»: el movimiento del banco que lo pagó, si lo
+              // hay (solo oficina; una muestra no se cobra).
+              const banco = s.key === "cobro" && s.state !== "skipped" && hasInvoice
+                && canOffice && !esMuestra ? (
+                  <CobroBancoBlock
+                    orderId={order.id} refreshKey={officeTick} canConfirm={canCobro}
+                    canConciliar={can(user, Cap.CONCILIACION)}
+                    onDone={() => load()}
+                  />
+                ) : null;
+              if (!nowBar && !enviada && !banco) return null;
+              return <>{nowBar}{enviada}{banco}</>;
             }}
           />
           {wf.steps.some((s) => s.state === "now") ? null : (
@@ -1464,6 +1499,20 @@ function ErpOrderDetailScreen() {
               ) : wf?.company ? (
                 <span className="muted"> · sin vincular</span>
               ) : null}
+              {/* Revincular a otro cliente de FACTUSOL (o crearlo), con vista
+                  previa; con factura emitida, también la factura. */}
+              {canEditOrder && canOffice && !order.cancelled && !esMuestra ? (
+                <>
+                  {" "}
+                  <button
+                    type="button" className="button small secondary"
+                    title="Buscar el cliente en FACTUSOL por nombre o CIF (o crearlo) y vincular el pedido a él"
+                    onClick={() => setRevincularOpen(true)}
+                  >
+                    Cambiar cliente
+                  </button>
+                </>
+              ) : null}
             </span>
           </div>
           <div className="erp-flow-kv">
@@ -1538,6 +1587,15 @@ function ErpOrderDetailScreen() {
               ) : (
                 invoiceLabel(order) || "pendiente"
               )}
+              {canEmit && hasInvoice && !order.factusol_invoice_problem ? (
+                <button
+                  type="button" className="button small secondary"
+                  title="Añade una mención legal (Ceuta y Melilla, Canarias, fuera de la UE…) a las observaciones de la factura emitida"
+                  onClick={() => setMencionOpen(true)}
+                >
+                  Añadir mención legal
+                </button>
+              ) : null}
             </div>
           </div>
           {order.factusol_invoice_problem === "sin_serie" ? (
@@ -1785,6 +1843,33 @@ function ErpOrderDetailScreen() {
           onDone={() => { setEmbalarOpen(false); load(); }}
         />
       ) : null}
+      {marcarEnviadaOpen ? (
+        <MarcarFacturaEnviadaModal
+          order={order}
+          factura={invoiceLabel(order) || order.factusol_invoice_number || ""}
+          onClose={() => setMarcarEnviadaOpen(false)}
+          onDone={(o) => { setMarcarEnviadaOpen(false); setOrder(o); load(); }}
+        />
+      ) : null}
+      {mencionOpen ? (
+        <MencionFacturaModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          factura={invoiceLabel(order) || order.factusol_invoice_number || ""}
+          onClose={() => setMencionOpen(false)}
+          onDone={() => load()}
+        />
+      ) : null}
+      {revincularOpen ? (
+        <RevincularClienteModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          factura={hasInvoice ? (invoiceLabel(order) || order.factusol_invoice_number || null) : null}
+          clienteActual={wf?.company?.name || order.company_name || customerLabel(order) || null}
+          onClose={() => setRevincularOpen(false)}
+          onDone={() => load()}
+        />
+      ) : null}
       {markPaidOpen ? (
         <MarkPaidDialog
           busy={markPaidBusy}
@@ -1867,56 +1952,6 @@ const REGIME_TEXT: Record<string, string> = {
   intracomunitario: "intracomunitario",
   exportacion: "exportación",
 };
-
-/** El hito OPCIONAL «Factura enviada» de la línea de vida: de un vistazo (sin
- *  abrir el historial) si la factura se ha enviado al cliente por email y
- *  cuándo. Enviada → verde con la fecha (destinatarios en el `title`); con
- *  factura pero sin enviar → aviso ámbar + botón «Enviar factura al cliente»;
- *  sin factura todavía → nota gris (no aplica aún). No bloquea el completado. */
-function InvoiceEmailedHito({
-  order, hasInvoice, emailBusy, onSend,
-}: {
-  order: OrderDetail;
-  hasInvoice: boolean;
-  emailBusy: boolean;
-  /** Sin él (quien no manda facturas al cliente) no hay botón. */
-  onSend?: () => void;
-}) {
-  const at = order.invoice_emailed_at ?? null;
-  const to = order.invoice_emailed_to ?? [];
-  if (at) {
-    return (
-      <p
-        className="erp-flow-emailed is-sent"
-        title={to.length ? `Enviada a ${to.join(", ")}` : undefined}
-      >
-        Factura enviada al cliente el {formatDMY(at)}
-      </p>
-    );
-  }
-  if (!hasInvoice) {
-    return (
-      <p className="erp-flow-emailed is-muted">
-        Cuando se emita la factura podrás enviarla al cliente por email.
-      </p>
-    );
-  }
-  return (
-    <div className="erp-flow-emailed is-unsent">
-      <span>Factura sin enviar al cliente</span>
-      {onSend ? (
-        <button
-          type="button"
-          className="button small secondary"
-          disabled={emailBusy}
-          onClick={() => void onSend()}
-        >
-          {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
-        </button>
-      ) : null}
-    </div>
-  );
-}
 
 type Linea = OrderDetail["lines"][number];
 

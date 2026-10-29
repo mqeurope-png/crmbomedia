@@ -9,6 +9,7 @@ from app.erp.api.genei import router as genei_router
 from app.erp.api.ia import router as ia_router
 from app.erp.api.leads import router as leads_router
 from app.erp.api.ofertas import router as ofertas_router
+from app.erp.api.order_correcciones import router as order_correcciones_router
 from app.erp.api.order_timeline import router as order_timeline_router
 from app.erp.api.orders import router as orders_router
 from app.erp.api.pedidos_web import router as pedidos_web_router
@@ -33,6 +34,7 @@ __all__ = [
     "leads_router",
     "ofertas_router",
     "plantillas_router",
+    "order_correcciones_router",
     "order_timeline_router",
     "orders_router",
     "pedidos_web_router",

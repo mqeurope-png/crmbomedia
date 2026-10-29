@@ -204,8 +204,9 @@ del pedido de BoHub.
      ni pueden tenerla (14/10/2026).
 10. `factura_sin_enviar` (media) — Factura de hace más de N días (7 por
     defecto) sin enviar al cliente.
-    - Cuenta como enviada el evento `erp.invoice_emailed` o «Factura enviada»
-      escrita a mano en la hoja.
+    - Cuenta como enviada el evento `erp.invoice_emailed`, la marca «Ya
+      enviada» de la ficha del pedido (`erp.invoice_marked_sent`, que se puede
+      deshacer) o «Factura enviada» escrita a mano en la hoja.
 11. `pedido_sin_aprobar` (baja) — Pedido esperando aprobación hace más de N
     días (7 por defecto).
     - No cuenta los carritos web sin pagar, que están ocultos por estado.

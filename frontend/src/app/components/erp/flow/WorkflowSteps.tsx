@@ -18,8 +18,9 @@ const TITLE: Record<WorkflowStep["state"], string> = {
 };
 
 /** La «línea de vida» del pedido: Creado → Pagado → Aprobado → Albarán →
- *  Factura → Cobro → Enviado, con el paso actual resaltado. Los estados los
- *  calcula el backend (`workflow.steps`): aquí no se deduce nada.
+ *  Factura → Factura enviada → Cobro, con el paso actual resaltado (el envío
+ *  del paquete se sigue en la Cola SAT). Los estados los calcula el backend
+ *  (`workflow.steps`): aquí no se deduce nada.
  *
  *  Lote 2 · PR-2: en `vertical` los 7 pasos van en columna (cabe en cualquier
  *  ancho): icono con conector, título y dato del paso en la misma fila, y el
@@ -98,10 +99,11 @@ function stepDetail(s: WorkflowStep): string {
   return s.state === "done" ? "hecho" : "pendiente";
 }
 
-/** Lectura rápida de la línea de vida («Paso 5 de 6 · Cobro»): el índice del
+/** Lectura rápida de la línea de vida («Paso 7 de 7 · Cobro»): el índice del
  *  paso actual (1-based) o null si no hay ninguno (todos hechos u omitidos).
- *  Los hitos OPCIONALES (p. ej. «Factura enviada») NO cuentan para el total ni
- *  para «N hechos»: son informativos y van SIEMPRE al final de la lista. */
+ *  Un hito OPCIONAL (hoy no hay ninguno: «Factura enviada» es el paso 6 desde
+ *  el 30/10/2026) no contaría para el total ni para «N hechos», y tendría que
+ *  ir al final de la lista. */
 export function stepProgress(steps: WorkflowStep[]): {
   current: number | null;
   label: string | null;

@@ -39,6 +39,7 @@ import {
   type LeadResponseCatalogo,
   type LeadResponseConfig,
   type LeadResponseVentana,
+  type MencionLegal,
 } from "../../lib/erpApi";
 import { getEmailAliases, getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
 import { useVisible } from "./useVisible";
@@ -134,13 +135,16 @@ const ORDER_SOURCES = [
 /** Prefijo de referencia válido (mismo criterio que el backend). */
 const REF_PREFIX_RE = /^[A-Z0-9]{1,6}$/;
 
+/** Lo que cabe en una observación de la factura (OB1FAC/OB2FAC). */
+const MAX_MENCION = 255;
+
 /** Lote 2 · PR-2 — cada sección se guarda por separado: el PATCH lleva SOLO
  *  sus campos (el backend acepta cualquier subconjunto). El orden es el de la
  *  pantalla. */
 type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "ofertas" | "aviso_envio" | "series"
-  | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
+  | "abreviaturas" | "sat" | "empresas" | "menciones" | "almacenes" | "contrapartidas"
   | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento"
   | "asistente";
 
@@ -166,6 +170,8 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "abreviaturas", title: "Abreviaturas de empresa", keys: ["factusol_series_abbreviations"] },
   { id: "sat", title: "Email del SAT / taller", keys: ["sat_email"] },
   { id: "empresas", title: "Empresas emisoras", keys: ["factusol_companies"] },
+  { id: "menciones", title: "Menciones legales de factura",
+    keys: ["menciones_legales", "verifactu_activo"] },
   { id: "almacenes", title: "Almacenes de recogida", keys: ["factusol_pickup_warehouses"] },
   { id: "contrapartidas", title: "Contrapartidas de cobro",
     keys: ["contrapartidas", "contrapartida_rules"] },
@@ -1170,6 +1176,97 @@ export default function ErpSettingsPage() {
                 </label>
               </details>
             ))}
+        </SettingsSection>
+
+        {/* Menciones legales de factura (van a sus observaciones) y VERI*FACTU. */}
+        <SettingsSection
+          {...sectionProps("menciones")}
+          lead="Los textos legales que se pueden añadir a una factura (p. ej. la exención de IVA de una exportación) y si VERI*FACTU está activo."
+        >
+          <p className="muted small">
+            Estos textos van a las observaciones de la factura (OB1FAC/OB2FAC) cuando
+            se eligen desde la ficha del pedido o al emitirla. Las tres iniciales son
+            redacciones de referencia, sin revisar: no se pueden aplicar hasta que
+            alguien (o la gestoría) las revise y marque «Revisado». Si cambias el texto
+            de una revisada, se desmarca: hay que volver a revisarlo.
+          </p>
+          {(cfg.menciones_legales ?? []).map((m, i) => {
+            const setMencion = (over: Partial<MencionLegal>) => {
+              const list = [...(cfg.menciones_legales ?? [])];
+              list[i] = { ...list[i], ...over };
+              patch({ menciones_legales: list });
+            };
+            const conTexto = m.texto.trim() !== "";
+            return (
+              <div className="erp-bank-row" key={i}>
+                <input
+                  type="text" placeholder="Nombre (p. ej. Canarias)"
+                  aria-label={`Mención ${i + 1} nombre`}
+                  value={m.nombre}
+                  onChange={(e) => setMencion({ nombre: e.target.value })}
+                />
+                <textarea
+                  rows={2} maxLength={MAX_MENCION}
+                  placeholder="El texto tal como sale en la factura"
+                  aria-label={`Mención ${i + 1} texto`}
+                  value={m.texto}
+                  // Texto cambiado = texto sin revisar: se vuelve a marcar
+                  // tras revisarlo.
+                  onChange={(e) => setMencion({ texto: e.target.value, revisado: false })}
+                />
+                <span className="muted small">{m.texto.length}/{MAX_MENCION}</span>
+                <label className="erp-bank-default"
+                       title={conTexto ? undefined : "Escribe el texto antes de marcarla como revisada."}>
+                  <input
+                    type="checkbox"
+                    aria-label={`Mención ${i + 1} revisada`}
+                    checked={m.revisado}
+                    disabled={!conTexto}
+                    onChange={(e) => setMencion({ revisado: e.target.checked })}
+                  />
+                  Revisado
+                </label>
+                <button
+                  type="button"
+                  className="button small secondary"
+                  aria-label={`Quitar mención ${i + 1}`}
+                  onClick={() => patch({
+                    menciones_legales: (cfg.menciones_legales ?? []).filter((_, j) => j !== i),
+                  })}
+                >
+                  Quitar
+                </button>
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="button small secondary"
+            onClick={() => patch({
+              menciones_legales: [
+                ...(cfg.menciones_legales ?? []),
+                // Sin id: el backend lo saca del nombre al guardar.
+                { nombre: "", texto: "", revisado: false } as MencionLegal,
+              ],
+            })}
+          >
+            + Añadir mención
+          </button>
+
+          <h3 className="erp-settings-sub">VERI*FACTU</h3>
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="VERI*FACTU activo"
+              checked={cfg.verifactu_activo ?? false}
+              onChange={(e) => patch({ verifactu_activo: e.target.checked })}
+            />
+            <span>VERI*FACTU activo</span>
+            <span className="muted small">
+              Con VERI*FACTU activo no se cambia el cliente de una factura emitida: solo
+              cabe la rectificativa desde FACTUSOL.
+            </span>
+          </label>
         </SettingsSection>
 
         {/* E4-fix1 — almacenes de recogida del albarán de devolución. */}

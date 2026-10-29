@@ -176,8 +176,9 @@ def test_muestra_vincula_factura_y_carga_sus_datos(http, session_factory) -> Non
         estados = {st["key"]: (st["state"], st.get("detail")) for st in order_steps(o)}
     assert all(det != "no facturable" for _state, det in estados.values()), estados
     assert estados["factura"][0] == "done"
-    # «Por cobrar» la lista; PDF / envío de factura la encuentran (#493).
-    assert m["order_number"] in _queue(http, "por_cobrar")
+    # Como un pedido facturado: primero «Factura por enviar» (luego, «Por
+    # cobrar»); PDF / envío de factura la encuentran (#493).
+    assert m["order_number"] in _queue(http, "factura_por_enviar")
     ref = http.get(f"/api/erp/orders/{m['id']}/factusol-invoice-ref",
                    headers=auth_headers(http, "user"))
     assert ref.status_code == 200 and ref.json()["numero"] == "2-526110"

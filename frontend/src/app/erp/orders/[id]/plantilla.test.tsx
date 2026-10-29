@@ -134,7 +134,7 @@ const MUESTRA = {
   born_as_sample: true, total_amount: 0, company_id: null, company_name: null,
   factusol_albaran_number: null, linked_documents: [], sample_pending_link: null,
   workflow: {
-    queue: "por_enviar", queue_label: "Por enviar",
+    queue: "listo", queue_label: "Listo",
     next_action: "marcar_completado", next_action_label: "Marcar completado",
     next_action_hint: "Muestra.", blocked: false, regime: null, steps: [], alerts: [],
     company: null,

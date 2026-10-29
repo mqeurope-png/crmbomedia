@@ -6,6 +6,7 @@ import {
   getFactusolInvoiceStatus,
   getFactusolFormasPago,
   getFactusolSeries,
+  getMencionesLegales,
   checkFactusolPedido,
 } from "../../lib/erpApi";
 
@@ -15,12 +16,14 @@ jest.mock("../../lib/erpApi", () => ({
   getFactusolInvoiceStatus: jest.fn(),
   getFactusolFormasPago: jest.fn(),
   getFactusolSeries: jest.fn(),
+  getMencionesLegales: jest.fn(),
 }));
 
 const mockEmit = emitFactusolInvoice as jest.Mock;
 const mockStatus = getFactusolInvoiceStatus as jest.Mock;
 const mockFormas = getFactusolFormasPago as jest.Mock;
 const mockSeries = getFactusolSeries as jest.Mock;
+const mockMenciones = getMencionesLegales as jest.Mock;
 
 function props(over = {}) {
   return {
@@ -40,6 +43,8 @@ beforeEach(() => {
     items: [{ serie: 5, nombre: "Streamtec", is_default: true, is_known: true }],
     default: 5,
   });
+  mockMenciones.mockReset();
+  mockMenciones.mockResolvedValue({ items: [], max: 255, verifactu_activo: false });
 });
 
 describe("EmitFactusolButton", () => {

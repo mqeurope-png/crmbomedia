@@ -379,7 +379,7 @@ def factura_sin_enviar(ctx: Contexto) -> Iterator[Hallazgo]:
     from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
     from app.erp.models import SeguimientoOverride  # noqa: PLC0415
     from app.erp.seguimiento import _fecha_factura  # noqa: PLC0415
-    from app.erp.workflow import latest_invoice_emailed_map  # noqa: PLC0415
+    from app.erp.workflow import latest_invoice_sent_map  # noqa: PLC0415
 
     umbral = ctx.dias("factura_sin_enviar", 7)
     candidatos = []
@@ -399,7 +399,9 @@ def factura_sin_enviar(ctx: Contexto) -> Iterator[Hallazgo]:
     if not candidatos:
         return
     ids = [o.id for o, *_ in candidatos]
-    enviados = latest_invoice_emailed_map(ctx.session, ids)
+    # Enviada por email o marcada «ya enviada» en la ficha (lo de la hoja,
+    # aparte: `a_mano`).
+    enviados = latest_invoice_sent_map(ctx.session, ids, con_hoja=False)
     a_mano = {
         oid for oid, valor in ctx.session.execute(
             select(SeguimientoOverride.order_id, SeguimientoOverride.value).where(

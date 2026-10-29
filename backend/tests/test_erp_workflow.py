@@ -124,30 +124,43 @@ def test_workflow_por_facturar(session_factory) -> None:
     assert wf["blocked"] is False
 
 
-def test_workflow_por_cobrar(session_factory) -> None:
-    """Facturado y pagado en el CRM pero sin cobro en FACTUSOL: toca
-    registrarlo, y además es una incidencia contable (aviso)."""
+def test_workflow_factura_por_enviar_y_por_cobrar(session_factory) -> None:
+    """Facturado: primero se envía la factura al cliente («Factura por
+    enviar»); enviada y sin cobro en FACTUSOL, toca registrarlo (y siendo
+    pagado en el CRM es además un aviso contable)."""
     with session_factory() as s:
         _order(s, oid="o3", number="BOPRIN-1", payment_status="paid",
                preparation_status="in_queue", approved_at=datetime.now(UTC),
                invoice_status="invoiced_by_erp", factusol_invoice_number="260063",
                factusol_invoice_serie=5)
     wf = _wf(session_factory, "o3")
+    assert wf["queue"] == "factura_por_enviar" and wf["next_action"] == "enviar_factura"
+    assert wf["next_action_label"] == ACTION_LABELS["enviar_factura"]
+    states = {st["key"]: st["state"] for st in wf["steps"]}
+    assert states["factura"] == "done" and states["factura_enviada"] == "now"
+    assert states["cobro"] == "pending"
+
+    _mark_invoice_emailed(session_factory, "o3", ["cliente@ejemplo.test"])
+    wf = _wf(session_factory, "o3")
     assert wf["queue"] == "por_cobrar" and wf["next_action"] == "registrar_cobro"
     assert "cobro_no_registrado" in [a["code"] for a in wf["alerts"]]
+    states = {st["key"]: st["state"] for st in wf["steps"]}
+    assert states["factura_enviada"] == "done" and states["cobro"] == "now"
 
 
-def test_workflow_por_enviar_y_listo(session_factory) -> None:
-    """Facturado y cobrado → listo para completar (el SAT es OPCIONAL, ya no
-    bloquea); completado → listo. El envío al taller no cambia la acción."""
+def test_workflow_enviada_y_cobrada_es_listo(session_factory) -> None:
+    """Facturado, factura enviada y cobrado → listo para completar (el envío
+    del paquete se sigue en la Cola SAT, no bloquea); completado → listo."""
     with session_factory() as s:
         _order(s, oid="o4", number="BOPRIN-2", payment_status="paid",
                preparation_status="packed", approved_at=datetime.now(UTC),
                invoice_status="invoiced_by_erp", factusol_invoice_number="260064",
                factusol_cobro_status="cobrada")
+    # Cobrada pero sin enviar la factura: falta eso (el paso 6).
+    assert _wf(session_factory, "o4")["queue"] == "factura_por_enviar"
+    _mark_invoice_emailed(session_factory, "o4", ["cliente@ejemplo.test"])
     wf = _wf(session_factory, "o4")
-    # SAT opcional: sin haber enviado nada, ya se puede marcar completado.
-    assert wf["queue"] == "por_enviar" and wf["next_action"] == "marcar_completado"
+    assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"
 
     # El sub-estado del transporte (etiqueta subida, en tránsito) NO cambia la
     # acción: sigue siendo «marcar completado» — el envío al taller es opcional.
@@ -157,7 +170,7 @@ def test_workflow_por_enviar_y_listo(session_factory) -> None:
             o.transport_status = estado
             s.commit()
         wf = _wf(session_factory, "o4")
-        assert wf["queue"] == "por_enviar" and wf["next_action"] == "marcar_completado"
+        assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"
 
     with session_factory() as s:
         o = s.get(Order, "o4")
@@ -170,14 +183,9 @@ def test_workflow_por_enviar_y_listo(session_factory) -> None:
     # y seguimiento»). El albarán de un web no aplica (lo crea WooCommerce).
     assert "enviado" not in estados
     assert estados["albaran"] == "skipped"
-    # Los OBLIGATORIOS están hechos; el hito OPCIONAL «Factura enviada» sigue
-    # pendiente (no se mandó por email) y no bloquea ni cuenta como obligatorio.
-    obligatorios = {k: v for k, v in estados.items()
-                    if k not in ("albaran", "factura_enviada")}
-    assert all(v == "done" for v in obligatorios.values())
-    assert estados["factura_enviada"] == "pending"
-    fe = next(st for st in wf["steps"] if st["key"] == "factura_enviada")
-    assert fe["optional"] is True
+    # Todos los pasos hechos, también «Factura enviada» (ya no es opcional).
+    assert all(v == "done" for k, v in estados.items() if k != "albaran")
+    assert not any(st.get("optional") for st in wf["steps"])
 
 
 # --- incidencias -------------------------------------------------------------
@@ -279,7 +287,7 @@ def test_resolver_la_excepcion_saca_el_pedido_de_incidencias(session_factory) ->
 
 
 def test_workflow_lineas_sin_mapear_tampoco_si_ya_facturado(session_factory) -> None:
-    """Facturado con una línea sin CODART: sigue su ciclo (por enviar)."""
+    """Facturado con una línea sin CODART: sigue su ciclo (factura por enviar)."""
     with session_factory() as s:
         _order(s, oid="o8", number="BOPRIN-4", payment_status="paid",
                preparation_status="packed", approved_at=datetime.now(UTC),
@@ -287,7 +295,7 @@ def test_workflow_lineas_sin_mapear_tampoco_si_ya_facturado(session_factory) -> 
                factusol_cobro_status="cobrada",
                lines=[{"sku": "RARO-1", "codart": None}])
     wf = _wf(session_factory, "o8")
-    assert wf["queue"] == "por_enviar"
+    assert wf["queue"] == "factura_por_enviar"
     assert "lineas_sin_mapear" not in [a["code"] for a in wf["alerts"]]
 
 
@@ -391,27 +399,28 @@ def _mark_invoice_emailed(session_factory, oid: str, to: list[str]) -> None:
         s.commit()
 
 
-def test_hito_factura_enviada_opcional(session_factory) -> None:
-    """El hito «Factura enviada» refleja pendiente/enviada, es OPCIONAL, nunca
-    es el paso actual y no cuenta como obligatorio; el SAT ya no es un paso."""
+def test_factura_enviada_es_el_paso_6_antes_del_cobro(session_factory) -> None:
+    """«Factura enviada» es el paso 6 de 7, va ANTES del cobro y es obligatorio
+    (ya no es un hito opcional al final); el SAT no es un paso."""
     with session_factory() as s:
         _order(s, oid="fe", number="ARTISJ-FE", payment_status="paid",
                preparation_status="in_queue", approved_at=datetime.now(UTC),
-               invoice_status="invoiced_by_erp", factusol_invoice_number="260070",
-               factusol_cobro_status="cobrada")
+               invoice_status="invoiced_by_erp", factusol_invoice_number="260070")
+    wf = _wf(session_factory, "fe")
+    keys = [st["key"] for st in wf["steps"]]
+    assert keys == ["creado", "pagado", "aprobado", "albaran", "factura",
+                    "factura_enviada", "cobro"]
+    assert "enviado" not in keys
+    steps = {st["key"]: st for st in wf["steps"]}
+    assert steps["factura_enviada"]["state"] == "now"
+    assert not steps["factura_enviada"].get("optional")
+    assert steps["cobro"]["state"] == "pending"
+    # Enviada: hecho con la fecha, y el actual pasa a ser el cobro.
+    _mark_invoice_emailed(session_factory, "fe", ["cliente@ejemplo.test"])
     wf = _wf(session_factory, "fe")
     steps = {st["key"]: st for st in wf["steps"]}
-    # El SAT/«Enviado» ya no es un paso de la línea de vida.
-    assert "enviado" not in steps
-    fe = steps["factura_enviada"]
-    assert fe["state"] == "pending" and fe["optional"] is True
-    # No cuenta para el «Paso N de N» (los obligatorios son 6, sin factura_enviada).
-    assert sum(1 for st in wf["steps"] if not st.get("optional")) == 6
-    # Marcar enviada: hito done con la fecha; sigue opcional.
-    _mark_invoice_emailed(session_factory, "fe", ["cliente@x.com"])
-    wf = _wf(session_factory, "fe")
-    fe = {st["key"]: st for st in wf["steps"]}["factura_enviada"]
-    assert fe["state"] == "done" and fe["optional"] is True and fe["detail"]
+    assert steps["factura_enviada"]["state"] == "done" and steps["factura_enviada"]["detail"]
+    assert steps["cobro"]["state"] == "now"
 
 
 def test_bandeja_filtro_factura_enviada(session_factory, http) -> None:
@@ -438,16 +447,95 @@ def test_bandeja_filtro_factura_enviada(session_factory, http) -> None:
     assert {"ARTISJ-A", "ARTISJ-B", "ARTISJ-C"} <= {i["order_number"] for i in todos["items"]}
 
 
-def test_workflow_no_requiere_envio_fuera_de_por_enviar(session_factory) -> None:
-    """Un pedido facturado + cobrado marcado «No requiere envío» NO cae en la
-    cola «Por enviar»: queda «Listo» (con el completado opcional a mano)."""
+def _facturado(s: Session, oid: str, numero: str) -> None:
+    _order(s, oid=oid, number=f"ARTISJ-{oid.upper()}", payment_status="paid",
+           approved_at=datetime.now(UTC), invoice_status="invoiced_by_erp",
+           factusol_invoice_number=numero)
+
+
+def test_factura_enviada_en_la_hoja_solo_si_es_una_fecha(session_factory, http) -> None:
+    """Un texto en la columna «Factura enviada» de la hoja («sí, por email»)
+    no da la factura por enviada: solo una fecha."""
+    from app.erp.models import SeguimientoOverride
+    from app.erp.workflow import latest_invoice_sent_map
+
+    with session_factory() as s:
+        _facturado(s, "h1", "260301")
+        _facturado(s, "h2", "260302")
+        s.add_all([
+            SeguimientoOverride(order_id="h1", column_key="factura_enviada",
+                                value="sí, por email"),
+            SeguimientoOverride(order_id="h2", column_key="factura_enviada",
+                                value="2026-09-10"),
+        ])
+        s.commit()
+        assert latest_invoice_sent_map(s, ["h1", "h2"]) == {"h2": "2026-09-10"}
+    assert _wf(session_factory, "h1")["queue"] == "factura_por_enviar"
+    assert _wf(session_factory, "h2")["queue"] == "por_cobrar"
+    h = auth_headers(http, "pedidos")
+    assert http.get("/api/erp/orders/h1", headers=h).json()["invoice_sent"] is None
+    sent = http.get("/api/erp/orders/h2", headers=h).json()["invoice_sent"]
+    assert sent["via"] == "hoja" and sent["at"] == "2026-09-10"
+
+
+def test_deshacer_en_el_mismo_segundo_que_la_marca_no_se_pierde(session_factory, http) -> None:
+    """Marca «ya enviada» y su deshacer en el mismo segundo, con el deshacer
+    ordenado antes (ids al azar): sigue deshecha, porque el deshacer dice qué
+    marca anula. Un deshacer antiguo (sin `anula`) quita lo marcado antes."""
+    import json
+
+    from app.erp.workflow import latest_invoice_sent_map
+    from app.models.crm import AuditLog
+
+    t = datetime(2026, 9, 1, 10, 0, 0, tzinfo=UTC)
+    with session_factory() as s:
+        _facturado(s, "u1", "260310")
+        _facturado(s, "u2", "260311")
+        _facturado(s, "u3", "260312")
+        s.add_all([
+            # u1: mismo segundo, el deshacer («aa…») va antes que la marca («zz…»).
+            AuditLog(id="zz-marca-u1", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u1", created_at=t,
+                     metadata_json=json.dumps({"fecha": "2026-09-01", "medio": "papel"})),
+            AuditLog(id="aa-deshacer-u1", action="erp.invoice_marked_unsent",
+                     target_type="order", target_id="u1", created_at=t,
+                     metadata_json=json.dumps({"anula": "zz-marca-u1"})),
+            # u2: deshacer antiguo, sin `anula`, un segundo después: sigue valiendo.
+            AuditLog(id="m-u2", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u2", created_at=t,
+                     metadata_json=json.dumps({"fecha": "2026-09-01"})),
+            AuditLog(id="d-u2", action="erp.invoice_marked_unsent", target_type="order",
+                     target_id="u2", created_at=t.replace(second=1), metadata_json="{}"),
+            # u3: se anula una marca, pero hay otra que sigue en pie.
+            AuditLog(id="m1-u3", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u3", created_at=t,
+                     metadata_json=json.dumps({"fecha": "2026-08-30"})),
+            AuditLog(id="m2-u3", action="erp.invoice_marked_sent", target_type="order",
+                     target_id="u3", created_at=t.replace(second=2),
+                     metadata_json=json.dumps({"fecha": "2026-09-02"})),
+            AuditLog(id="d-u3", action="erp.invoice_marked_unsent", target_type="order",
+                     target_id="u3", created_at=t.replace(second=2),
+                     metadata_json=json.dumps({"anula": "m2-u3"})),
+        ])
+        s.commit()
+        assert latest_invoice_sent_map(s, ["u1", "u2", "u3"]) == {"u3": "2026-08-30"}
+    assert _wf(session_factory, "u1")["queue"] == "factura_por_enviar"
+    h = auth_headers(http, "pedidos")
+    assert http.get("/api/erp/orders/u1", headers=h).json()["invoice_sent"] is None
+    assert http.get("/api/erp/orders/u2", headers=h).json()["invoice_sent"] is None
+    assert http.get("/api/erp/orders/u3", headers=h).json()["invoice_sent"]["at"] == "2026-08-30"
+
+
+def test_workflow_no_requiere_envio_es_listo(session_factory) -> None:
+    """Un pedido facturado, con la factura enviada y cobrado, marcado «No
+    requiere envío», queda «Listo» (con el completado opcional a mano)."""
     with session_factory() as s:
         _order(s, oid="ns", number="ARTISJ-NS", payment_status="paid",
                preparation_status="in_queue", approved_at=datetime.now(UTC),
                invoice_status="invoiced_by_erp", factusol_invoice_number="260201",
                factusol_cobro_status="cobrada")
-    # Sin marcar: cae en «Por enviar».
-    assert _wf(session_factory, "ns")["queue"] == "por_enviar"
+    _mark_invoice_emailed(session_factory, "ns", ["cliente@ejemplo.test"])
+    assert _wf(session_factory, "ns")["queue"] == "listo"
     with session_factory() as s:
         s.get(Order, "ns").shipping_not_required = True
         s.commit()
@@ -468,6 +556,7 @@ def test_workflow_sin_cobro_fuera_de_facturar_y_cobrar(session_factory) -> None:
         _order(s, oid="onc", number="MANUAL-000050", payment_status="pending",
                preparation_status="in_queue", approved_at=datetime.now(UTC),
                invoice_status="invoiced_by_erp", factusol_invoice_number="260099")
+    _mark_invoice_emailed(session_factory, "onc", ["cliente@ejemplo.test"])
     assert _wf(session_factory, "onc")["queue"] == "por_cobrar"
     with session_factory() as s:
         s.get(Order, "onc").packing_json = json.dumps(
@@ -475,7 +564,7 @@ def test_workflow_sin_cobro_fuera_de_facturar_y_cobrar(session_factory) -> None:
         )
         s.commit()
     wf = _wf(session_factory, "onc")
-    assert wf["queue"] == "por_enviar" and wf["next_action"] == "marcar_completado"
+    assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"
 
 
 # --- remates de bandeja (lote de pantallas) -------------------------------------
@@ -491,6 +580,7 @@ def test_workflow_entregado_facturado_y_cobrado_es_listo(session_factory) -> Non
                preparation_status="packed", approved_at=datetime.now(UTC),
                invoice_status="invoiced_by_erp", factusol_invoice_number="260310",
                factusol_cobro_status="cobrada", transport_status="delivered")
+    _mark_invoice_emailed(session_factory, "ent", ["cliente@ejemplo.test"])
     wf = _wf(session_factory, "ent")
     assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"
     # Seguimiento (pantalla y hoja) usa la misma cola como Situación.

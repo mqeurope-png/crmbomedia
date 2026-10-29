@@ -44,7 +44,7 @@ jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
   EXCLUSION_REASON_CODES: ["cancelado", "otro"],
   WORKFLOW_QUEUES: [
-    "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+    "por_revisar", "por_facturar", "factura_por_enviar", "por_cobrar", "incidencias", "listo",
   ],
   FALTA_CLIENTE_LABEL: { empresa: "sin empresa", nif: "sin NIF", direccion: "sin dirección" },
   customerHeadline: (o: { contact_name?: string | null; company_name?: string | null }) =>
@@ -144,7 +144,7 @@ const D = order({
 });
 
 const COUNTS = {
-  por_revisar: 4, por_facturar: 6, por_cobrar: 3, por_enviar: 5,
+  por_revisar: 4, por_facturar: 6, factura_por_enviar: 5, por_cobrar: 3,
   incidencias: 2, listo: 9,
 };
 
@@ -201,6 +201,22 @@ describe("ERP · Bandeja de trabajo (rediseño de flujo)", () => {
     await user.click(screen.getByRole("button", { name: "Por facturar (6)" }));
     await waitFor(() => expect(listOrders).toHaveBeenLastCalledWith(
       expect.objectContaining({ queue: undefined }),
+    ));
+  });
+
+  it("«Factura por enviar» cuenta las facturas que aún no han llegado al cliente, va antes de «Por cobrar» y filtra (ya no hay «Por enviar»)", async () => {
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    const card = screen.getByRole("button", { name: "Factura por enviar (5)" });
+    expect(card).toHaveAttribute("title", "facturados, la factura aún no ha llegado al cliente");
+    expect(screen.queryByRole("button", { name: /^Por enviar/ })).toBeNull();
+    const nombres = screen.getAllByRole("button", { name: /\(\d+\)$/ })
+      .map((b) => b.getAttribute("aria-label"));
+    expect(nombres.indexOf("Factura por enviar (5)")).toBeLessThan(nombres.indexOf("Por cobrar (3)"));
+    await user.click(card);
+    await waitFor(() => expect(listOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ queue: "factura_por_enviar" }),
     ));
   });
 
@@ -762,7 +778,7 @@ const S1 = order({
   id: "s-1", order_number: "MUESTRA-0007", external_source: "manual", order_kind: "sample",
   contact_name: "Carla", company_name: null, total_amount: 0,
   placed_at: "2026-09-23T10:00:00",
-  workflow: wf({ queue: "por_enviar", queue_label: "Por enviar", next_action: "ninguna" }),
+  workflow: wf({ queue: "listo", queue_label: "Listo", next_action: "ninguna" }),
 });
 const P1 = order({
   id: "p-1", order_number: "PRO-99", external_source: "factusol_proforma",
