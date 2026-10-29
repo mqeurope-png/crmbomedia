@@ -154,13 +154,15 @@ def test_no_deja_emitir_factura_ni_albaran(http):
 def test_no_entra_en_por_facturar_ni_por_cobrar(http):
     numero = _crear(http).json()["order_number"]
     admin = auth_headers(http, "admin")
-    for cola in ("por_facturar", "por_cobrar"):
+    for cola in ("por_facturar", "factura_por_enviar", "por_cobrar"):
         r = http.get("/api/erp/orders", params={"queue": cola}, headers=admin)
         assert r.status_code == 200, r.text
         assert numero not in {o["order_number"] for o in r.json()["items"]}, cola
-    # Sí está en «por enviar»: es lo único que queda por hacer.
-    r = http.get("/api/erp/orders", params={"queue": "por_enviar"}, headers=admin)
-    assert numero in {o["order_number"] for o in r.json()["items"]}
+    # Está en «Listo», con «marcar completado» cuando salga: el envío del
+    # paquete se sigue en la Cola SAT (la bandeja ya no tiene «Por enviar»).
+    r = http.get("/api/erp/orders", params={"queue": "listo"}, headers=admin)
+    fila = next(o for o in r.json()["items"] if o["order_number"] == numero)
+    assert fila["workflow"]["next_action"] == "marcar_completado"
 
 
 def test_aparece_en_seguimiento_como_no_facturable(http):

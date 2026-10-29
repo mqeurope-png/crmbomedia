@@ -24,13 +24,14 @@ export type StatusDomain = "payment" | "preparation" | "transport" | "invoice";
  *  cae el pedido, qué acción toca y qué alertas tiene. El frontend no vuelve a
  *  deducir el estado de flujo por su cuenta. */
 export type WorkflowQueue =
-  | "por_revisar" | "por_facturar" | "por_cobrar" | "por_enviar"
+  | "por_revisar" | "por_facturar" | "factura_por_enviar" | "por_cobrar"
   | "incidencias" | "listo";
 
 export type WorkflowAction =
   | "aprobar" | "emitir_factura" | "registrar_cobro" | "crear_envio"
   | "enviar_sat" | "marcar_completado" | "vincular_empresa" | "vincular_cliente"
-  | "revisar_incidencia" | "crear_albaran" | "revalidar_vies" | "ninguna";
+  | "revisar_incidencia" | "crear_albaran" | "revalidar_vies" | "enviar_factura"
+  | "ninguna";
 
 export type WorkflowAlert = {
   code: string;
@@ -133,7 +134,7 @@ export type OrderWorkflow = {
 };
 
 export const WORKFLOW_QUEUES: readonly WorkflowQueue[] = [
-  "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+  "por_revisar", "por_facturar", "factura_por_enviar", "por_cobrar", "incidencias", "listo",
 ] as const;
 
 export type OrderSummary = {
@@ -329,6 +330,10 @@ export type OrderDetail = OrderSummary & {
    *  indicador «Factura enviada al cliente el DD/MM/AAAA» de la línea de vida. */
   invoice_emailed_at?: string | null;
   invoice_emailed_to?: string[];
+  /** «Factura enviada» (paso 6 de la línea de vida): por email desde BoHub,
+   *  marcada a mano («ya enviada») o apuntada en la hoja de seguimiento. La
+   *  más reciente; `null` = sin enviar. */
+  invoice_sent?: InvoiceSent | null;
   /** Lote 7 · P1: serie (empresa emisora) elegida a mano para el pedido
    *  (1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec), o null. La ficha la
    *  enseña y ofrece «Cambiar serie» en los pedidos manuales. */
@@ -832,7 +837,9 @@ export type SeguimientoRow = {
   /** --- rediseño 2026: hoja simplificada, ordenada por Situación --- */
   /** Situación = cola de la línea de vida (reutiliza el workflow), más el
    *  estado propio «Reembolsado». */
-  situacion: "incidencias" | "por_revisar" | "por_facturar" | "por_cobrar" | "por_enviar" | "listo" | "reembolsado";
+  situacion:
+    | "incidencias" | "por_revisar" | "por_facturar" | "factura_por_enviar" | "por_cobrar"
+    | "por_enviar" | "listo" | "reembolsado";
   situacion_label: string;
   /** Tono de color de la celda Situación (letras del sistema de diseño). */
   situacion_tone: "r" | "a" | "b" | "t" | "g" | "n";
@@ -2216,6 +2223,10 @@ export type ErpSettings = {
   /** Reglas tienda × método de pago → contrapartida SUGERIDA del cobro, en
    *  orden (la primera que casa). Sin ninguna, la cuenta de la serie. */
   contrapartida_rules?: ContrapartidaRule[];
+  /** Menciones legales que se pueden añadir a una factura (observaciones). */
+  menciones_legales?: MencionLegal[];
+  /** VERI*FACTU activo: no se cambia el cliente de una factura emitida. */
+  verifactu_activo?: boolean;
   /** ERP-F6 — orígenes del envío configurables (OFI-TER-SAT del Excel). */
   shipping_origins?: string[];
   /** ERP-F6 — hoja de seguimiento en Drive. El JSON de la cuenta de servicio
@@ -2614,6 +2625,10 @@ export type FactusolStatus =
  *  escritorio FACTUSOL). Todas opcionales. */
 export type EmitFactusolOptions = {
   tipfac?: string;
+  /** Mención legal (Configuración ERP) o texto libre → primera observación
+   *  de la factura. */
+  mencion_id?: string | null;
+  mencion_texto?: string | null;
   /** ERP-E2 — empresa emisora. NO es una columna de F_FAC: determina el rango
    *  de numeración del CODFAC (serie 5 ⇒ 5xxxxx). Omitir → la resuelve el
    *  backend (override por origen → default de ajustes → 5 Streamtec). */
@@ -2625,6 +2640,44 @@ export type EmitFactusolOptions = {
 };
 
 export type FormaPago = { codigo: string | null; nombre: string };
+
+/** Cómo consta enviada la factura al cliente. */
+export type InvoiceSent = {
+  at: string;
+  via: "email" | "manual" | "hoja";
+  /** Quién lo hizo (email o marca a mano). */
+  by?: string | null;
+  to?: string[];
+  medio?: FacturaEnviadaMedio | null;
+  nota?: string | null;
+  marked_at?: string | null;
+};
+
+export type FacturaEnviadaMedio = "papel" | "gmail" | "albaran" | "otro";
+
+export const FACTURA_ENVIADA_MEDIO_LABEL: Record<FacturaEnviadaMedio, string> = {
+  papel: "En papel",
+  gmail: "Desde Gmail",
+  albaran: "Con el albarán",
+  otro: "Por otro medio",
+};
+
+/** «Ya enviada»: marca a mano que la factura llegó al cliente por fuera de
+ *  BoHub. Queda en Auditoría. Devuelve la ficha. */
+export async function marcarFacturaEnviada(
+  orderId: string,
+  body: { fecha?: string | null; medio: FacturaEnviadaMedio; nota?: string | null },
+): Promise<OrderDetail> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factura-enviada`, {
+    method: "POST", body: JSON.stringify({ ...body, confirm: true }),
+  });
+}
+
+export async function desmarcarFacturaEnviada(orderId: string): Promise<OrderDetail> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factura-enviada/deshacer`, {
+    method: "POST",
+  });
+}
 
 /** Serie de facturación = empresa emisora (ERP-E2). */
 export type FactusolSerie = {
@@ -3243,6 +3296,70 @@ export async function getOrderFactusolCobro(orderId: string): Promise<OrderCobro
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobro`);
 }
 
+/** Un movimiento del banco visto desde la ficha del pedido. */
+export type CobroBancoMovimiento = {
+  id: string;
+  fecha_oper: string;
+  /** La fecha con la que se registra el cobro. */
+  fecha_valor: string;
+  importe: number;
+  concepto: string;
+  payer_name: string | null;
+  status: "pending" | "reconciled" | "discarded";
+  cuenta: {
+    id: string;
+    nombre: string | null;
+    contrapartida_codigo: string | null;
+    contrapartida_nombre: string | null;
+  };
+};
+
+export type CobroBancoCandidato = CobroBancoMovimiento & {
+  confianza: BankConfidence;
+  motivo: string;
+  /** Menor que lo pendiente: cobro parcial. */
+  parcial: boolean;
+  /** Mayor que lo pendiente: se reparte en Conciliación. */
+  excede: boolean;
+};
+
+export type CobroBancoConciliado = CobroBancoMovimiento & {
+  importe_conciliado: number;
+  origen: string | null;
+  /** Fecha ISO en que se registró su cobro desde la ficha, o null. */
+  registrado?: string | null;
+};
+
+/** El cobro que propone el banco para la factura del pedido. */
+export type CobroBanco =
+  | { aplica: false; motivo: "sin_permiso" | "muestra" | "sin_factura" }
+  | {
+      aplica: true;
+      estado: "cobrada" | "conciliado" | "candidatos" | "nada";
+      cobrada: boolean;
+      /** Lo conciliado que aún no consta cobrado en FACTUSOL. */
+      por_registrar: number;
+      factura: { serie: number; codigo: number; numero: string; total: number;
+                 saldo_pendiente: number };
+      conciliados: CobroBancoConciliado[];
+      candidatos: CobroBancoCandidato[];
+    };
+
+export async function getOrderCobroBanco(orderId: string): Promise<CobroBanco> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cobro-banco`);
+}
+
+/** «Marcar cobrado con esta fecha»: concilia el movimiento con la factura,
+ *  registra el cobro con la fecha valor y la contrapartida de la cuenta, y
+ *  pone la factura en la hoja de Drive. */
+export async function confirmarCobroBanco(
+  orderId: string, movementId: string,
+): Promise<InvoiceCollectionResponse & { parcial: boolean; movimiento: CobroBancoMovimiento }> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cobro-banco`, {
+    method: "POST", body: JSON.stringify({ movement_id: movementId, confirm: true }),
+  });
+}
+
 /** Fase 5 — estado de cobro EN VIVO de UNA factura de FACTUSOL por serie+número,
  *  SIN pedido de BoHub: lo que necesita «Registrar cobro» (motor F-4-B) desde el
  *  explorador de documentos. Mismo contrato que `getOrderFactusolCobro` (saldo,
@@ -3748,6 +3865,149 @@ export type FactusolCustomer = {
   crm_link: { type: "company" | "contact"; id: string; name: string } | null;
   factusol_matches_crm_id: string | null;
 };
+
+// --- Corregir lo emitido desde la ficha: mención legal y cliente ------------
+
+/** Una mención legal de factura (Configuración ERP). Solo las revisadas se
+ *  pueden aplicar; las de referencia vienen sin revisar. */
+export type MencionLegal = {
+  id: string;
+  nombre: string;
+  texto: string;
+  revisado: boolean;
+};
+
+export async function getMencionesLegales(): Promise<{
+  items: MencionLegal[]; max: number; verifactu_activo: boolean;
+}> {
+  return apiFetch("/api/erp/catalogs/menciones-legales");
+}
+
+export type MencionInput = { mencion_id?: string | null; texto?: string | null };
+
+export type MencionPlan = {
+  factura: string;
+  texto: string;
+  mencion_id: string | null;
+  /** La observación donde iría (la primera vacía); null = no hay hueco. */
+  campo: "OB1FAC" | "OB2FAC" | null;
+  ya_esta: boolean;
+  actuales: { OB1FAC: string; OB2FAC: string };
+  enviada: InvoiceSent | null;
+  avisos: string[];
+};
+
+export async function previewMencion(orderId: string, body: MencionInput): Promise<MencionPlan> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factura/mencion/vista-previa`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function aplicarMencion(
+  orderId: string, body: MencionInput & { campo: "OB1FAC" | "OB2FAC" },
+): Promise<{ ok: boolean; factura: string; campo: string; texto: string; ya_enviada: boolean }> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factura/mencion`, {
+    method: "POST", body: JSON.stringify({ ...body, confirm: true }),
+  });
+}
+
+export type ClienteResumen = {
+  codcli: string | null;
+  nombre: string | null;
+  nif: string | null;
+  direccion: string | null;
+  cp: string | null;
+  ciudad: string | null;
+  provincia: string | null;
+  pais: string | null;
+  regime: FactusolRegime | null;
+};
+
+export type CambioFactura = {
+  campo: string;
+  label: string;
+  antes: string;
+  despues: string;
+};
+
+export type RevincularPlan = {
+  cliente: ClienteResumen;
+  actual: { company_id: string; nombre: string; codcli: string | null } | null;
+  empresa: { company_id: string | null; nombre: string | null; crear: boolean };
+  sin_cambios_crm: boolean;
+  factura: {
+    numero: string;
+    cambios: CambioFactura[];
+    /** Por qué NO se puede cambiar la factura (VERI*FACTU, IVA). */
+    bloqueo: string | null;
+    avisos: string[];
+    enviada?: InvoiceSent | null;
+    /** ¿Puede este usuario tocar la factura? (quien emite facturas). */
+    puedes?: boolean;
+  } | null;
+  /** Pedido aún sin facturar cuyo documento de FACTUSOL lleva otro cliente. */
+  documento: { tipo: string; numero: string; codcli: string; bloqueo: string | null } | null;
+  avisos: string[];
+};
+
+export async function previewRevincularCliente(
+  orderId: string, codcli: string,
+): Promise<RevincularPlan> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cliente/vista-previa`, {
+    method: "POST", body: JSON.stringify({ codcli }),
+  });
+}
+
+export async function revincularCliente(
+  orderId: string, codcli: string, camposFactura: string[],
+): Promise<{
+  ok: boolean; company_id: string; company_name: string; codcli: string;
+  empresa_creada: boolean; factura: string | null; escrito_en_factura: boolean;
+}> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cliente`, {
+    method: "POST",
+    body: JSON.stringify({ codcli, campos_factura: camposFactura, confirm: true }),
+  });
+}
+
+export type ClienteNuevoDatos = {
+  nombre: string;
+  nif: string;
+  direccion: string;
+  cp: string;
+  ciudad: string;
+  provincia: string;
+  pais: string;
+  email?: string | null;
+  telefono?: string | null;
+};
+
+export type ClienteNuevoPlan = {
+  /** Ya hay un cliente con ese CIF en FACTUSOL: no se ofrece crear. */
+  existe: boolean;
+  factusol: { codcli: string | null; nombre: string | null; nif: string | null }[];
+  crm: { company_id: string; nombre: string; codcli: string | null }[];
+  /** Los campos exactos de F_CLI que se crearían. */
+  campos: { campo: string; valor: string }[];
+  regime?: FactusolRegime;
+  regime_label?: string;
+};
+
+export async function previewClienteNuevo(
+  orderId: string, datos: ClienteNuevoDatos,
+): Promise<ClienteNuevoPlan> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cliente/nuevo/vista-previa`, {
+    method: "POST", body: JSON.stringify(datos),
+  });
+}
+
+export async function crearClienteNuevo(
+  orderId: string, datos: ClienteNuevoDatos,
+): Promise<{ codcli: string; creado: boolean }> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cliente/nuevo`, {
+    method: "POST", body: JSON.stringify({ ...datos, confirm: true }),
+  });
+}
 
 export async function searchFactusolCustomers(
   q: string, by: "nif" | "email" | "name" | "codcli" = "nif",
@@ -4813,14 +5073,19 @@ export type BankProposal = {
   reason: string | null;
   status: "proposed" | "confirmed";
   /** «extracto» = venía anotado a mano en la columna `factura` del extracto
-   *  (la respuesta de Bart, no una propuesta de la máquina). */
-  origen?: "extracto" | null;
+   *  (la respuesta de Bart, no una propuesta de la máquina); «pedido» =
+   *  confirmado desde la ficha del pedido. */
+  origen?: "extracto" | "pedido" | null;
+  /** El pedido de BoHub de esa factura, para ir a su ficha. */
+  pedido?: { id: string; order_number: string } | null;
 };
 
 export type BankMovement = {
   id: string;
   account_id: string;
   fecha_oper: string;
+  /** Fecha valor (con la que se registra el cobro); null = la de operación. */
+  fecha_valor?: string | null;
   concepto: string;
   importe: number;
   saldo: number | null;
@@ -5004,6 +5269,8 @@ export async function runBankMatch(accountId?: string): Promise<BankMatchStats> 
 }
 
 export type BankMovementFilters = {
+  /** Un movimiento concreto (el enlace «Ver el movimiento» de la ficha). */
+  movimiento?: string;
   account_id?: string;
   desde?: string;
   hasta?: string;

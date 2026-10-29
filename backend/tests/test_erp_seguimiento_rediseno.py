@@ -99,7 +99,8 @@ def _order(s: Session, number: str, company_id: str, **kw) -> Order:
 
 def _seed(s: Session) -> None:
     cid = _company(s)
-    # A — facturado + cobrado, requiere envío → «Por enviar».
+    # A — facturado + cobrado, factura sin enviar al cliente → «Factura por
+    # enviar» (el envío de la factura va antes que el cobro).
     _order(s, "ART-900001", cid, factusol_invoice_number="5-260001",
            factusol_cobro_status="cobrada")
     # B — facturado, sin cobrar → «Por cobrar». Factura enviada por email.
@@ -123,9 +124,13 @@ def _seed(s: Session) -> None:
         order_id=e.id, type=ExceptionType.SAT_ISSUE, status=ExceptionStatus.OPEN,
         metadata_json='{"description": "Falta tornillería"}',
     ))
-    # F — «No requiere envío», facturado + cobrado → «Listo».
-    _order(s, "ART-900006", cid, factusol_invoice_number="5-260006",
-           factusol_cobro_status="cobrada", shipping_not_required=True)
+    # F — «No requiere envío», facturado, factura enviada y cobrado → «Listo».
+    f = _order(s, "ART-900006", cid, factusol_invoice_number="5-260006",
+               factusol_cobro_status="cobrada", shipping_not_required=True)
+    s.add(AuditLog(
+        action="erp.invoice_emailed", target_type="order", target_id=f.id,
+        created_at=_dt("2026-09-12"),
+    ))
     s.commit()
 
 
@@ -136,8 +141,10 @@ def test_situacion_orden_y_campos(session_factory, http) -> None:
     assert r.status_code == 200, r.text
     items = {i["order_number"]: i for i in r.json()["items"]}
 
-    # Situación derivada de la cola de la línea de vida.
-    assert items["ART-900001"]["situacion"] == "por_enviar"
+    # Situación derivada de la cola de la línea de vida. Cobrada pero con la
+    # factura sin enviar al cliente: «Factura por enviar» (va antes del cobro).
+    assert items["ART-900001"]["situacion"] == "factura_por_enviar"
+    assert items["ART-900001"]["situacion_label"] == "Factura por enviar"
     assert items["ART-900002"]["situacion"] == "por_cobrar"
     assert items["ART-900003"]["situacion"] == "por_facturar"
     assert items["ART-900004"]["situacion"] == "por_revisar"
@@ -148,7 +155,7 @@ def test_situacion_orden_y_campos(session_factory, http) -> None:
     order = [i["order_number"] for i in r.json()["items"]]
     assert order == [
         "ART-900005", "ART-900004", "ART-900003",
-        "ART-900002", "ART-900001", "ART-900006",
+        "ART-900001", "ART-900002", "ART-900006",
     ]
 
     # «No requiere envío» → Preparación/Envío = «No aplica» (no se envía).

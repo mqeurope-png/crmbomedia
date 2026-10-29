@@ -33,7 +33,7 @@ jest.mock("../../lib/api", () => ({
 }));
 jest.mock("../../lib/erpApi", () => ({
   WORKFLOW_QUEUES: [
-    "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+    "por_revisar", "por_facturar", "factura_por_enviar", "por_cobrar", "incidencias", "listo",
   ],
   customerHeadline: () => "",
   customerLabel: () => "",

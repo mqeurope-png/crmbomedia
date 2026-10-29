@@ -1,7 +1,10 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpSettingsPage from "./page";
-import type { ContrapartidaRule, LeadInteres, LeadInteresConUso } from "../../lib/erpApi";
+import { ApiError } from "../../lib/api";
+import type {
+  ContrapartidaRule, LeadInteres, LeadInteresConUso, MencionLegal,
+} from "../../lib/erpApi";
 import {
   createLeadInteres,
   getErpNextReferences,
@@ -461,6 +464,83 @@ describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
     expect(sent.contrapartidas).toHaveLength(2);
     expect(sent.contrapartida_rules.map((r: { contrapartida: string }) => r.contrapartida))
       .toEqual(["14", "15"]);
+  });
+});
+
+// Menciones legales de factura (van a OB1FAC/OB2FAC) y el interruptor
+// VERI*FACTU: se guardan juntos en su sección. Textos de ejemplo.
+describe("ErpSettingsPage — menciones legales de factura y VERI*FACTU", () => {
+  const MENCIONES: MencionLegal[] = [
+    { id: "canarias", nombre: "Canarias", revisado: false,
+      texto: "Operación exenta de IVA por exportación. Destino: Canarias." },
+    { id: "fuera-ue", nombre: "Fuera de la UE", revisado: false,
+      texto: "Operación exenta de IVA por exportación." },
+  ];
+  const SAVE_MENCIONES = { name: "Guardar cambios · Menciones legales de factura" };
+
+  it("revisa, añade y quita menciones; VERI*FACTU (apagado) viaja con ellas", async () => {
+    mockGet.mockResolvedValue(settings({ menciones_legales: MENCIONES }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    expect(await screen.findByLabelText("Mención 1 nombre")).toHaveValue("Canarias");
+    const region = screen.getByRole("region", { name: "Menciones legales de factura" });
+    expect(region).toHaveTextContent("van a las observaciones de la factura (OB1FAC/OB2FAC)");
+    expect(within(region).getByText("59/255")).toBeInTheDocument();
+    const verifactu = screen.getByLabelText("VERI*FACTU activo");
+    expect(verifactu).not.toBeChecked();
+    expect(region).toHaveTextContent("solo cabe la rectificativa desde FACTUSOL");
+
+    await user.click(screen.getByLabelText("Mención 1 revisada"));
+    await user.click(screen.getByRole("button", { name: "+ Añadir mención" }));
+    // Sin texto no se puede marcar como revisada.
+    expect(screen.getByLabelText("Mención 3 revisada")).toBeDisabled();
+    await user.type(screen.getByLabelText("Mención 3 nombre"), "Ceuta");
+    await user.type(screen.getByLabelText("Mención 3 texto"), "Exenta de IVA.");
+    expect(screen.getByLabelText("Mención 3 texto")).toHaveAttribute("maxLength", "255");
+    expect(within(region).getByText("14/255")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mención 3 revisada")).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Quitar mención 2" }));
+    await user.click(verifactu);
+    await user.click(screen.getByRole("button", SAVE_MENCIONES));
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0][0];
+    expect(Object.keys(sent).sort()).toEqual(["menciones_legales", "verifactu_activo"]);
+    expect(sent.verifactu_activo).toBe(true);
+    expect(sent.menciones_legales).toEqual([
+      { ...MENCIONES[0], revisado: true },
+      { nombre: "Ceuta", texto: "Exenta de IVA.", revisado: false },
+    ]);
+    // La nueva va sin id: el backend lo saca del nombre.
+    expect(sent.menciones_legales[1]).not.toHaveProperty("id");
+  });
+
+  it("vaciar el texto de una revisada la desmarca y no deja marcarla", async () => {
+    mockGet.mockResolvedValue(settings({
+      menciones_legales: [{ ...MENCIONES[0], revisado: true }],
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    expect(await screen.findByLabelText("Mención 1 revisada")).toBeChecked();
+    await user.clear(screen.getByLabelText("Mención 1 texto"));
+    expect(screen.getByLabelText("Mención 1 revisada")).not.toBeChecked();
+    expect(screen.getByLabelText("Mención 1 revisada")).toBeDisabled();
+  });
+
+  it("si el backend rechaza (400), enseña su motivo en la sección", async () => {
+    mockGet.mockResolvedValue(settings({ menciones_legales: MENCIONES }));
+    mockUpdate.mockRejectedValue(new ApiError(
+      "mención legal repetida: Canarias", 400, "mención legal repetida: Canarias",
+    ));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const nombre = await screen.findByLabelText("Mención 2 nombre");
+    await user.clear(nombre);
+    await user.type(nombre, "Canarias");
+    await user.click(screen.getByRole("button", SAVE_MENCIONES));
+    const region = screen.getByRole("region", { name: "Menciones legales de factura" });
+    expect(await within(region).findByRole("alert")).toHaveTextContent("mención legal repetida: Canarias");
+    expect(within(region).getByText("Cambios sin guardar")).toBeInTheDocument();
   });
 });
 

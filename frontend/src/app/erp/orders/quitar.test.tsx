@@ -28,7 +28,7 @@ jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
   EXCLUSION_REASON_CODES: ["cancelado", "duplicado", "prueba", "reembolsado", "otro"],
   WORKFLOW_QUEUES: [
-    "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+    "por_revisar", "por_facturar", "factura_por_enviar", "por_cobrar", "incidencias", "listo",
   ],
   customerHeadline: (o: { contact_name?: string | null; company_name?: string | null }) =>
     [o.company_name, o.contact_name].filter(Boolean).join(" · "),

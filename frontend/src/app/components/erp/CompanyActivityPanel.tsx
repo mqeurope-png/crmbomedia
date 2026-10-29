@@ -39,7 +39,7 @@ const KIND_LABEL: Record<ActivityKind, string> = {
  *  de diseño: verde = hecho, ámbar = pendiente, azul = informativo (por
  *  facturar), rojo = incidencia. */
 const QUEUE_TONE: Record<WorkflowQueue, string> = {
-  por_revisar: "a", por_facturar: "b", por_cobrar: "a", por_enviar: "a",
+  por_revisar: "a", por_facturar: "b", factura_por_enviar: "a", por_cobrar: "a",
   incidencias: "r", listo: "g",
 };
 

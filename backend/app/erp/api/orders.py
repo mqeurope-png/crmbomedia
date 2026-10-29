@@ -2091,11 +2091,42 @@ def cobro_banco(
     cobrada = is_cobrada(order)
     if cobrada:
         res["candidatos"] = []
+    # Lo conciliado que aún no consta cobrado en FACTUSOL (con lo último que
+    # se leyó de ella): solo eso se ofrece registrar. Lo registrado desde la
+    # ficha se marca por movimiento.
+    registrados = _cobro_banco_registrado(session, order.id)
+    for c in res["conciliados"]:
+        c["registrado"] = registrados.get(c["id"])
+    cobrado = round(float(factura["total"]) - float(factura["saldo_pendiente"]), 2)
+    conciliado = round(sum(float(c["importe_conciliado"]) for c in res["conciliados"]), 2)
+    por_registrar = 0.0 if cobrada else max(round(conciliado - cobrado, 2), 0.0)
     estado = (
         "cobrada" if cobrada else "conciliado" if res["conciliados"]
         else "candidatos" if res["candidatos"] else "nada"
     )
-    return {"aplica": True, "estado": estado, "cobrada": cobrada, **res}
+    return {"aplica": True, "estado": estado, "cobrada": cobrada,
+            "por_registrar": por_registrar, **res}
+
+
+def _cobro_banco_registrado(session: Session, order_id: str) -> dict[str, str]:
+    """Movimientos cuyo cobro se registró desde la ficha: {movement_id: fecha
+    ISO del registro}."""
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    out: dict[str, str] = {}
+    for meta, at in session.execute(
+        select(AuditLog.metadata_json, AuditLog.created_at).where(
+            AuditLog.action == "erp.order_cobro_banco", AuditLog.target_type == "order",
+            AuditLog.target_id == order_id,
+        )
+    ):
+        try:
+            mid = (json.loads(meta) if meta else {}).get("movement_id")
+        except (TypeError, ValueError):
+            continue
+        if mid:
+            out[str(mid)] = at.isoformat() if at else ""
+    return out
 
 
 class CobroBancoIn(BaseModel):
@@ -2181,6 +2212,12 @@ def confirmar_cobro_banco(
             "code": "ya_cobrada", "detail": f"La factura {numero} ya consta cobrada en FACTUSOL.",
         })
     saldo = float(info["saldo_pendiente"])
+    ya_conciliado = mov.status == "reconciled"
+    if ya_conciliado and _cobro_banco_registrado(session, order.id).get(mov.id):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "ya_registrado",
+            "detail": "El cobro de ese movimiento ya se registró desde esta ficha.",
+        })
     try:
         bank_service.conciliar_desde_pedido(
             session, movement_id=mov.id, factura=factura, saldo=saldo, user_id=current_user.id,
@@ -2189,7 +2226,24 @@ def confirmar_cobro_banco(
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "movimiento_no_valido", "detail": str(exc)[:1].upper() + str(exc)[1:] + ".",
         }) from exc
-    importe = round(float(mov.importe), 2)
+    # Lo que este movimiento paga de ESTA factura (un movimiento repartido en
+    # Conciliación entre varias facturas solo cuenta su parte).
+    importe = min(
+        bank_service.conciliado_con_factura(session, serie, codigo, movement_id=mov.id), saldo,
+    )
+    if ya_conciliado:
+        # Conciliado antes (en Conciliación): si lo conciliado de la factura
+        # ya consta cobrado en FACTUSOL (lo registró el script de Bart o
+        # alguien a mano), no se registra otra vez.
+        cobrado = round(float(info["total"]) - saldo, 2)
+        por_registrar = bank_service.conciliado_con_factura(session, serie, codigo) - cobrado
+        if por_registrar < importe - 0.005:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "code": "ya_registrado",
+                "detail": (f"Lo conciliado con la {numero} ya consta cobrado en FACTUSOL "
+                           f"({cobrado:.2f} €): no se registra otra vez."),
+            })
+    importe = round(importe, 2)
     parcial = importe < saldo - 0.005
     fecha = (mov.fecha_valor or mov.fecha_oper).isoformat()
     try:

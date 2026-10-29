@@ -4,9 +4,11 @@ import { useEffect, useState } from "react";
 import {
   getFactusolFormasPago,
   getFactusolSeries,
+  getMencionesLegales,
   type EmitFactusolOptions,
   type FactusolSerie,
   type FormaPago,
+  type MencionLegal,
 } from "../../lib/erpApi";
 import { ModalCloseButton } from "../ModalCloseButton";
 import { useModalBehaviour } from "../useModalBehaviour";
@@ -14,6 +16,9 @@ import { useModalBehaviour } from "../useModalBehaviour";
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
+
+/** Valor del desplegable «Mención legal» para el texto libre. */
+const MENCION_LIBRE = "__libre__";
 
 /** Modal de emisión de factura FACTUSOL (C-2-fix2): reproduce el diálogo
  *  «Nueva factura» del escritorio con 4 campos (Empresa/Serie, Fecha, Forma de
@@ -25,7 +30,11 @@ function today(): string {
  *
  *  ERP-E2: la «Serie» pasa de campo de texto libre a desplegable de EMPRESA
  *  EMISORA (vive en `TIPFAC`). Por defecto se hereda la del pedido que ya
- *  está en FACTUSOL; el desplegable solo sirve para forzar otra. */
+ *  está en FACTUSOL; el desplegable solo sirve para forzar otra.
+ *
+ *  Mención legal (opcional): una de Configuración ERP (solo las revisadas)
+ *  o un texto libre; va a las observaciones de la factura. Si la lista no
+ *  carga, el campo no sale y se emite igual. */
 export function EmitFactusolModal({
   totalAmount,
   currency,
@@ -45,12 +54,24 @@ export function EmitFactusolModal({
   const [comfac, setComfac] = useState("");
   const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
   const [series, setSeries] = useState<FactusolSerie[]>([]);
+  // null = sin cargar (o no cargó): el campo no se enseña.
+  const [menciones, setMenciones] = useState<MencionLegal[] | null>(null);
+  const [maxMencion, setMaxMencion] = useState(255);
+  const [mencion, setMencion] = useState("");
+  const [mencionLibre, setMencionLibre] = useState("");
   const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: submitting });
 
   useEffect(() => {
     let alive = true;
     getFactusolFormasPago()
       .then((items) => { if (alive) setFormasPago(items); })
+      .catch(() => undefined);
+    getMencionesLegales()
+      .then((r) => {
+        if (!alive) return;
+        setMenciones(r.items);
+        if (r.max) setMaxMencion(r.max);
+      })
       .catch(() => undefined);
     getFactusolSeries()
       .then((r) => {
@@ -70,12 +91,17 @@ export function EmitFactusolModal({
     return () => { alive = false; };
   }, []);
 
+  const libre = mencion === MENCION_LIBRE;
+  const elegida = menciones?.find((m) => m.id === mencion) ?? null;
+
   function submit() {
     onSubmit({
       serie,
       fecfac: fecfac || null,
       fopfac: fopfac || null,
       comfac: comfac.trim() || null,
+      mencion_id: elegida ? elegida.id : null,
+      mencion_texto: libre ? mencionLibre.trim() || null : null,
     });
   }
 
@@ -149,6 +175,41 @@ export function EmitFactusolModal({
             onChange={(e) => setComfac(e.target.value)}
           />
         </label>
+
+        {menciones ? (
+          <>
+            <label className="field">
+              <span>Mención legal</span>
+              <select value={mencion} onChange={(e) => setMencion(e.target.value)}>
+                <option value="">Ninguna</option>
+                {menciones.map((m) => (
+                  <option key={m.id} value={m.id} disabled={!m.revisado}>
+                    {m.revisado ? m.nombre : `${m.nombre} (sin revisar)`}
+                  </option>
+                ))}
+                <option value={MENCION_LIBRE}>Texto libre…</option>
+              </select>
+            </label>
+            {elegida ? <p className="muted small">«{elegida.texto}»</p> : null}
+            {libre ? (
+              <>
+                <label className="field">
+                  <span>Texto de la mención</span>
+                  <textarea
+                    value={mencionLibre}
+                    rows={2}
+                    maxLength={maxMencion}
+                    onChange={(e) => setMencionLibre(e.target.value)}
+                  />
+                </label>
+                <span className="muted small">{mencionLibre.length}/{maxMencion}</span>
+              </>
+            ) : null}
+            <span className="muted small">
+              Va en las observaciones de la factura (salen en el PDF).
+            </span>
+          </>
+        ) : null}
 
         <div className="modal-actions">
           <button type="button" className="button secondary"

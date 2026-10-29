@@ -1,14 +1,28 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EmitFactusolModal } from "./EmitFactusolModal";
-import { getFactusolFormasPago, getFactusolSeries } from "../../lib/erpApi";
+import { getFactusolFormasPago, getFactusolSeries, getMencionesLegales } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
   getFactusolFormasPago: jest.fn(),
   getFactusolSeries: jest.fn(),
+  getMencionesLegales: jest.fn(),
 }));
 const mockFormas = getFactusolFormasPago as jest.Mock;
 const mockSeries = getFactusolSeries as jest.Mock;
+const mockMenciones = getMencionesLegales as jest.Mock;
+
+/** Menciones de Configuración ERP: una revisada y otra de referencia sin revisar. */
+const MENCIONES = {
+  items: [
+    { id: "fuera-ue", nombre: "Fuera de la UE", revisado: true,
+      texto: "Operación exenta de IVA por exportación." },
+    { id: "canarias", nombre: "Canarias", revisado: false,
+      texto: "Operación exenta de IVA por exportación. Destino: Canarias." },
+  ],
+  max: 255,
+  verifactu_activo: false,
+};
 
 /** ERP-E2 — las series son las empresas emisoras; Streamtec (5) por defecto. */
 const SERIES = {
@@ -26,6 +40,8 @@ beforeEach(() => {
   mockFormas.mockResolvedValue([]);
   mockSeries.mockReset();
   mockSeries.mockResolvedValue(SERIES);
+  mockMenciones.mockReset();
+  mockMenciones.mockResolvedValue(MENCIONES);
 });
 
 function base(over = {}) {
@@ -103,6 +119,63 @@ describe("EmitFactusolModal", () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ serie: null }),
     );
+  });
+
+  it("mención legal: solo las revisadas se pueden elegir; enseña su texto y manda su id", async () => {
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    render(<EmitFactusolModal {...base({ onSubmit })} />);
+    const select = await screen.findByLabelText("Mención legal");
+    expect(select).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Ninguna" })).toBeEnabled();
+    expect(screen.getByRole("option", { name: "Fuera de la UE" })).toBeEnabled();
+    expect(screen.getByRole("option", { name: "Canarias (sin revisar)" })).toBeDisabled();
+    expect(screen.getByText("Va en las observaciones de la factura (salen en el PDF).")).toBeInTheDocument();
+    await user.selectOptions(select, "fuera-ue");
+    expect(screen.getByText("«Operación exenta de IVA por exportación.»")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Texto de la mención")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Emitir factura" }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ mencion_id: "fuera-ue", mencion_texto: null }),
+    );
+  });
+
+  it("mención legal: «Texto libre…» abre el texto (máx. 255) y lo manda como mencion_texto", async () => {
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    render(<EmitFactusolModal {...base({ onSubmit })} />);
+    await user.selectOptions(await screen.findByLabelText("Mención legal"), "Texto libre…");
+    const texto = screen.getByLabelText("Texto de la mención");
+    expect(texto).toHaveAttribute("maxLength", "255");
+    await user.type(texto, "Inversión del sujeto pasivo.");
+    expect(screen.getByText("28/255")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Emitir factura" }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ mencion_id: null, mencion_texto: "Inversión del sujeto pasivo." }),
+    );
+  });
+
+  it("sin tocar la mención no manda ninguna", async () => {
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    render(<EmitFactusolModal {...base({ onSubmit })} />);
+    await screen.findByLabelText("Mención legal");
+    await user.click(screen.getByRole("button", { name: "Emitir factura" }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ mencion_id: null, mencion_texto: null }),
+    );
+  });
+
+  it("si la lista de menciones no carga, el campo no sale y se emite igual", async () => {
+    mockMenciones.mockRejectedValue(new Error("caído"));
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    render(<EmitFactusolModal {...base({ onSubmit })} />);
+    await screen.findByRole("option", { name: "5 · Streamtec" });
+    expect(screen.queryByLabelText("Mención legal")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Va en las observaciones/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Emitir factura" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ serie: null, mencion_id: null }));
   });
 
   it("cancelar llama onCancel sin emitir", async () => {

@@ -1313,6 +1313,21 @@ def conciliar_desde_pedido(
     return mov
 
 
+def conciliado_con_factura(
+    session: Session, serie: int, codigo: int, *, movement_id: str | None = None,
+) -> float:
+    """Lo conciliado (confirmado) con la factura: de todos sus movimientos, o
+    solo de uno (un movimiento repartido entre varias facturas cuenta solo su
+    parte)."""
+    q = select(func.coalesce(func.sum(BankReconciliation.importe), 0)).where(
+        BankReconciliation.serie == int(serie), BankReconciliation.codigo == int(codigo),
+        BankReconciliation.status == "confirmed",
+    )
+    if movement_id:
+        q = q.where(BankReconciliation.movement_id == movement_id)
+    return round(float(session.scalar(q) or 0), 2)
+
+
 # --- exportación -------------------------------------------------------------------
 
 

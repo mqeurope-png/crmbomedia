@@ -2,9 +2,11 @@
 
 import type { WorkflowQueue } from "../../../lib/erpApi";
 
-/** Orden de las colas en la bandeja (el de la maqueta). */
+/** Orden de las colas en la bandeja: el de la línea de vida (la factura se
+ *  envía al cliente ANTES de esperar su cobro). Los envíos físicos no son una
+ *  cola de aquí: viven en la Cola SAT. */
 export const QUEUE_ORDER: readonly WorkflowQueue[] = [
-  "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+  "por_revisar", "por_facturar", "factura_por_enviar", "por_cobrar", "incidencias", "listo",
 ] as const;
 
 /** Colores de cada cola (los de la maqueta): el mismo tono identifica la cola
@@ -12,8 +14,8 @@ export const QUEUE_ORDER: readonly WorkflowQueue[] = [
 export const QUEUE_COLOR: Record<WorkflowQueue, string> = {
   por_revisar: "#E0A92A",
   por_facturar: "#2F6BFF",
+  factura_por_enviar: "#7A4BD6",
   por_cobrar: "#1F9D74",
-  por_enviar: "#7A4BD6",
   incidencias: "#E2554A",
   listo: "#9AA2AD",
 };
@@ -21,8 +23,8 @@ export const QUEUE_COLOR: Record<WorkflowQueue, string> = {
 export const QUEUE_LABEL: Record<WorkflowQueue, string> = {
   por_revisar: "Por revisar",
   por_facturar: "Por facturar",
+  factura_por_enviar: "Factura por enviar",
   por_cobrar: "Por cobrar",
-  por_enviar: "Por enviar",
   incidencias: "Incidencias",
   listo: "Listo",
 };
@@ -31,8 +33,8 @@ export const QUEUE_LABEL: Record<WorkflowQueue, string> = {
 export const QUEUE_HINT: Record<WorkflowQueue, string> = {
   por_revisar: "esperando tu aprobación",
   por_facturar: "aprobados, sin factura en FACTUSOL",
-  por_cobrar: "facturados, sin cobro registrado en FACTUSOL",
-  por_enviar: "cobrados, pendientes de salir",
+  factura_por_enviar: "facturados, la factura aún no ha llegado al cliente",
+  por_cobrar: "factura enviada, sin cobro registrado en FACTUSOL",
   incidencias: "algo bloquea el pedido",
   listo: "nada pendiente",
 };
