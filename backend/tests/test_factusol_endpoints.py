@@ -109,7 +109,8 @@ def test_emit_invoice_endpoint_returns_202_and_audits(client, session_factory):
                         headers=auth_headers(client, "pedidos"))
     assert r.status_code == 202, r.text
     body = r.json()
-    assert body == {"job_id": "job-abc", "order_id": oid, "status": "queued"}
+    assert body == {"job_id": "job-abc", "order_id": oid, "status": "queued",
+                    "avisos": []}
     enq.assert_called_once()
     with session_factory() as s:
         audits = list(s.scalars(select(AuditLog).where(

@@ -40,6 +40,7 @@ import {
   type BankDriveEscritura,
   type BankDriveInfo,
   type BankDriveTraida,
+  type BankExportPlan,
   type BankImportSummary,
   type BankMovement,
   type BankMovementFilters,
@@ -51,6 +52,7 @@ import {
   type FactusolDocument,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ExportBancoADrive } from "../../components/erp/ExportBancoADrive";
 
 const CONFIDENCE_LABEL: Record<BankConfidence, { label: string; tone: string }> = {
   alta: { label: "Alta", tone: "ok" },
@@ -235,6 +237,21 @@ function ResumenCasado({ matching }: { matching: BankImportSummary["matching"] }
   );
 }
 
+/** Lo que dice la pantalla tras añadir el export a la hoja: lo añadido y lo
+ *  que de verdad ha entrado en BoHub (puede ser menos si Drive aún no da la
+ *  hoja nueva; entra en la próxima lectura). */
+function avisoExportAnadido(hecho: BankExportPlan): string {
+  const entrados = hecho.importacion?.ok ? hecho.importacion.imported ?? 0 : 0;
+  const enBohub = entrados
+    ? ` ${entrados === 1 ? "Ha entrado 1 movimiento" : `Han entrado ${entrados} movimientos`} en BoHub.`
+    : "";
+  if (!hecho.aplicado) {
+    return `La hoja ya tenía todos los movimientos del fichero.${enBohub}`;
+  }
+  const n = hecho.nuevos;
+  return `${n} ${n === 1 ? "movimiento añadido" : "movimientos añadidos"} a la hoja de Drive.${enBohub}`;
+}
+
 /** El resultado de «Traer de Drive» en una cuenta. */
 function TraidaDeDrive({ traida: t }: { traida: BankDriveTraida }) {
   if (!t.ok) {
@@ -373,6 +390,7 @@ function ConciliacionScreen() {
 
   const counters = page?.counters;
   const conHoja = accounts.filter((a) => a.drive_file_id);
+  const cuentaConHoja = conHoja.find((a) => a.id === filters.account_id);
   const puedeTraer = filters.account_id
     ? conHoja.some((a) => a.id === filters.account_id)
     : conHoja.length > 0;
@@ -460,10 +478,10 @@ function ConciliacionScreen() {
               </label>
               {canEdit ? (
                 <label className="field">
-                  <span>Fichero (.xlsx / .csv)</span>
+                  <span>Fichero (.xls / .xlsx / .csv)</span>
                   <input
                     type="file"
-                    accept=".xlsx,.csv"
+                    accept=".xls,.xlsx,.csv"
                     aria-label="Extracto bancario"
                     disabled={busy}
                     onChange={(e) => {
@@ -557,6 +575,25 @@ function ConciliacionScreen() {
                   fichero a mano sigue valiendo.
                 </p>
               )
+            ) : null}
+            {canEdit && drive?.configured && cuentaConHoja ? (
+              <ExportBancoADrive
+                key={cuentaConHoja.id}
+                accountId={cuentaConHoja.id}
+                accountName={cuentaConHoja.name}
+                disabled={busy}
+                onAnadido={async (hecho) => {
+                  setImportSummary(null);
+                  setTraidas(hecho.importacion ? [hecho.importacion] : null);
+                  setNotice(avisoExportAnadido(hecho));
+                  if (hecho.error_importacion) setError(hecho.error_importacion);
+                  await Promise.all([loadMovements(), loadAccounts()]);
+                }}
+              />
+            ) : canEdit && drive?.configured && conHoja.length > 0 && !filters.account_id ? (
+              <p className="muted small">
+                Para subir el export del banco a su hoja de Drive, elige antes la cuenta.
+              </p>
             ) : null}
             {importSummary ? <ResumenImport summary={importSummary} /> : null}
             {traidas ? traidas.map((t) => <TraidaDeDrive key={t.account_id} traida={t} />) : null}

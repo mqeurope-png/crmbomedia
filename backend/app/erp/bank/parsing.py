@@ -83,9 +83,12 @@ FORMATOS: tuple[Formato, ...] = (
     Formato(
         "Sabadell",
         {
-            "fecha_oper": ("FECHA OPER",),
+            # La hoja de Bart (un export antiguo) dice «FECHA OPER»; el export
+            # que da hoy la web del banco (.xls), «F. Operativa». Una variante
+            # más de rótulos se añade aquí, sin tocar código.
+            "fecha_oper": ("FECHA OPER", "F. OPERATIVA"),
             "concepto": ("CONCEPTO",),
-            "fecha_valor": ("FECHA VALOR",),
+            "fecha_valor": ("FECHA VALOR", "F. VALOR"),
             "importe": ("IMPORTE",),
             "saldo": ("SALDO",),
             "referencia1": ("REFERENCIA 1",),
@@ -383,6 +386,36 @@ def _rows_from_xlsx(content: bytes, pestana: str | None = None) -> list[list[Any
     return [list(r) for r in ws.iter_rows(values_only=True)]
 
 
+def _rows_from_xls(content: bytes) -> list[list[Any]]:
+    """La primera hoja de un .xls (el Excel antiguo, el que da hoy la web de
+    Banc Sabadell). Las fechas salen como fechas, como en el .xlsx."""
+    import xlrd  # noqa: PLC0415
+
+    try:
+        libro = xlrd.open_workbook(file_contents=content)
+    except xlrd.XLRDError as exc:
+        raise ParseError(None, f"no se puede leer el .xls: {exc}") from exc
+    hoja = libro.sheet_by_index(0)
+    filas: list[list[Any]] = []
+    for r in range(hoja.nrows):
+        fila: list[Any] = []
+        for c in range(hoja.ncols):
+            celda = hoja.cell(r, c)
+            if celda.ctype == xlrd.XL_CELL_DATE:
+                fila.append(xlrd.xldate_as_datetime(celda.value, libro.datemode))
+            elif celda.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                fila.append(None)
+            else:
+                fila.append(celda.value)
+        filas.append(fila)
+    return filas
+
+
+#: Cómo empieza un .xlsx (zip) y un .xls (documento compuesto de OLE).
+_FIRMA_XLSX = b"PK\x03\x04"
+_FIRMA_XLS = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
 def _rows_from_csv(content: bytes) -> list[list[Any]]:
     """El separador se decide por la fila de columnas (la que trae el importe):
     las líneas de cabecera («Cuenta: …») no llevan separador y confunden al
@@ -401,19 +434,25 @@ def read_statement(
     content: bytes, filename: str, *, extra: tuple[Formato, ...] = (),
     pestana: str | None = None,
 ) -> ParsedStatement:
-    """Lee .xlsx o .csv. Separa la cabecera (líneas antes de la fila de
+    """Lee .xls, .xlsx o .csv. Separa la cabecera (líneas antes de la fila de
     columnas, donde vive la cuenta/divisa/titular) de las filas de datos. Una
     columna sin nombre en la fila de columnas toma el rótulo que tenga encima
     en el preámbulo si es uno de los del formato (`factura`/`pedido` de
     Sabadell, en la primera fila). Un .xlsx se lee por su primera pestaña o,
     con `pestana`, por esa."""
     name = (filename or "").lower()
-    if name.endswith((".xlsx", ".xlsm")):
+    # Manda lo que es el fichero, no su nombre (un banco puede llamar .xls a un
+    # .xlsx); la extensión decide solo si no se reconoce.
+    if content.startswith(_FIRMA_XLSX) or (
+        name.endswith((".xlsx", ".xlsm")) and not content.startswith(_FIRMA_XLS)
+    ):
         grid = _rows_from_xlsx(content, pestana)
+    elif content.startswith(_FIRMA_XLS) or name.endswith(".xls"):
+        grid = _rows_from_xls(content)
     elif name.endswith((".csv", ".txt")):
         grid = _rows_from_csv(content)
     else:
-        raise ParseError(None, "formato no soportado: usa .xlsx o .csv")
+        raise ParseError(None, "formato no soportado: usa .xls, .xlsx o .csv")
 
     formatos = (*FORMATOS, *extra)
     parsed = ParsedStatement()
@@ -810,6 +849,75 @@ def dedupe_key(
     if repeticion > 1:
         base += f"#{repeticion}"
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+# --- identidad de un movimiento -------------------------------------------------
+
+
+#: Lo que deja la hoja de Bart de un concepto largo.
+CONCEPTO_CORTADO = 26
+
+
+def _concepto_comparable(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().upper())
+
+
+def mismo_movimiento(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """¿Son el mismo movimiento? Lo que lo identifica sin ambigüedad es la
+    fecha de operación, el importe y el SALDO (dos del mismo día e importe
+    tienen saldos distintos). Sin saldo en los dos, el nº de transacción
+    (`referencia1`, Belfius) y, si tampoco, el concepto recortado al prefijo
+    común: la hoja de Bart lo trae cortado a 26 caracteres
+    («ABONO TRANSFERENCIA DE DAN») y el export de hoy entero. `a` y `b`:
+    dicts con `fecha_oper`, `importe`, `saldo`, `concepto`, `referencia1`."""
+    if a.get("fecha_oper") != b.get("fecha_oper"):
+        return False
+    if abs(float(a["importe"]) - float(b["importe"])) > 0.005:
+        return False
+    if a.get("saldo") is not None and b.get("saldo") is not None:
+        return abs(float(a["saldo"]) - float(b["saldo"])) <= 0.005
+    ra, rb = texto(a.get("referencia1")), texto(b.get("referencia1"))
+    if ra and rb:
+        return ra == rb
+    ca, cb = _concepto_comparable(a.get("concepto")), _concepto_comparable(b.get("concepto"))
+    if ca == cb:
+        return bool(ca)
+    # Solo un concepto CORTADO (26 caracteres o más) vale como prefijo: «TPV»
+    # no es «TPV AMAZON …».
+    corto = min(len(ca), len(cb))
+    return corto >= CONCEPTO_CORTADO and ca[:corto] == cb[:corto]
+
+
+class Identidades:
+    """Movimientos ya conocidos (los de BoHub, o los de la hoja) para saber si
+    uno leído es uno de ellos (`mismo_movimiento`). Cada conocido vale para
+    UNO solo: dos movimientos idénticos del fichero no se tapan con uno."""
+
+    def __init__(self, conocidos: list[tuple[Any, dict[str, Any]]]):
+        #: (fecha, céntimos) → [(posición, ident, datos)]
+        self._por_dia: dict[tuple[Any, int], list[tuple[int, Any, dict[str, Any]]]] = {}
+        self._posicion: dict[Any, int] = {}
+        self._usados: set[int] = set()
+        for i, (ident, datos) in enumerate(conocidos):
+            self._por_dia.setdefault(self._clave(datos), []).append((i, ident, datos))
+            self._posicion.setdefault(ident, i)
+
+    @staticmethod
+    def _clave(datos: dict[str, Any]) -> tuple[Any, int]:
+        return datos.get("fecha_oper"), round(float(datos["importe"]) * 100)
+
+    def usar(self, ident: Any) -> None:
+        """Da por casado un conocido (p. ej. por la clave exacta)."""
+        if ident in self._posicion:
+            self._usados.add(self._posicion[ident])
+
+    def buscar(self, m: dict[str, Any]) -> Any | None:
+        """El conocido que es este movimiento (y lo da por usado), o None."""
+        for i, ident, datos in self._por_dia.get(self._clave(m), []):
+            if i not in self._usados and mismo_movimiento(m, datos):
+                self._usados.add(i)
+                return ident
+        return None
 
 
 # --- columnas que rellena Bart -------------------------------------------------

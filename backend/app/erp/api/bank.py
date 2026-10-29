@@ -234,6 +234,60 @@ def traer_de_drive(
     return {"resultados": resultados}
 
 
+@router.post("/drive/anadir")
+async def anadir_export_a_drive(
+    file: UploadFile = File(...),
+    account_id: str = Form(...),
+    aplicar: bool = Form(default=False),
+    run_match: bool = Form(default=True),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> dict[str, Any]:
+    """El fichero del banco tal cual (.xls, .xlsx o .csv) contra la hoja de
+    Drive de la cuenta: sin `aplicar`, la vista previa (cuántos trae, cuántos
+    ya están y cuáles se añadirían); con `aplicar`, los añade arriba de la
+    hoja (factura y pedido vacías, sin tocar ninguna fila existente) y los
+    importa. No escribe en FACTUSOL."""
+    from app.erp.bank.drive import DriveBancoError, anadir_export, cerrojo  # noqa: PLC0415
+    from app.erp.models import BankAccount  # noqa: PLC0415
+
+    content = await file.read()
+    if not content or len(content) > _MAX_UPLOAD:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "file_size", "detail": "El fichero debe pesar entre 1 byte y 25 MB.",
+        })
+    account = session.get(BankAccount, account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "cuenta no encontrada")
+    with cerrojo(account.id) as cogido:
+        if not cogido:
+            raise HTTPException(status.HTTP_409_CONFLICT, {"code": "ocupada", "detail": (
+                "Ya hay una lectura o escritura de Drive en marcha para esta cuenta: prueba "
+                "en un minuto."
+            )})
+        try:
+            resultado = anadir_export(
+                session, account, contenido=content, nombre=file.filename or "extracto",
+                aplicar=aplicar, user_id=current_user.id,
+            )
+        except DriveBancoError as exc:
+            session.rollback()
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "code": exc.code, "detail": str(exc),
+            }) from exc
+        except ParseError as exc:
+            session.rollback()
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+                "code": "parse_error", "row": exc.row, "detail": str(exc),
+            }) from exc
+    if not aplicar:
+        session.rollback()   # la vista previa no guarda nada
+    importacion = resultado.get("importacion") or {}
+    if run_match and importacion.get("ok") and importacion.get("imported"):
+        importacion["matching"] = _run_match(session, account.id)
+    return resultado
+
+
 @router.post("/drive/escribir")
 def escribir_en_drive(
     account_id: str = Query(...),
@@ -269,7 +323,7 @@ async def import_statement(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
-    """Sube el extracto (.xlsx/.csv). Identifica la cuenta por el número de
+    """Sube el extracto (.xls/.xlsx/.csv). Identifica la cuenta por el número de
     la cabecera (IBAN o el antiguo) o por la cuenta que el banco repite en
     cada fila (avisa si no está dada de alta), deduplica, importa lo que
     entiende y devuelve lo que no (`no_entendidas`, con fila y motivo). Lo

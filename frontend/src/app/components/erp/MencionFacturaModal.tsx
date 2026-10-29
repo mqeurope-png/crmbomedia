@@ -12,6 +12,7 @@ import {
   type MencionLegal,
   type MencionPlan,
 } from "../../lib/erpApi";
+import { idiomaMencion, mencionParaIdioma } from "../../lib/mencionesIdioma";
 
 const LIBRE = "__libre__";
 
@@ -22,11 +23,13 @@ const LIBRE = "__libre__";
  *  confirmación. Avisa si la factura ya se envió (el PDF que tiene el cliente
  *  no la lleva). Queda en Auditoría. */
 export function MencionFacturaModal({
-  orderId, orderNumber, factura, onClose, onDone,
+  orderId, orderNumber, factura, idioma, onClose, onDone,
 }: {
   orderId: string;
   orderNumber: string;
   factura: string;
+  /** El idioma del pedido: la mención va en él si tiene texto revisado. */
+  idioma?: string | null;
   onClose: () => void;
   onDone?: () => void;
 }) {
@@ -51,6 +54,8 @@ export function MencionFacturaModal({
   }, []);
 
   const elegida = items?.find((m) => m.id === eleccion) ?? null;
+  const lengua = idiomaMencion(idioma);
+  const aplicable = elegida ? mencionParaIdioma(elegida, lengua) : null;
   const input: MencionInput = eleccion === LIBRE
     ? { texto: texto.trim() }
     : { mencion_id: eleccion || null };
@@ -115,7 +120,7 @@ export function MencionFacturaModal({
                 >
                   <option value="">— elige una —</option>
                   {items.map((m) => (
-                    <option key={m.id} value={m.id} disabled={!m.revisado || !m.texto}>
+                    <option key={m.id} value={m.id} disabled={!mencionParaIdioma(m, lengua)}>
                       {m.nombre}{!m.texto ? " (sin texto)" : !m.revisado ? " (sin revisar)" : ""}
                     </option>
                   ))}
@@ -128,7 +133,14 @@ export function MencionFacturaModal({
                   Configuración ERP antes de poder usarlas.
                 </p>
               ) : null}
-              {elegida ? <p className="erp-mencion-texto">«{elegida.texto}»</p> : null}
+              {aplicable ? (
+                <>
+                  <p className="erp-mencion-texto">«{aplicable.texto}»</p>
+                  {aplicable.aviso && !plan ? (
+                    <p className="form-info small" role="alert">⚠ {aplicable.aviso}</p>
+                  ) : null}
+                </>
+              ) : null}
               {eleccion === LIBRE ? (
                 <label>
                   <span>Texto ({texto.length}/{max})</span>

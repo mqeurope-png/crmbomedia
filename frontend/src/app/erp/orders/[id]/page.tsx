@@ -1574,6 +1574,7 @@ function ErpOrderDetailScreen() {
                   totalAmount={order.total_amount}
                   currency={order.currency}
                   companyId={order.company_id}
+                  orderLanguage={order.language}
                   factusolStatus={factusolStatus}
                   enableOptions
                   openSignal={emitSignal}
@@ -1856,6 +1857,7 @@ function ErpOrderDetailScreen() {
           orderId={order.id}
           orderNumber={order.order_number}
           factura={invoiceLabel(order) || order.factusol_invoice_number || ""}
+          idioma={order.language}
           onClose={() => setMencionOpen(false)}
           onDone={() => load()}
         />

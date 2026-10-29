@@ -444,6 +444,89 @@ def test_facturar_el_albaran_desde_documentos_respeta_el_cliente_revinculado(
             chain._cliente_revinculado(s, FakeFactusol(), **args)
 
 
+#: Figurante: lo que Bart pedirá a la gestoría en inglés (no es una traducción
+#: de BoHub: la redacción la da él).
+TEXTO_UE_EN = "VAT exempt export (texto de prueba en inglés)."
+
+
+def _mencion_en_dos_idiomas(http, *, en_revisado: bool = True) -> None:
+    _menciones(http, [{"id": "fuera-ue", "nombre": "Fuera de la UE", "textos": {
+        "es": {"texto": TEXTO_UE, "revisado": True},
+        "en": {"texto": TEXTO_UE_EN, "revisado": en_revisado},
+    }}])
+
+
+def test_las_menciones_guardan_un_texto_por_idioma_y_cada_uno_se_revisa(http) -> None:
+    out = _menciones(http, [
+        {"id": "fuera-ue", "nombre": "Fuera de la UE", "textos": {
+            "es": {"texto": TEXTO_UE, "revisado": True},
+            "en": {"texto": TEXTO_UE_EN, "revisado": False},
+            "de": {"texto": "", "revisado": True},          # sin texto no cuenta
+        }},
+        # Lo guardado antes de haber idiomas es el castellano.
+        {"nombre": "Antigua", "texto": "Texto de prueba", "revisado": True},
+    ])
+    ms = {m["nombre"]: m for m in out["menciones_legales"]}
+    assert ms["Fuera de la UE"]["textos"] == {
+        "es": {"texto": TEXTO_UE, "revisado": True},
+        "en": {"texto": TEXTO_UE_EN, "revisado": False},
+    }
+    assert ms["Antigua"]["textos"] == {"es": {"texto": "Texto de prueba", "revisado": True}}
+    assert (ms["Antigua"]["texto"], ms["Antigua"]["revisado"]) == ("Texto de prueba", True)
+    r = http.patch("/api/erp/settings", headers=auth_headers(http, "admin"), json={
+        "menciones_legales": [{"nombre": "Larga", "textos": {"fr": {"texto": "x" * 256}}}]})
+    assert r.status_code == 400 and "francés" in r.json()["detail"]
+
+
+def test_la_mencion_sale_en_el_idioma_del_pedido(http, session_factory) -> None:
+    with session_factory() as s:
+        _pedido(s, language="en")
+    _mencion_en_dos_idiomas(http)
+    with _factusol(FakeFactusol([_fac()])):
+        p = http.post("/api/erp/orders/o-1/factura/mencion/vista-previa",
+                      headers=auth_headers(http, "pedidos"),
+                      json={"mencion_id": "fuera-ue"}).json()
+    assert (p["texto"], p["idioma"], p["avisos"]) == (TEXTO_UE_EN, "en", [])
+
+
+def test_sin_texto_en_el_idioma_sale_en_castellano_y_avisa(http, session_factory) -> None:
+    with session_factory() as s:
+        _pedido(s, language="de_DE")
+    _mencion_en_dos_idiomas(http)
+    with _factusol(FakeFactusol([_fac()])):
+        p = http.post("/api/erp/orders/o-1/factura/mencion/vista-previa",
+                      headers=auth_headers(http, "pedidos"),
+                      json={"mencion_id": "fuera-ue"}).json()
+    assert p["texto"] == TEXTO_UE
+    assert any("está en alemán" in a and "va en castellano" in a for a in p["avisos"])
+
+
+def test_un_texto_sin_revisar_en_el_idioma_no_se_usa(http, session_factory) -> None:
+    with session_factory() as s:
+        _pedido(s, factura=False, language="en")
+    _mencion_en_dos_idiomas(http, en_revisado=False)
+    with patch("app.integrations.factusol.jobs.enqueue_emit_invoice",
+               return_value="job-1") as enq:
+        r = http.post("/api/erp/orders/o-1/emit-factusol-invoice",
+                      headers=auth_headers(http, "pedidos"), json={"mencion_id": "fuera-ue"})
+    assert r.status_code == 202, r.text
+    assert FacturaOptions.from_payload(enq.call_args.kwargs["options"]).mencion == TEXTO_UE
+    assert "sin revisar" in r.json()["avisos"][0]
+
+
+def test_al_emitir_la_mencion_va_en_el_idioma_del_pedido(http, session_factory) -> None:
+    with session_factory() as s:
+        _pedido(s, factura=False, language="en")
+    _mencion_en_dos_idiomas(http)
+    with patch("app.integrations.factusol.jobs.enqueue_emit_invoice",
+               return_value="job-1") as enq:
+        r = http.post("/api/erp/orders/o-1/emit-factusol-invoice",
+                      headers=auth_headers(http, "pedidos"), json={"mencion_id": "fuera-ue"})
+    assert r.status_code == 202, r.text
+    assert FacturaOptions.from_payload(enq.call_args.kwargs["options"]).mencion == TEXTO_UE_EN
+    assert r.json()["avisos"] == []
+
+
 def test_emitir_con_mencion_sin_revisar_se_rechaza(http, session_factory) -> None:
     with session_factory() as s:
         _pedido(s, factura=False)

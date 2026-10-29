@@ -500,6 +500,12 @@ libre de hasta 255 caracteres.
 - Los textos de partida son **de referencia y están sin revisar**. Hasta que
   alguien (o la gestoría) los revise y marque **«Revisado»** en Configuración,
   no se pueden aplicar.
+- **Cada mención puede tener un texto por idioma** (castellano, inglés,
+  alemán, francés, neerlandés y portugués; en Configuración, «Otros idiomas»).
+  La factura lleva el del **idioma del pedido** si está escrito y revisado. Si
+  no lo hay, va en castellano y la pantalla avisa antes de escribir. Cada
+  idioma se revisa por separado: BoHub no traduce, los textos los da la
+  gestoría.
 - Si a la factura le faltaba del todo la mención de exención, la norma (RD
   1619/2012) apunta a una factura rectificativa: eso lo decide la gestoría.
 - La mención también se puede elegir **al emitir** la factura: campo **«Mención
@@ -1893,6 +1899,14 @@ qué dirección compartirla: como **Lector** si BoHub solo la lee, como
   y pon su enlace en la cuenta.
 - Si no quieres que escriba, desmarca «Escribir la factura y el pedido».
 - El fichero a mano sigue funcionando, por ejemplo si Drive no responde.
+- **Ya no hace falta copiar a mano lo del banco.** Elige la cuenta y, en
+  **«Export del banco → hoja de Drive»**, sube el fichero que bajas de la web
+  del banco tal cual (`.xls`, `.xlsx` o `.csv`). Primero dice cuántos trae,
+  cuántos ya están en la hoja y cuáles faltan; si das a **«Añadir … a la
+  hoja»**, los pone arriba (del más reciente al más antiguo, con factura y
+  pedido vacías) y entran en BoHub en el acto. Ninguna fila que ya estuviera
+  se toca. Da igual que la hoja tenga el concepto cortado: se reconoce el
+  movimiento por fecha, importe y saldo.
 
 **Revisar.** Igual que siempre: propuestas con su confianza, «Confirmar»,
 «Elegir otra / repartir», «No es un cobro de cliente» y «Confirmar todas las

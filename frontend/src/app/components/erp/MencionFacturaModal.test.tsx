@@ -107,4 +107,27 @@ describe("MencionFacturaModal", () => {
     expect(await screen.findByText(/BoHub no pisa ninguna/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Añadir a la factura" })).toBeNull();
   });
+
+  it("en un pedido en inglés sale el texto en inglés; sin él, el castellano y un aviso", async () => {
+    const EN = "VAT exempt export (texto de prueba en inglés).";
+    getMencionesLegales.mockResolvedValue({
+      max: 255, verifactu_activo: false,
+      items: [{ id: "fuera-ue", nombre: "Fuera de la UE", texto: TEXTO, revisado: true,
+        textos: { es: { texto: TEXTO, revisado: true }, en: { texto: EN, revisado: true } } }],
+    });
+    const user = userEvent.setup();
+    const { unmount } = render(<MencionFacturaModal orderId="o-1" orderNumber="BOPRIN-9"
+      factura="2-526090" idioma="en" onClose={jest.fn()} />);
+    await user.selectOptions(await screen.findByLabelText("Mención legal"), "fuera-ue");
+    expect(screen.getByText(`«${EN}»`)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    unmount();
+
+    render(<MencionFacturaModal orderId="o-1" orderNumber="BOPRIN-9"
+      factura="2-526090" idioma="nl" onClose={jest.fn()} />);
+    await user.selectOptions(await screen.findByLabelText("Mención legal"), "fuera-ue");
+    expect(screen.getByText(`«${TEXTO}»`)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "El pedido está en neerlandés y la mención «Fuera de la UE» no lo tiene en ese idioma: va en castellano.");
+  });
 });

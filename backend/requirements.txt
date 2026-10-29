@@ -26,6 +26,7 @@ reportlab==4.2.5
 bleach[css]==6.4.0
 html2text==2025.4.15
 openpyxl==3.1.5
+xlrd==2.0.1
 # Fotos del embalaje: los iPhone suben HEIC/HEIF; se convierten a JPEG al guardar
 # (Pillow ya viene con reportlab; esto añade el lector de HEIF).
 pillow-heif==0.22.0

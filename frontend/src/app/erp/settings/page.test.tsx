@@ -508,8 +508,10 @@ describe("ErpSettingsPage — menciones legales de factura y VERI*FACTU", () => 
     expect(Object.keys(sent).sort()).toEqual(["menciones_legales", "verifactu_activo"]);
     expect(sent.verifactu_activo).toBe(true);
     expect(sent.menciones_legales).toEqual([
-      { ...MENCIONES[0], revisado: true },
-      { nombre: "Ceuta", texto: "Exenta de IVA.", revisado: false },
+      { ...MENCIONES[0], revisado: true,
+        textos: { es: { texto: MENCIONES[0].texto, revisado: true } } },
+      { nombre: "Ceuta", texto: "Exenta de IVA.", revisado: false,
+        textos: { es: { texto: "Exenta de IVA.", revisado: false } } },
     ]);
     // La nueva va sin id: el backend lo saca del nombre.
     expect(sent.menciones_legales[1]).not.toHaveProperty("id");
@@ -544,9 +546,29 @@ describe("ErpSettingsPage — menciones legales de factura y VERI*FACTU", () => 
     await user.click(revisada);
     await user.click(screen.getByRole("button", SAVE_MENCIONES));
     await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const texto = `${MENCIONES[0].texto} Destino: islas.`;
     expect(mockUpdate.mock.calls[0][0].menciones_legales).toEqual([{
-      ...MENCIONES[0], texto: `${MENCIONES[0].texto} Destino: islas.`, revisado: true,
+      ...MENCIONES[0], texto, revisado: true, textos: { es: { texto, revisado: true } },
     }]);
+  });
+
+  it("cada idioma tiene su texto y su revisión; el castellano no se toca", async () => {
+    mockGet.mockResolvedValue(settings({
+      menciones_legales: [{ ...MENCIONES[0], revisado: true }],
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const en = await screen.findByLabelText("Mención 1 texto en inglés");
+    expect(screen.getByLabelText("Mención 1 revisada en inglés")).toBeDisabled();
+    await user.type(en, "VAT exempt export.");
+    await user.click(screen.getByLabelText("Mención 1 revisada en inglés"));
+    expect(screen.getByText("Otros idiomas (1 con texto)")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", SAVE_MENCIONES));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0].menciones_legales[0].textos).toEqual({
+      es: { texto: MENCIONES[0].texto, revisado: true },
+      en: { texto: "VAT exempt export.", revisado: true },
+    });
   });
 
   it("si el backend rechaza (400), enseña su motivo en la sección", async () => {

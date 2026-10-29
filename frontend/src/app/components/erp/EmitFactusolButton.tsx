@@ -38,6 +38,7 @@ export function EmitFactusolButton({
   albaranBadgeHidden = false,
   onPhaseChange,
   onInvoiced,
+  orderLanguage = null,
 }: {
   orderId: string;
   invoiceStatus: string;
@@ -66,6 +67,8 @@ export function EmitFactusolButton({
    *  deshabilitarlo mientras la emisión está en vuelo. */
   onPhaseChange?: (phase: "idle" | "confirm" | "working" | "done" | "error") => void;
   onInvoiced?: (codfac: string) => void;
+  /** El idioma del pedido, para la mención legal al emitir. */
+  orderLanguage?: string | null;
 }) {
   const preInvoiced =
     factusolStatus?.status === "invoiced" ? factusolStatus.codfac : null;
@@ -201,6 +204,7 @@ export function EmitFactusolButton({
 
       {phase === "confirm" && enableOptions ? (
         <EmitFactusolModal
+          idioma={orderLanguage}
           totalAmount={totalAmount}
           currency={currency}
           onCancel={() => setPhase("idle")}

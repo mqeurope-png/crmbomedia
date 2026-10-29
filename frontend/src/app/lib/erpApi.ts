@@ -3896,9 +3896,18 @@ export type FactusolCustomer = {
 export type MencionLegal = {
   id: string;
   nombre: string;
+  /** El castellano (lo de antes de haber idiomas). */
   texto: string;
   revisado: boolean;
+  /** Un texto por idioma; cada uno se revisa por separado. Al emitir va el
+   *  del idioma del pedido si está revisado; si no, el castellano y un aviso. */
+  textos?: Partial<Record<IdiomaMencion, TextoMencion>>;
 };
+
+export type TextoMencion = { texto: string; revisado: boolean };
+
+/** Los idiomas de una mención (ver `mencionesIdioma.ts`). */
+export type IdiomaMencion = "es" | "en" | "de" | "fr" | "nl" | "pt";
 
 export async function getMencionesLegales(): Promise<{
   items: MencionLegal[]; max: number; verifactu_activo: boolean;
@@ -5243,7 +5252,7 @@ export async function deleteBankAccount(id: string): Promise<void> {
   await apiFetch(`/api/erp/bank/accounts/${id}`, { method: "DELETE" });
 }
 
-/** Sube el extracto (.xlsx/.csv). Identifica la cuenta por el IBAN de la
+/** Sube el extracto (.xls/.xlsx/.csv). Identifica la cuenta por el IBAN de la
  *  cabecera; si no está dada de alta el backend responde 409 (no importa a
  *  ciegas). Nunca concilia nada por sí solo: solo propone. */
 export async function importBankStatement(
@@ -5285,6 +5294,33 @@ export async function traerBankDrive(accountId?: string): Promise<BankDriveTraid
     `/api/erp/bank/drive/traer${q}`, { method: "POST" },
   );
   return r.resultados;
+}
+
+/** El export del banco contra la hoja de Drive de la cuenta: cuántos trae,
+ *  cuántos ya están y los que faltan (de más reciente a más antiguo). Con
+ *  `aplicado`, ya se han añadido arriba de la hoja y se han importado. */
+export type BankExportPlan = {
+  total: number;
+  ya: number;
+  nuevos: number;
+  movimientos: { fecha_oper: string; concepto: string; importe: number; saldo: number | null }[];
+  aplicado: boolean;
+  importacion?: BankDriveTraida;
+  /** Las filas ya están en la hoja pero no se pudieron leer ahora. */
+  error_importacion?: string;
+};
+
+/** Sube el fichero del banco tal cual (.xls/.xlsx/.csv). Sin `aplicar`, la
+ *  vista previa; con `aplicar`, añade a la hoja lo que falta (sin tocar
+ *  ninguna fila que ya estaba) y lo importa. */
+export async function anadirExportBankDrive(
+  file: File, accountId: string, aplicar: boolean,
+): Promise<BankExportPlan> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("account_id", accountId);
+  form.append("aplicar", String(aplicar));
+  return apiUpload("/api/erp/bank/drive/anadir", form);
 }
 
 /** «Escribir ahora»: lo conciliado pendiente de esa cuenta, a su hoja. */
