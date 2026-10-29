@@ -117,6 +117,7 @@ class MencionAplicarIn(MencionIn):
 
 def _plan_mencion(session: Session, order, payload: MencionIn) -> dict[str, Any]:  # noqa: ANN001
     from app.erp.factura_cliente import (  # noqa: PLC0415
+        idioma_de,
         leer_factura,
         mencion_aplicable,
         plan_mencion,
@@ -129,8 +130,9 @@ def _plan_mencion(session: Session, order, payload: MencionIn) -> dict[str, Any]
             "code": "factura_abonada", "detail": motivo_abonada(linked.numero),
         })
     try:
-        texto, mencion_id = mencion_aplicable(
+        texto, mencion_id, aviso_idioma = mencion_aplicable(
             session, mencion_id=payload.mencion_id, texto_libre=payload.texto,
+            idioma=order.language,
         )
     except FacturaClienteError as exc:
         raise _error(exc) from exc
@@ -143,7 +145,7 @@ def _plan_mencion(session: Session, order, payload: MencionIn) -> dict[str, Any]
         raise _caido(exc) from exc
     plan = plan_mencion(row, texto)
     enviada = _enviada(session, order)
-    avisos = []
+    avisos = [aviso_idioma] if aviso_idioma else []
     if enviada:
         avisos.append(
             "La factura ya se envió al cliente: el PDF que tiene NO lleva la mención. Si la "
@@ -156,7 +158,7 @@ def _plan_mencion(session: Session, order, payload: MencionIn) -> dict[str, Any]
         )
     return {
         "factura": linked.numero, "texto": texto, "mencion_id": mencion_id,
-        **plan, "enviada": enviada, "avisos": avisos,
+        "idioma": idioma_de(order.language), **plan, "enviada": enviada, "avisos": avisos,
         "_row": row, "_client": client, "_ejercicio": ejercicio,
     }
 

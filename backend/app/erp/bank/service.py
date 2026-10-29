@@ -30,6 +30,7 @@ from app.erp.bank.parsing import (
     FILLED_COLUMNS,
     SABADELL_MAPPING,
     Formato,
+    Identidades,
     Lectura,
     ParseError,
     cuenta_casa,
@@ -343,6 +344,31 @@ def claves_de_movimientos(account_id: str, movimientos: list[dict[str, Any]]) ->
     return claves
 
 
+def datos_de_identidad(mov: BankMovement | Any) -> dict[str, Any]:
+    """Lo que `mismo_movimiento` mira de un movimiento guardado."""
+    return {
+        "fecha_oper": mov.fecha_oper, "importe": mov.importe, "saldo": mov.saldo,
+        "concepto": mov.concepto, "referencia1": mov.referencia1,
+    }
+
+
+def _identidades_sin_clave(
+    session: Session, account_id: str, existing: dict[str, str | None], claves: list[str],
+) -> Identidades | None:
+    """Los movimientos de la cuenta que ninguna clave del fichero ha casado,
+    para reconocer por `mismo_movimiento` los que traen otra clave. None si
+    todas casan (lo normal: no hace falta cargar nada)."""
+    if all(c in existing for c in claves):
+        return None
+    casados = {existing[c] for c in claves if c in existing}
+    filas = session.execute(
+        select(BankMovement.id, BankMovement.fecha_oper, BankMovement.importe,
+               BankMovement.saldo, BankMovement.concepto, BankMovement.referencia1)
+        .where(BankMovement.account_id == account_id)
+    ).all()
+    return Identidades([(f.id, datos_de_identidad(f)) for f in filas if f.id not in casados])
+
+
 def _anotacion_nueva(valor: str | None, de_bohub: str | None) -> str | None:
     """Lo que trae la hoja en `factura`/`pedido`, salvo que sea lo que BoHub
     escribió ahí: eso no es una anotación de Bart."""
@@ -442,13 +468,21 @@ def import_statement(
     imported = duplicates = 0
     nuevos: list[BankMovement] = []
     reanotados: list[BankMovement] = []
-    for m, key in zip(movimientos, claves_de_movimientos(account.id, movimientos), strict=True):
+    claves = claves_de_movimientos(account.id, movimientos)
+    identidades = _identidades_sin_clave(session, account.id, existing, claves)
+    for m, key in zip(movimientos, claves, strict=True):
+        mov_id: str | None = None
         if key in existing:
+            mov_id = existing[key]
+        elif identidades is not None:
+            # La clave cambia si cambia el concepto (la hoja de Bart lo trae
+            # cortado y el export del banco entero): mismo movimiento igual.
+            mov_id = identidades.buscar(m)
+        if key in existing or mov_id is not None:
             duplicates += 1
             # Bart anota el extracto y lo vuelve a subir: lo que ahora trae
             # anotado y antes no, se guarda y se casa. Lo que escribió BoHub
             # en la hoja al conciliar no cuenta: no es suyo.
-            mov_id = existing[key]
             mov = session.get(BankMovement, mov_id) if mov_id else None
             if mov is None or mov.anotacion_factura or mov.anotacion_pedido:
                 continue

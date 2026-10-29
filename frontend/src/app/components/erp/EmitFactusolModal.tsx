@@ -10,6 +10,7 @@ import {
   type FormaPago,
   type MencionLegal,
 } from "../../lib/erpApi";
+import { idiomaMencion, mencionParaIdioma } from "../../lib/mencionesIdioma";
 import { ModalCloseButton } from "../ModalCloseButton";
 import { useModalBehaviour } from "../useModalBehaviour";
 
@@ -41,12 +42,15 @@ export function EmitFactusolModal({
   onSubmit,
   onCancel,
   submitting,
+  idioma,
 }: {
   totalAmount: number;
   currency: string;
   onSubmit: (options: EmitFactusolOptions) => void;
   onCancel: () => void;
   submitting?: boolean;
+  /** El idioma del pedido: la mención va en él si tiene texto revisado. */
+  idioma?: string | null;
 }) {
   const [serie, setSerie] = useState<number | null>(null);
   const [fecfac, setFecfac] = useState(today());
@@ -93,6 +97,8 @@ export function EmitFactusolModal({
 
   const libre = mencion === MENCION_LIBRE;
   const elegida = menciones?.find((m) => m.id === mencion) ?? null;
+  const lengua = idiomaMencion(idioma);
+  const aplicable = elegida ? mencionParaIdioma(elegida, lengua) : null;
   // «Texto libre…» sin texto no se emite: saldría sin mención sin avisar.
   const faltaTexto = libre && !mencionLibre.trim();
 
@@ -186,14 +192,17 @@ export function EmitFactusolModal({
               <select value={mencion} onChange={(e) => setMencion(e.target.value)}>
                 <option value="">Ninguna</option>
                 {menciones.map((m) => (
-                  <option key={m.id} value={m.id} disabled={!m.revisado}>
-                    {m.revisado ? m.nombre : `${m.nombre} (sin revisar)`}
+                  <option key={m.id} value={m.id} disabled={!mencionParaIdioma(m, lengua)}>
+                    {mencionParaIdioma(m, lengua) ? m.nombre : `${m.nombre} (sin revisar)`}
                   </option>
                 ))}
                 <option value={MENCION_LIBRE}>Texto libre…</option>
               </select>
             </label>
-            {elegida ? <p className="muted small">«{elegida.texto}»</p> : null}
+            {aplicable ? <p className="muted small">«{aplicable.texto}»</p> : null}
+            {aplicable?.aviso ? (
+              <p className="form-info small" role="alert">⚠ {aplicable.aviso}</p>
+            ) : null}
             {libre ? (
               <>
                 <label className="field">

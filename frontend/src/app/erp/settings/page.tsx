@@ -39,8 +39,11 @@ import {
   type LeadResponseCatalogo,
   type LeadResponseConfig,
   type LeadResponseVentana,
+  type IdiomaMencion,
   type MencionLegal,
+  type TextoMencion,
 } from "../../lib/erpApi";
+import { IDIOMAS_MENCION, textoMencion } from "../../lib/mencionesIdioma";
 import { getEmailAliases, getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
 import { useVisible } from "./useVisible";
 
@@ -1190,52 +1193,91 @@ export default function ErpSettingsPage() {
             alguien (o la gestoría) las revise y marque «Revisado». Si cambias el texto
             de una revisada, se desmarca: hay que volver a revisarlo.
           </p>
+          <p className="muted small">
+            Cada mención puede tener un texto por idioma. La factura lleva el del idioma
+            del pedido si está escrito y revisado; si no, el castellano, y la pantalla
+            avisa. Cada idioma se revisa por separado: BoHub no traduce.
+          </p>
           {(cfg.menciones_legales ?? []).map((m, i) => {
             const setMencion = (over: Partial<MencionLegal>) => {
               const list = [...(cfg.menciones_legales ?? [])];
               list[i] = { ...list[i], ...over };
               patch({ menciones_legales: list });
             };
-            const conTexto = m.texto.trim() !== "";
-            return (
-              <div className="erp-bank-row" key={i}>
-                <input
-                  type="text" placeholder="Nombre (p. ej. Canarias)"
-                  aria-label={`Mención ${i + 1} nombre`}
-                  value={m.nombre}
-                  onChange={(e) => setMencion({ nombre: e.target.value })}
-                />
-                <textarea
-                  rows={2} maxLength={MAX_MENCION}
-                  placeholder="El texto tal como sale en la factura"
-                  aria-label={`Mención ${i + 1} texto`}
-                  value={m.texto}
-                  // Texto cambiado = texto sin revisar: se vuelve a marcar
-                  // tras revisarlo.
-                  onChange={(e) => setMencion({ texto: e.target.value, revisado: false })}
-                />
-                <span className="muted small">{m.texto.length}/{MAX_MENCION}</span>
-                <label className="erp-bank-default"
-                       title={conTexto ? undefined : "Escribe el texto antes de marcarla como revisada."}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Mención ${i + 1} revisada`}
-                    checked={m.revisado}
-                    disabled={!conTexto}
-                    onChange={(e) => setMencion({ revisado: e.target.checked })}
+            const setTexto = (idioma: IdiomaMencion, over: Partial<TextoMencion>) => {
+              const textos = Object.fromEntries(
+                (Object.keys(IDIOMAS_MENCION) as IdiomaMencion[])
+                  .map((l) => [l, textoMencion(m, l)])
+                  .filter(([, t]) => (t as TextoMencion).texto !== ""),
+              ) as Partial<Record<IdiomaMencion, TextoMencion>>;
+              const nuevo = { ...textoMencion(m, idioma), ...over };
+              textos[idioma] = nuevo;
+              setMencion(idioma === "es"
+                ? { textos, texto: nuevo.texto, revisado: nuevo.revisado }
+                : { textos });
+            };
+            const otros = (Object.keys(IDIOMAS_MENCION) as IdiomaMencion[]).filter((l) => l !== "es");
+            const conOtros = otros.filter((l) => textoMencion(m, l).texto !== "").length;
+            const campo = (idioma: IdiomaMencion) => {
+              const t = textoMencion(m, idioma);
+              const sufijo = idioma === "es" ? "" : ` en ${IDIOMAS_MENCION[idioma]}`;
+              const conTexto = t.texto.trim() !== "";
+              return (
+                <div className="erp-bank-row" key={idioma}>
+                  <span className="muted small">{IDIOMAS_MENCION[idioma]}</span>
+                  <textarea
+                    rows={2} maxLength={MAX_MENCION}
+                    placeholder={idioma === "es"
+                      ? "El texto tal como sale en la factura"
+                      : `El texto en ${IDIOMAS_MENCION[idioma]} (lo da la gestoría)`}
+                    aria-label={`Mención ${i + 1} texto${sufijo}`}
+                    value={t.texto}
+                    // Texto cambiado = texto sin revisar: se vuelve a marcar
+                    // tras revisarlo.
+                    onChange={(e) => setTexto(idioma, { texto: e.target.value, revisado: false })}
                   />
-                  Revisado
-                </label>
-                <button
-                  type="button"
-                  className="button small secondary"
-                  aria-label={`Quitar mención ${i + 1}`}
-                  onClick={() => patch({
-                    menciones_legales: (cfg.menciones_legales ?? []).filter((_, j) => j !== i),
-                  })}
-                >
-                  Quitar
-                </button>
+                  <span className="muted small">{t.texto.length}/{MAX_MENCION}</span>
+                  <label className="erp-bank-default"
+                         title={conTexto ? undefined : "Escribe el texto antes de marcarlo como revisado."}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Mención ${i + 1} revisada${sufijo}`}
+                      checked={t.revisado}
+                      disabled={!conTexto}
+                      onChange={(e) => setTexto(idioma, { revisado: e.target.checked })}
+                    />
+                    Revisado
+                  </label>
+                </div>
+              );
+            };
+            return (
+              <div className="erp-card" key={i}>
+                <div className="erp-bank-row">
+                  <input
+                    type="text" placeholder="Nombre (p. ej. Canarias)"
+                    aria-label={`Mención ${i + 1} nombre`}
+                    value={m.nombre}
+                    onChange={(e) => setMencion({ nombre: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className="button small secondary"
+                    aria-label={`Quitar mención ${i + 1}`}
+                    onClick={() => patch({
+                      menciones_legales: (cfg.menciones_legales ?? []).filter((_, j) => j !== i),
+                    })}
+                  >
+                    Quitar
+                  </button>
+                </div>
+                {campo("es")}
+                <details>
+                  <summary className="muted small">
+                    Otros idiomas{conOtros ? ` (${conOtros} con texto)` : ""}
+                  </summary>
+                  {otros.map(campo)}
+                </details>
               </div>
             );
           })}

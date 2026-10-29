@@ -393,6 +393,15 @@ elegir al emitir (`FacturaOptions.mencion`): va a la primera observación vacía
 de la factura nueva (`OB1FAC` u `OB2FAC`), sin pisar la que venga del pedido o
 del albarán. Si las dos tienen texto, no se emite y se dice.
 
+**Idioma (29/10/2026).** Cada mención guarda un texto por idioma
+(`textos: {es, en, de, fr, nl, pt}`, cada uno con su `revisado`; lo guardado
+antes es el castellano). `mencion_aplicable` escribe el del idioma del pedido
+(`Order.language`) si está escrito y revisado; si no, el castellano revisado y
+devuelve un aviso que sale en la vista previa (y en la respuesta de emitir).
+La revisión es **por idioma**, no por mención: una traducción añadida después
+no hereda la revisión del castellano, porque lo que se revisa es la redacción
+que sale en la factura.
+
 **Cuándo NO se cambia el cliente de una factura:**
 
 - con **VERI*FACTU activo** (interruptor en Configuración ERP, apagado): ahí

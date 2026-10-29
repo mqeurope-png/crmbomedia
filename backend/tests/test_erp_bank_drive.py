@@ -156,6 +156,20 @@ class HojaFalsa:
             fila[c] = valor
             self.escrituras.append((rango, valor))
 
+    def insertar_filas(self, pestana: str, fila: int, filas: list[list[Any]]) -> None:
+        """Como Google: las filas nuevas heredan el formato de la de debajo, así
+        que un número de serie en una columna de fecha se ve (y se baja) como
+        fecha."""
+        assert self.formato == FORMATO_HOJA and pestana == self.pestana
+        self.insertadas = (fila, [list(f) for f in filas])
+        epoca = datetime(1899, 12, 30)
+        nuevas = [
+            [epoca + timedelta(days=v) if i in (0, 2) and isinstance(v, int) else v
+             for i, v in enumerate(f)]
+            for f in filas
+        ]
+        self.grid[fila - 1:fila - 1] = nuevas
+
     def fila_de(self, concepto: str) -> list[Any]:
         return next(f for f in self.grid if len(f) > 1 and f[1] == concepto)
 

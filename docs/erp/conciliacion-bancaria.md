@@ -30,8 +30,8 @@ fecha, concepto e importe de algún formato.
 
 | Campo | Sabadell | Belfius |
 |---|---|---|
-| fecha de operación | `FECHA OPER` | `Boekingsdatum` |
-| fecha valor | `FECHA VALOR` | `Valutadatum` |
+| fecha de operación | `FECHA OPER` o `F. Operativa` | `Boekingsdatum` |
+| fecha valor | `FECHA VALOR` o `F. Valor` | `Valutadatum` |
 | importe | `IMPORTE` | `Bedrag` |
 | concepto | `CONCEPTO` | `Transactie` (texto largo: lleva la comunicación del pagador) |
 | referencia 1 | `REFERENCIA 1` | `Transactienummer` |
@@ -54,6 +54,17 @@ Además:
   fecha valor una fecha. Ver «Filas corridas».
 - Si una cuenta tiene un mapeo guardado a mano para un banco que no está en
   `FORMATOS`, ese mapeo cuenta como un formato más.
+
+Un mismo banco puede rotular igual una columna de dos maneras: la hoja de
+Bart dice `FECHA OPER` y el export de la web de Sabadell (29/10/2026) dice
+`F. Operativa`. **Añadir una variante es añadir el rótulo** a la tupla del
+campo en su `Formato`. El resto (`Concepto`, `Importe`, `Saldo`,
+`Referencia 1/2`) ya casa porque se compara sin mayúsculas.
+
+El fichero puede ser `.xls` (el Excel antiguo que da hoy la web de Sabadell:
+preámbulo de siete filas con «Consulta de movimientos», la cuenta y la fecha,
+y la cabecera en la novena), `.xlsx` o `.csv`. Manda lo que es el fichero, no
+su extensión.
 
 ## De qué cuenta es el extracto
 
@@ -257,6 +268,31 @@ La pantalla dice, en cada movimiento, qué se escribió en la hoja o por qué
 no; y en cada cuenta, la última lectura, la última escritura y lo pendiente
 («Escribir ahora»).
 
+### El export del banco, directo a la hoja
+
+Bart baja de la web del banco los movimientos de los últimos días y antes los
+copiaba a mano en su hoja. Ahora, en Conciliación, con la cuenta elegida:
+**«Export del banco → hoja de Drive»**, y se sube el fichero tal cual
+(`POST /api/erp/bank/drive/anadir`).
+
+1. **Vista previa**: «34 movimientos en el fichero · 21 ya están · 13 se
+   añadirán», con la lista de los 13. No escribe nada.
+2. **«Añadir 13 movimientos a la hoja»**: se insertan **arriba, encima de la
+   primera fila de datos** (debajo de la cabecera), del más reciente al más
+   antiguo, con `factura` y `pedido` vacías. Insertar y rellenar va en una sola
+   petición a Google (`batchUpdate`: `insertDimension` + `updateCells`): o entra
+   todo o nada. Las filas nuevas heredan el formato de la de debajo; las fechas
+   van como fecha de hoja (o como «dd/mm/aaaa» si la hoja las tiene como texto).
+3. Después se lee la hoja como en «Traer de Drive»: lo añadido ya está en
+   BoHub (y recibe propuestas) sin pulsar nada más.
+
+**Nunca se toca una fila existente**: ni se borra, ni se reordena, ni se
+corrige. Ya está = `mismo_movimiento` contra lo que hay en la hoja, así que
+vale aunque el export traiga movimientos anteriores a los de arriba (se
+añaden también, arriba). Si el fichero es de otra cuenta, o la hoja es un
+`.xlsx` subido, no se añade nada y se dice. Comprobado con el export real del
+29/10/2026 contra la hoja de Sabadell: 34, 21 y 13.
+
 ### Datos de clientes
 
 Las hojas llevan nombres de pagadores, direcciones e IBAN de terceros. Los
@@ -268,6 +304,19 @@ texto. Los tests y las capturas usan figurantes.
 ## Duplicados
 
 La clave sale de cuenta, fecha, importe, concepto y saldo.
+
+**La identidad de un movimiento** (`parsing.mismo_movimiento`). La hoja de
+Bart corta el concepto a 26 caracteres («ABONO TRANSFERENCIA DE DAN») y el
+export de la web lo trae entero: la clave cambia, pero es el mismo
+movimiento. Por eso, cuando la clave no casa, se mira la identidad: misma
+**fecha de operación**, mismo **importe** y mismo **saldo** (dos del mismo día
+e importe tienen saldos distintos); sin saldo en los dos, el número de
+transacción (Belfius) y, si tampoco, el concepto recortado al prefijo común.
+Cada movimiento conocido vale para uno solo (`Identidades`). La usan los
+tres sitios que reconocen un movimiento: el importador (no duplica lo que
+entró por la hoja), la escritura de la factura en la hoja (encuentra la fila
+aunque el movimiento entrara con el concepto entero) y el export a Drive. La
+clave guardada (`dedupe_key`) no cambia: no hay que migrar nada.
 
 - **Con saldo** (Sabadell), dos filas idénticas son la misma: un solape al
   juntar exportaciones. El Sabadell real trae 5 (las filas 890-892 repetidas

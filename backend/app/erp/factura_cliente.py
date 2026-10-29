@@ -87,55 +87,95 @@ def _slug(nombre: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", plano.lower()).strip("-")[:40] or "mencion"
 
 
+#: Idiomas en que puede ir una mención (los de los pedidos), y su nombre.
+IDIOMAS_MENCION: dict[str, str] = {
+    "es": "castellano", "en": "inglés", "de": "alemán", "fr": "francés", "nl": "neerlandés",
+    "pt": "portugués",
+}
+IDIOMA_BASE = "es"
+
+
+def idioma_de(value: Any) -> str:
+    """«en», «EN», «en_GB» → «en»; lo que no es de la lista, castellano."""
+    corto = str(value or "").strip().lower()[:2]
+    return corto if corto in IDIOMAS_MENCION else IDIOMA_BASE
+
+
+def _textos(entry: dict[str, Any], *, limite: bool) -> dict[str, dict[str, Any]]:
+    """`{idioma: {texto, revisado}}` de una mención. Lo guardado antes de
+    haber idiomas (`texto` + `revisado`) es el castellano. Cada texto se
+    revisa por separado: una traducción añadida después no hereda la revisión
+    del castellano."""
+    crudo = entry.get("textos")
+    if not isinstance(crudo, dict):
+        crudo = {IDIOMA_BASE: {"texto": entry.get("texto"), "revisado": entry.get("revisado")}}
+    out: dict[str, dict[str, Any]] = {}
+    for idioma in IDIOMAS_MENCION:
+        t = crudo.get(idioma)
+        if not isinstance(t, dict):
+            continue
+        texto = str(t.get("texto") or "").strip()
+        if limite:
+            texto = texto[:MAX_MENCION]
+        if texto:
+            out[idioma] = {"texto": texto, "revisado": bool(t.get("revisado"))}
+    return out
+
+
+def _con_textos(ident: str, nombre: str, textos: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """La mención como la ve todo el mundo: sus textos por idioma y, por
+    compatibilidad, `texto`/`revisado` del castellano."""
+    base = textos.get(IDIOMA_BASE) or {"texto": "", "revisado": False}
+    return {"id": ident, "nombre": nombre, "textos": textos,
+            "texto": base["texto"], "revisado": base["revisado"]}
+
+
 def menciones_config(raw: Any) -> list[dict[str, Any]]:
-    """Lista normalizada `[{id, nombre, texto, revisado}]`; si nunca se
-    guardó, las de partida."""
+    """Lista normalizada `[{id, nombre, textos, texto, revisado}]`; si nunca
+    se guardó, las de partida (solo en castellano)."""
     if not isinstance(raw, list):
-        return [dict(m) for m in DEFAULT_MENCIONES]
+        raw = [dict(m) for m in DEFAULT_MENCIONES]
     out: list[dict[str, Any]] = []
     vistos: set[str] = set()
     for entry in raw:
         if not isinstance(entry, dict):
             continue
         nombre = str(entry.get("nombre") or "").strip()
-        texto = str(entry.get("texto") or "").strip()
         if not nombre:
             continue
         ident = str(entry.get("id") or "").strip() or _slug(nombre)
         if ident in vistos:
             continue
         vistos.add(ident)
-        out.append({"id": ident, "nombre": nombre, "texto": texto[:MAX_MENCION],
-                    "revisado": bool(entry.get("revisado"))})
+        out.append(_con_textos(ident, nombre, _textos(entry, limite=True)))
     return out
 
 
 def validate_menciones(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Lo que llega de Configuración ERP: nombre único, texto hasta 255.
+    """Lo que llega de Configuración ERP: nombre único, cada texto hasta 255.
     ValueError con el motivo. Una mención sin texto se guarda pero no se puede
-    aplicar."""
+    aplicar; un texto sin escribir no puede estar revisado."""
     out: list[dict[str, Any]] = []
     nombres: set[str] = set()
     for entry in raw:
-        nombre = str((entry or {}).get("nombre") or "").strip()
-        texto = str((entry or {}).get("texto") or "").strip()
-        if not nombre and not texto:
+        entry = entry or {}
+        nombre = str(entry.get("nombre") or "").strip()
+        textos = _textos(entry, limite=False)
+        if not nombre and not textos:
             continue  # fila vacía del formulario
         if not nombre:
             raise ValueError("una mención legal no tiene nombre")
         if nombre.lower() in nombres:
             raise ValueError(f"mención legal repetida: {nombre}")
-        if len(texto) > MAX_MENCION:
-            raise ValueError(
-                f"la mención «{nombre}» pasa de {MAX_MENCION} caracteres (lo que cabe en las "
-                "observaciones de la factura)"
-            )
+        for idioma, t in textos.items():
+            if len(t["texto"]) > MAX_MENCION:
+                raise ValueError(
+                    f"la mención «{nombre}» en {IDIOMAS_MENCION[idioma]} pasa de "
+                    f"{MAX_MENCION} caracteres (lo que cabe en las observaciones de la factura)"
+                )
         nombres.add(nombre.lower())
-        out.append({
-            "id": str((entry or {}).get("id") or "").strip() or _slug(nombre),
-            "nombre": nombre, "texto": texto,
-            "revisado": bool((entry or {}).get("revisado")) and bool(texto),
-        })
+        ident = str(entry.get("id") or "").strip() or _slug(nombre)
+        out.append({"id": ident, "nombre": nombre, "textos": textos})
     return out
 
 
@@ -185,26 +225,41 @@ def anotar_auditoria(log: Any, **campos: Any) -> None:
     log.metadata_json = json.dumps(meta, default=str)
 
 
-def mencion_aplicable(session: Session, *, mencion_id: str | None,
-                      texto_libre: str | None) -> tuple[str, str | None]:
-    """El texto a escribir y de qué mención sale (None: texto libre). Una
-    mención de la lista tiene que estar revisada y tener texto."""
+def mencion_aplicable(
+    session: Session, *, mencion_id: str | None, texto_libre: str | None,
+    idioma: str | None = None,
+) -> tuple[str, str | None, str | None]:
+    """El texto a escribir, de qué mención sale (None: texto libre) y un aviso
+    si no va en el idioma del pedido. De una mención de la lista va el texto
+    del idioma del pedido si está escrito y revisado; si no, el castellano
+    (revisado) y el aviso. Sin castellano revisado, no se aplica."""
     if mencion_id:
         m = next((x for x in menciones(session) if x["id"] == mencion_id), None)
         if m is None:
             raise FacturaClienteError("mencion_no_existe", "Esa mención ya no está en la lista.")
-        if not m["texto"]:
+        lengua = idioma_de(idioma)
+        propio = m["textos"].get(lengua)
+        if propio and propio["revisado"]:
+            return propio["texto"], m["id"], None
+        base = m["textos"].get(IDIOMA_BASE)
+        if not base:
             raise FacturaClienteError(
                 "mencion_sin_texto",
                 f"La mención «{m['nombre']}» no tiene texto: escríbelo en Configuración ERP.",
             )
-        if not m["revisado"]:
+        if not base["revisado"]:
             raise FacturaClienteError(
                 "mencion_sin_revisar",
                 f"La mención «{m['nombre']}» es un texto de referencia sin revisar: revísalo "
                 "(o que lo revise la gestoría) y márcalo como revisado en Configuración ERP.",
             )
-        return m["texto"], m["id"]
+        aviso = None
+        if lengua != IDIOMA_BASE:
+            falta = "lo tiene sin revisar" if propio else "no lo tiene"
+            aviso = (f"El pedido está en {IDIOMAS_MENCION[lengua]} y la mención «{m['nombre']}» "
+                     f"{falta} en ese idioma: va en castellano. El texto en "
+                     f"{IDIOMAS_MENCION[lengua]} se añade en Configuración ERP.")
+        return base["texto"], m["id"], aviso
     texto = (texto_libre or "").strip()
     if not texto:
         raise FacturaClienteError("mencion_vacia", "Elige una mención o escribe el texto.")
@@ -212,7 +267,7 @@ def mencion_aplicable(session: Session, *, mencion_id: str | None,
         raise FacturaClienteError(
             "mencion_larga", f"El texto pasa de {MAX_MENCION} caracteres.",
         )
-    return texto, None
+    return texto, None, None
 
 
 # --- la factura emitida en FACTUSOL -----------------------------------------------

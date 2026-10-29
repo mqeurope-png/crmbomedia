@@ -48,8 +48,10 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.erp.bank.parsing import (
+    Identidades,
     ParsedStatement,
     ParseError,
+    cuenta_casa,
     interpretar,
     parse_amount,
     read_statement,
@@ -57,8 +59,10 @@ from app.erp.bank.parsing import (
 )
 from app.erp.bank.service import (
     HOJA_PENDIENTE,
+    _cuenta_del_extracto,
     _formatos_de_cuentas,
     claves_de_movimientos,
+    datos_de_identidad,
     import_statement,
     movimientos_de_la_cuenta,
     valores_conciliados,
@@ -163,11 +167,16 @@ class HojaBanco(Protocol):
     def escribir_celdas(self, celdas: list[tuple[str, str]]) -> None:
         """Escribe cada (rango A1 de una celda, texto) tal cual, de una vez."""
 
+    def insertar_filas(self, pestana: str, fila: int, filas: list[list[Any]]) -> None:
+        """Inserta `filas` (ya con sus valores) a partir de la fila `fila`
+        (1-based) de la pestaña, empujando hacia abajo lo que había."""
+
 
 class GoogleHojaBanco:
     """La hoja de Drive de una cuenta, con la cuenta de servicio. Lee por la
-    API de Drive (exportar / bajar) y escribe celdas sueltas por la de
-    Sheets (`values:batchUpdate`, RAW). No borra ni inserta nada."""
+    API de Drive (exportar / bajar), escribe celdas sueltas por la de Sheets
+    (`values:batchUpdate`, RAW) e inserta filas nuevas (`batchUpdate`). No
+    borra nada."""
 
     def __init__(self, info: dict[str, Any], file_id: str):
         self.info = info
@@ -289,6 +298,50 @@ class GoogleHojaBanco:
                 "data": [{"range": rango, "values": [[valor]]} for rango, valor in celdas],
             },
         )
+
+    def insertar_filas(self, pestana: str, fila: int, filas: list[list[Any]]) -> None:
+        if not filas:
+            return
+        data = self._pedir(
+            "GET", f"{_SHEETS_API}/{self.file_id}",
+            params={"fields": "sheets.properties(sheetId,title)"},
+        ).json()
+        sheet_id = next(
+            (s["properties"]["sheetId"] for s in data.get("sheets", [])
+             if s["properties"].get("title") == pestana),
+            None,
+        )
+        if sheet_id is None:
+            raise DriveBancoError("sin_pestana", f"La hoja no tiene la pestaña «{pestana}».")
+        # Insertar y rellenar en la MISMA petición: o entra todo o nada (nunca
+        # quedan filas en blanco a medias). Las filas nuevas heredan el formato
+        # de la de debajo (la primera de datos): fechas e importes igual.
+        self._pedir(
+            "POST", f"{_SHEETS_API}/{self.file_id}:batchUpdate", escribiendo=True,
+            json={"requests": [
+                {"insertDimension": {
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                              "startIndex": fila - 1, "endIndex": fila - 1 + len(filas)},
+                    "inheritFromBefore": False,
+                }},
+                {"updateCells": {
+                    "start": {"sheetId": sheet_id, "rowIndex": fila - 1, "columnIndex": 0},
+                    "rows": [{"values": [_celda_de_google(v) for v in f]} for f in filas],
+                    "fields": "userEnteredValue",
+                }},
+            ]},
+        )
+
+
+def _celda_de_google(valor: Any) -> dict[str, Any]:
+    """Un valor tal cual (RAW): un texto que empiece por «=» no es fórmula."""
+    if valor is None or valor == "":
+        return {}
+    if isinstance(valor, bool):
+        return {"userEnteredValue": {"stringValue": str(valor)}}
+    if isinstance(valor, (int, float)):
+        return {"userEnteredValue": {"numberValue": valor}}
+    return {"userEnteredValue": {"stringValue": str(valor)}}
 
 
 def abrir_hoja(session: Session, account: BankAccount) -> HojaBanco:
@@ -527,9 +580,15 @@ def escribir_pendientes(
         pestana=account.drive_pestana,
     )
     movimientos, _ = movimientos_de_la_cuenta(interpretar(parsed, parsed.mapping), account)
-    por_clave: dict[str, dict[str, Any]] = {}
-    for m, clave in zip(movimientos, claves_de_movimientos(account.id, movimientos), strict=True):
-        por_clave.setdefault(clave, m)
+    por_clave: dict[str, int] = {}
+    for i, clave in enumerate(claves_de_movimientos(account.id, movimientos)):
+        por_clave.setdefault(clave, i)
+    # Si la fila ya no da la misma clave (p. ej. el concepto entró entero del
+    # export del banco y en la hoja está cortado), se busca por identidad.
+    identidades = Identidades(list(enumerate(movimientos)))
+    for mov in candidatos:
+        if mov.dedupe_key in por_clave:
+            identidades.usar(por_clave[mov.dedupe_key])
     col_fac, col_ped = _columna(parsed, "factura"), _columna(parsed, "pedido")
     col_imp, col_sal = _columna(parsed, "importe"), _columna(parsed, "saldo")
     col_con, col_ref = _columna(parsed, "concepto"), _columna(parsed, "referencia1")
@@ -540,7 +599,10 @@ def escribir_pendientes(
         if mov.status != "reconciled" or mov.id not in valores:
             _fijar(session, mov, version[mov.id], None)   # ya no hay nada que escribir
             continue
-        fila = por_clave.get(mov.dedupe_key)
+        i = por_clave.get(mov.dedupe_key)
+        if i is None:
+            i = identidades.buscar(datos_de_identidad(mov))
+        fila = movimientos[i] if i is not None else None
         if fila is None:
             if mov.hoja_estado != HOJA_NO_ENCONTRADA:
                 logger.info(
@@ -661,3 +723,131 @@ def escribir_cuenta(
     })
     session.commit()
     return stats
+
+
+# --- añadir a la hoja lo que trae el export del banco --------------------------------
+
+#: Campos del extracto que se copian del export a la fila nueva de la hoja.
+#: `factura` y `pedido` se quedan vacías: las rellena la conciliación.
+_CAMPOS_EXPORT = (
+    "fecha_oper", "concepto", "fecha_valor", "importe", "saldo", "referencia1", "referencia2",
+)
+_FECHAS = ("fecha_oper", "fecha_valor")
+#: El día 0 de las fechas de una hoja de cálculo.
+_EPOCA_HOJA = datetime(1899, 12, 30).date()
+
+
+def _leer_export(
+    session: Session, account: BankAccount, contenido: bytes, nombre: str,
+) -> list[dict[str, Any]]:
+    """Los movimientos del fichero del banco que son de esta cuenta. Lanza
+    `ParseError` si no es un extracto y `DriveBancoError` si es de otra."""
+    parsed = read_statement(contenido, nombre, extra=_formatos_de_cuentas(session, account.id))
+    lectura = interpretar(parsed, parsed.mapping)
+    numero = _cuenta_del_extracto(parsed, lectura)
+    if numero and not cuenta_casa(numero, account.iban):
+        raise DriveBancoError(
+            "otra_cuenta",
+            f"El fichero es de la cuenta {numero}, no de {account.name} ({account.iban}).",
+        )
+    movimientos, _ = movimientos_de_la_cuenta(lectura, account)
+    return movimientos
+
+
+def _leer_hoja_para_anadir(
+    session: Session, account: BankAccount, hoja: HojaBanco,
+) -> tuple[ParsedStatement, list[dict[str, Any]]]:
+    contenido, formato = hoja.descargar()
+    account.drive_formato = formato
+    if formato == FORMATO_XLSX:
+        raise DriveBancoError("xlsx", XLSX_NO_SE_ESCRIBE)
+    parsed = read_statement(
+        contenido, "hoja.xlsx", extra=_formatos_de_cuentas(session, account.id),
+        pestana=account.drive_pestana,
+    )
+    movimientos, _ = movimientos_de_la_cuenta(interpretar(parsed, parsed.mapping), account)
+    return parsed, movimientos
+
+
+def _faltan(
+    export: list[dict[str, Any]], en_hoja: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Los del export que no están en la hoja, de más reciente a más antiguo
+    (en el mismo día, en el orden en que los da el banco)."""
+    identidades = Identidades(list(enumerate(en_hoja)))
+    nuevos = [m for m in export if identidades.buscar(m) is None]
+    if len(export) > 1 and export[0]["fecha_oper"] < export[-1]["fecha_oper"]:
+        nuevos.reverse()   # el banco los da del más antiguo al más reciente
+    return sorted(nuevos, key=lambda m: m["fecha_oper"], reverse=True)
+
+
+def _vista(m: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fecha_oper": m["fecha_oper"].isoformat(),
+        "concepto": m["concepto"],
+        "importe": float(m["importe"]),
+        "saldo": float(m["saldo"]) if m["saldo"] is not None else None,
+    }
+
+
+def _fila_nueva(
+    m: dict[str, Any], parsed: ParsedStatement, muestra: dict[str, Any] | None,
+) -> list[Any]:
+    """La fila de la hoja para un movimiento del export, en las columnas de
+    la hoja. Una fecha va como fecha de hoja (número de serie, que con el
+    formato heredado se ve como las demás) salvo que la hoja las tenga como
+    texto: entonces como «dd/mm/aaaa»."""
+    fila: list[Any] = [None] * len(parsed.columns)
+    for campo in _CAMPOS_EXPORT:
+        col = _columna(parsed, campo)
+        valor = m.get(campo)
+        if col is None or valor is None:
+            continue
+        if campo in _FECHAS:
+            como_texto = muestra is not None and isinstance(
+                muestra.get(parsed.columns[col]), str)
+            valor = (valor.strftime("%d/%m/%Y") if como_texto
+                     else (valor - _EPOCA_HOJA).days)
+        elif campo in ("importe", "saldo"):
+            valor = float(valor)
+        fila[col] = valor
+    return fila
+
+
+def anadir_export(
+    session: Session, account: BankAccount, *, contenido: bytes, nombre: str,
+    aplicar: bool = False, user_id: str | None = None, hoja: HojaBanco | None = None,
+) -> dict[str, Any]:
+    """Compara el fichero del banco (tal cual lo da la web) con la hoja de
+    Drive de la cuenta y dice qué falta (`aplicar=False`, la vista previa) o
+    lo añade (`aplicar=True`): filas nuevas encima de la primera de datos, de
+    la más reciente a la más antigua, con `factura` y `pedido` vacías. Nunca
+    toca una fila que ya estaba. Después lee la hoja como «Traer de Drive»,
+    para que lo añadido entre en BoHub.
+
+    Un movimiento ya está si la hoja tiene uno que es el mismo
+    (`mismo_movimiento`: fecha, importe y saldo, que no dependen de que la
+    hoja corte el concepto). Lanza `DriveBancoError` / `ParseError`."""
+    if not account.drive_file_id:
+        raise DriveBancoError("sin_hoja", f"La cuenta {account.name} no tiene hoja de Drive.")
+    export = _leer_export(session, account, contenido, nombre)
+    hoja = hoja or abrir_hoja(session, account)
+    parsed, en_hoja = _leer_hoja_para_anadir(session, account, hoja)
+    nuevos = _faltan(export, en_hoja)
+    resultado: dict[str, Any] = {
+        "total": len(export), "ya": len(export) - len(nuevos), "nuevos": len(nuevos),
+        "movimientos": [_vista(m) for m in nuevos], "aplicado": False,
+    }
+    if not aplicar or not nuevos:
+        return resultado
+    if _columna(parsed, "fecha_oper") is None or _columna(parsed, "importe") is None:
+        raise DriveBancoError("sin_columna", "La hoja no tiene las columnas de fecha e importe.")
+    primera = min((m["source_row"] for m in en_hoja), default=parsed.columns_row + 1)
+    muestra = next((r for r in parsed.rows if r["__row__"] == primera), None)
+    pestana = account.drive_pestana or hoja.pestanas()[0]
+    hoja.insertar_filas(pestana, primera, [_fila_nueva(m, parsed, muestra) for m in nuevos])
+    logger.info("bank.drive: cuenta %s: %s filas añadidas a la hoja desde el export",
+                account.id, len(nuevos))
+    resultado["aplicado"] = True
+    resultado["importacion"] = traer_de_drive(session, account, user_id=user_id, hoja=hoja)
+    return resultado

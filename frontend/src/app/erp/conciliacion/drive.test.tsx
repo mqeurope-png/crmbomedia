@@ -36,6 +36,7 @@ jest.mock("../../lib/erpApi", () => ({
   discardBankMovement: jest.fn(),
   downloadBankCobrosCsv: jest.fn(),
   downloadBankExport: jest.fn(),
+  anadirExportBankDrive: jest.fn(),
   escribirBankDrive: jest.fn(),
   getBankDrive: jest.fn(),
   getContrapartidas: jest.fn().mockResolvedValue([]),

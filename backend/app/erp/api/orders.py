@@ -3452,10 +3452,12 @@ def emit_factusol_invoice(
 
     options = (payload or EmitFactusolInvoicePayload()).model_dump()
     mencion_id, mencion_texto = options.pop("mencion_id"), options.pop("mencion_texto")
+    aviso_idioma: str | None = None
     if mencion_id or (mencion_texto or "").strip():
         try:
-            options["mencion"], _ = mencion_aplicable(
+            options["mencion"], _, aviso_idioma = mencion_aplicable(
                 session, mencion_id=mencion_id, texto_libre=mencion_texto,
+                idioma=order.language,
             )
         except FacturaClienteError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, {
@@ -3472,7 +3474,8 @@ def emit_factusol_invoice(
 
     _audit_factusol(session, order, current_user, job_id)
     session.commit()
-    return {"job_id": job_id, "order_id": order.id, "status": "queued"}
+    return {"job_id": job_id, "order_id": order.id, "status": "queued",
+            "avisos": [aviso_idioma] if aviso_idioma else []}
 
 
 # --- cobro manual (F-4-B desde la app): ficha y bandeja ---------------------------
