@@ -423,10 +423,18 @@ def shipping_address_block(woo: dict[str, Any]) -> dict[str, Any] | None:
     return block
 
 
+#: Claves de `shipping_address` que forman la dirección: van juntas.
+_DIRECCION_EN_BLOQUE = ("address_line", "city", "postal_code", "state", "country")
+
+
 def _apply_shipping_address(order: Order, woo: dict[str, Any], *, overwrite: bool) -> None:
     """Guarda la dirección de envío en `packing_json.shipping_address` sin pisar
-    otros bloques del packing (factusol_payment, genei…). En el refresh solo se
-    escribe si falta (backfill de pedidos ya importados); en el alta siempre."""
+    otros bloques del packing (factusol_payment, genei…). En el alta siempre;
+    en el refresh solo RELLENA lo que estaba vacío: un pedido que entró sin NIF
+    ni dirección (BOPRIN-100015, 28/10/2026) los recoge cuando la web los
+    trae, sin pisar lo que ya tenía. La dirección va en bloque (calle, ciudad,
+    CP, provincia y país): se copia entera solo si no había ninguna, para no
+    mezclar la calle de una con el CP de otra."""
     block = shipping_address_block(woo)
     if block is None:
         return
@@ -436,8 +444,18 @@ def _apply_shipping_address(order: Order, woo: dict[str, Any], *, overwrite: boo
             data = {}
     except (TypeError, ValueError):
         data = {}
-    if not overwrite and isinstance(data.get("shipping_address"), dict):
-        return
+    actual = data.get("shipping_address")
+    if not overwrite and isinstance(actual, dict):
+        def vacio(k: str) -> bool:
+            return not str(actual.get(k) or "").strip()
+
+        sueltos = [k for k in block if k not in _DIRECCION_EN_BLOQUE]
+        if all(vacio(k) for k in _DIRECCION_EN_BLOQUE):
+            sueltos += list(_DIRECCION_EN_BLOQUE)
+        vacios = {k: block[k] for k in sueltos if block[k] and vacio(k)}
+        if not vacios:
+            return
+        block = {**actual, **vacios}
     data["shipping_address"] = block
     order.packing_json = json.dumps(data)
 

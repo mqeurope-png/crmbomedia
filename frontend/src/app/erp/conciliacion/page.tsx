@@ -14,6 +14,7 @@ import {
   deleteBankAccount,
   deleteBankRule,
   discardBankMovement,
+  downloadBankCobrosCsv,
   downloadBankExport,
   getContrapartidas,
   importBankStatement,
@@ -29,11 +30,13 @@ import {
   updateBankAccount,
   type BankAccount,
   type BankAccountSuggestion,
+  type BankCobrosCsv,
   type BankConfidence,
   type BankImportSummary,
   type BankMovement,
   type BankMovementFilters,
   type BankMovementsPage,
+  type BankNoEntendida,
   type BankReassignTarget,
   type BankRule,
   type Contrapartida,
@@ -55,6 +58,104 @@ const STATUS_LABEL: Record<BankMovement["status"], string> = {
 
 function eur(n: number | null | undefined): string {
   return n === null || n === undefined ? "—" : `${n.toFixed(2)} €`;
+}
+
+/** El resultado de importar un extracto: lo importado, lo que entró casado
+ *  por la columna `factura` y las filas que no se entendieron (se importa el
+ *  resto igual), que se pueden desplegar para verlas. */
+function ResumenImport({ summary }: { summary: BankImportSummary }) {
+  const [abiertas, setAbiertas] = useState(false);
+  const filas: BankNoEntendida[] = summary.no_entendidas ?? [];
+  const total = summary.no_entendidas_total ?? filas.length;
+  const anotadas = summary.anotadas;
+  return (
+    <div className="erp-bank-import-summary" role="status">
+      {summary.resumen ? (
+        <p>
+          <strong>{summary.resumen}</strong>
+          {summary.account_name ? <> · {summary.account_name}</> : null}
+          {summary.formato ? <span className="muted small"> · formato {summary.formato}</span> : null}
+        </p>
+      ) : null}
+      {anotadas && (anotadas.confirmadas || anotadas.propuestas || anotadas.sin_factura) ? (
+        <p className="muted small">
+          Venían anotados en la columna factura: <strong>{anotadas.confirmadas}</strong> conciliados
+          {anotadas.propuestas ? <> · {anotadas.propuestas} con una nota, para revisar</> : null}
+          {anotadas.sin_factura ? <> · {anotadas.sin_factura} con texto que no es una factura</> : null}
+          {anotadas.nuevas_en_reimportados ? (
+            <> · {anotadas.nuevas_en_reimportados} ya importado{anotadas.nuevas_en_reimportados === 1 ? "" : "s"} con la anotación nueva</>
+          ) : null}
+        </p>
+      ) : null}
+      {summary.continuaciones ? (
+        <p className="muted small">
+          {summary.continuaciones} fila{summary.continuaciones === 1 ? "" : "s"} sin fecha unida
+          {summary.continuaciones === 1 ? "" : "s"} al movimiento de encima (el pagador, la factura…).
+        </p>
+      ) : null}
+      {total > 0 ? (
+        <>
+          <button
+            type="button"
+            className="button small secondary"
+            aria-expanded={abiertas}
+            onClick={() => setAbiertas((v) => !v)}
+          >
+            {abiertas ? "Ocultar" : "Ver"} las {total} fila{total === 1 ? "" : "s"} no entendida{total === 1 ? "" : "s"}
+          </button>
+          {abiertas ? (
+            <table className="data-table erp-bank-rejected" aria-label="Filas no entendidas">
+              <thead>
+                <tr><th>Fila</th><th>Por qué</th><th>Lo que trae</th></tr>
+              </thead>
+              <tbody>
+                {filas.map((f) => (
+                  <tr key={f.fila}>
+                    <td>{f.fila}</td>
+                    <td>{f.motivo}</td>
+                    <td className="muted small">{f.valores.join(" · ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+          {abiertas && filas.length < total ? (
+            <p className="muted small">Se enseñan las {filas.length} primeras.</p>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Lo que el CSV de cobros lleva y lo que deja fuera (lo cuenta el servidor
+ *  en las cabeceras `X-Cobros-*`). */
+function avisoCsvCobros(csv: BankCobrosCsv): string {
+  const n = csv.incluidas;
+  const fuera = [
+    csv.parciales ? `${csv.parciales} parcial${csv.parciales === 1 ? "" : "es"} (el script registraría el saldo entero)` : null,
+    csv.noCuadran ? `${csv.noCuadran} con más conciliado que el importe del movimiento` : null,
+    csv.noPendientes ? `${csv.noPendientes} que no está${csv.noPendientes === 1 ? "" : "n"} pendiente${csv.noPendientes === 1 ? "" : "s"} en FACTUSOL` : null,
+    csv.sinContrapartida ? `${csv.sinContrapartida} de una cuenta sin contrapartida` : null,
+  ].filter(Boolean);
+  return (
+    `CSV de cobros descargado: ${n} factura${n === 1 ? "" : "s"}. ` +
+    (fuera.length ? `Fuera del CSV: ${fuera.join(", ")}; esas se registran a mano. ` : "") +
+    "Pásalo a registrar_cobros_lote.ps1: simula primero y se salta lo ya cobrado."
+  );
+}
+
+/** Lo que Bart anotó a mano en el extracto (columnas `factura` / `pedido`),
+ *  siempre a la vista, salvo que ya lo diga la propuesta que salió de ahí. */
+function AnotadoEnExtracto({ movement: m }: { movement: BankMovement }) {
+  const lista = m.status === "reconciled" ? m.reconciled : m.proposals;
+  if (lista.some((p) => p.origen === "extracto")) return null;
+  const partes = [
+    m.anotacion_factura ? `factura «${m.anotacion_factura}»` : null,
+    m.anotacion_pedido ? `pedido «${m.anotacion_pedido}»` : null,
+  ].filter(Boolean);
+  if (!partes.length) return null;
+  return <div className="muted small">Anotado en el extracto: {partes.join(" · ")}</div>;
 }
 
 /** ERP-F4-A — Conciliación bancaria. Importa el extracto, PROPONE el casado
@@ -214,7 +315,7 @@ export default function ConciliacionPage() {
                   value={filters.account_id ?? ""}
                   onChange={(e) => setFilters((f) => ({ ...f, account_id: e.target.value || undefined }))}
                 >
-                  <option value="">Todas / detectar por IBAN</option>
+                  <option value="">Todas / detectar la cuenta del extracto</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>{a.name} · {a.iban}</option>
                   ))}
@@ -252,6 +353,7 @@ export default function ConciliacionPage() {
                   className="button small secondary"
                   disabled={busy}
                   onClick={async () => {
+                    setError(null);
                     try {
                       const blob = await downloadBankExport(filters.account_id!, {
                         desde: filters.desde, hasta: filters.hasta,
@@ -265,7 +367,32 @@ export default function ConciliacionPage() {
                   Descargar Excel conciliado
                 </button>
               ) : null}
+              <button
+                type="button"
+                className="button small secondary"
+                disabled={busy}
+                title="Lo conciliado y no descartado cuyo saldo en FACTUSOL cuadra, para registrar_cobros_lote.ps1 (simula primero y se salta lo ya cobrado). No escribe en FACTUSOL."
+                onClick={async () => {
+                  setBusy(true);
+                  setError(null);
+                  setNotice(null);
+                  try {
+                    const csv = await downloadBankCobrosCsv({
+                      accountId: filters.account_id, desde: filters.desde, hasta: filters.hasta,
+                    });
+                    saveBlob(csv.blob, "cobros_conciliados.csv");
+                    setNotice(avisoCsvCobros(csv));
+                  } catch (e) {
+                    setError(extractErrorMessage(e, "No se pudo descargar el CSV de cobros."));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Descargar CSV de cobros
+              </button>
             </div>
+            {importSummary ? <ResumenImport summary={importSummary} /> : null}
             {importSummary ? (
               <p className="muted small" role="status">
                 Importados <strong>{importSummary.imported}</strong> de {importSummary.total_rows} ·
@@ -370,11 +497,17 @@ export default function ConciliacionPage() {
                             {(m.status === "reconciled" ? m.reconciled : m.proposals).map((p) => (
                               <li key={p.id}>
                                 <strong>{p.numero}</strong> · {p.cliente_nombre ?? "—"} · {eur(p.importe)}
+                                {p.origen === "extracto" ? (
+                                  <span className="badge info small" title="Bart lo anotó a mano en la columna factura del extracto">
+                                    {" "}anotado en el extracto
+                                  </span>
+                                ) : null}
                                 {p.reason ? <div className="muted small">{p.reason}</div> : null}
                               </li>
                             ))}
                           </ul>
                         )}
+                        <AnotadoEnExtracto movement={m} />
                         {m.status === "discarded" && m.discard_reason ? (
                           <div className="muted small">Motivo: {m.discard_reason}</div>
                         ) : null}

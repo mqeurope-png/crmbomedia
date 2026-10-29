@@ -320,40 +320,47 @@ def test_import_parses_spanish_number_and_date_formats(session_factory, account_
     assert _by_concepto(page, "COMISION")["importe"] == -12.5
 
 
-def test_import_fails_visibly_on_unparseable_row(session_factory, http, account_id) -> None:
+def test_an_unparseable_row_is_reported_but_does_not_abort_the_file(
+    session_factory, http, account_id,
+) -> None:
+    """28/10/2026: una sola fila mala tumbaba el extracto entero («fila 139:
+    fecha vacía») y Bart se quedaba sin nada. Ahora se importa lo que se
+    entiende y se dice qué filas no, con su motivo."""
     content = _xlsx([
         _row("3/9/2026", "ABONO TRANSFERENCIA DE SOLITIUM SL", "3.623,95", "10.000,00"),
         _row("3/9/2026", "FILA ROTA", "tres mil", "10.000,00"),
+        _row("31/13/2026", "FECHA IMPOSIBLE", "1,00", "1,00"),
+        _row("1/9/2026", "", "12,00", "1,00"),                  # sin concepto: entra igual
     ])
+    r = _import(session_factory, content)
+    assert r["ok"] and r["imported"] == 2
     # Fila 7 del fichero: 3 líneas de cabecera + 1 en blanco + columnas + 1 dato.
-    with pytest.raises(ParseError) as exc:
-        _import(session_factory, content)
-    assert exc.value.row == 7
-    assert "fila 7" in str(exc.value)
-    assert "no numérico" in str(exc.value)
-    # No se importa NADA a medias: ni la fila buena.
-    with session_factory() as s:
-        assert s.scalar(select(func.count(BankMovement.id))) == 0
+    assert [(x["fila"], x["motivo"]) for x in r["no_entendidas"]] == [
+        (7, "importe no numérico: 'tres mil'"),
+        (8, "fecha no reconocida: '31/13/2026'"),
+    ]
+    assert "FILA ROTA" in r["no_entendidas"][0]["valores"]
+    assert r["resumen"] == "2 movimientos importados, 2 filas no entendidas (7, 8)"
+    page = _movements(session_factory, only_incoming=False)
+    assert {i["concepto"] for i in page["items"]} == {
+        "ABONO TRANSFERENCIA DE SOLITIUM SL", "(sin concepto)"}
 
+    # Por la API: 201 con el resumen, no un 422.
+    with session_factory() as s:
+        for m in s.scalars(select(BankMovement)).all():
+            s.delete(m)
+        s.commit()
     r = http.post(
         "/api/erp/bank/import",
         files={"file": ("extracto.xlsx", content, "application/octet-stream")},
         headers=auth_headers(http, "admin"),
     )
-    assert r.status_code == 422, r.text
-    assert r.json()["detail"]["code"] == "parse_error"
-    assert r.json()["detail"]["row"] == 7
-
-    # Fecha imposible y concepto vacío también fallan con su fila.
+    assert r.status_code == 201, r.text
+    assert r.json()["no_entendidas_total"] == 2
+    # Sin fila de columnas reconocible sí se rechaza entero, con un error claro.
     with pytest.raises(ParseError) as exc:
-        _import(session_factory, _xlsx([_row("31/13/2026", "X", "1,00", "1,00")]))
-    assert exc.value.row == 6
-    with pytest.raises(ParseError) as exc:
-        _import(session_factory, _xlsx([_row("1/9/2026", "", "1,00", "1,00")]))
-    assert "concepto" in str(exc.value)
-    # Sin fila de columnas reconocible → error claro (no un import vacío).
-    with pytest.raises(ParseError):
         read_statement(_xlsx([], columns=["A", "B", "C"]), "raro.xlsx")
+    assert "Belfius" in str(exc.value) and "Sabadell" in str(exc.value)
 
 
 # --- Parte C: casado ----------------------------------------------------------------

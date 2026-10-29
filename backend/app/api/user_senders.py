@@ -27,14 +27,36 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin
+from app.core.auth import ROLE_LEVELS, _audit_forbidden, get_current_user
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.models.crm import User
+from app.models.crm import User, UserRole
 from app.schemas.emails import AliasPreferencesPayload, EmailAlias
 from app.services import remitentes
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+#: Lo que ve quien no es administrador (antes, «Not enough permissions» en
+#: inglés y sin explicar nada).
+SOLO_ADMIN = (
+    "La sección Remitentes es solo para administradores: los remitentes de cada "
+    "usuario los gestiona un administrador desde Usuarios."
+)
+
+
+def require_admin_remitentes(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> User:
+    """`require_admin` con el porqué en castellano (`{code, detail}`)."""
+    if ROLE_LEVELS[current_user.role] < ROLE_LEVELS[UserRole.ADMIN]:
+        _audit_forbidden(request, session, current_user, UserRole.ADMIN)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "solo_admin", "detail": SOLO_ADMIN},
+        )
+    return current_user
 
 
 def _load_user(session: Session, user_id: str) -> User:
@@ -48,7 +70,7 @@ def _load_user(session: Session, user_id: str) -> User:
 def list_user_senders(
     user_id: str,
     session: Session = Depends(get_session),
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(require_admin_remitentes),
 ) -> list[EmailAlias]:
     return remitentes.listar(session, _load_user(session, user_id), completo=True)
 
@@ -59,7 +81,7 @@ def update_user_senders(
     payload: AliasPreferencesPayload,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_remitentes),
 ) -> list[EmailAlias]:
     user = _load_user(session, user_id)
     # Lo que Gmail no tiene verificado se guarda como elección pero apagado

@@ -223,6 +223,17 @@ una es una **cola** de pedidos que están esperando lo mismo. En orden:
 Pulsa una tarjeta para ver solo esa cola; vuelve a pulsarla (o usa **«Ver todas
 las colas»**) para quitar el filtro.
 
+**Pedido web sin cliente.** Un pedido de la web que entra **sin empresa y sin
+dirección de facturación** lleva una marca roja que dice qué le falta, en
+tarjetas y en lista. Por ejemplo, «Sin empresa · sin NIF · sin dirección». Un
+particular (sin empresa, pero con su dirección) no se marca: se le factura
+con ella.
+
+- Va a **«Por revisar»** y su acción es **«Vincular empresa al pedido»**.
+- Se arregla en la ficha, en el panel **«Cliente del pedido»**.
+- Es lo que pasó el 28/10/2026 con BOPRIN-100015: entró solo con «Nadine» y su
+  email, y no se vio hasta la hora de facturarlo.
+
 **La acción principal de cada pedido** cambia según la cola:
 
 | Cola | Botón del pedido | Qué hace |
@@ -345,6 +356,27 @@ permisos](#roles-y-permisos)).
 ### Ficha de pedido
 
 Es la pantalla de un pedido concreto. De arriba abajo:
+
+**«Cliente del pedido» (pedido web sin empresa).** Si el pedido entró de la
+web sin empresa, la ficha enseña este panel. Dice qué falta (empresa, NIF,
+dirección de facturación) y lo que trae la web: nombre, email y NIF.
+
+Propone la empresa cuando hay con qué:
+
+- **el pedido de cliente de FACTUSOL** con la referencia del pedido, si el
+  mismo pedido llegó allí por su cuenta;
+- **el NIF que trajo la web.** El plugin del NIF lo guarda en `billing_nif` y
+  se busca en BoHub y en FACTUSOL.
+
+**«Vincular»** la deja puesta. Si el cliente de FACTUSOL aún no tiene ficha en
+BoHub, se crea con sus datos (y solo si tiene NIF). **«Buscar la empresa»**
+abre el buscador de siempre para elegir cualquier otra. Una empresa archivada
+no se propone ni se vincula. Solo vale para un pedido web que aún no tiene
+empresa ni factura.
+
+Si no hay con qué emparejar, lo dice y espera a que la elija una persona:
+nunca se vincula sola. No se puede cambiar la empresa de un pedido ya
+facturado. Queda en el historial del pedido y no escribe en FACTUSOL.
 
 - **Cabecera** — el título **«Pedido …»** y, justo debajo y al mismo nivel, el
   **cliente** en negro y grande (**empresa · persona**, enlazado a su ficha):
@@ -1648,6 +1680,55 @@ alguno de severidad alta o media. Lleva directamente al Cuadre.
   enciende después de revisar el primer lote con «Comprobar ahora».
 - Activar o desactivar cada comprobación.
 - Cambiar los días de aviso de cada comprobación.
+
+### Conciliación bancaria
+
+**Menú: «ERP · Conciliación»** (solo administración). Detalle técnico en
+[`docs/erp/conciliacion-bancaria.md`](erp/conciliacion-bancaria.md).
+
+**Importar.** Se suben los extractos tal cual salen del banco: Sabadell
+(Streamtec, Bomedia) y Belfius (MQ Europe, en neerlandés). La cuenta se
+reconoce sola, también por el número antiguo
+(«0081-0202-17-0001259030») o por la cuenta que Belfius pone en cada fila.
+
+Una fila que no se entiende no tira el fichero: se importa el resto y arriba
+sale el resumen, por ejemplo «6.101 movimientos importados, 194 filas no
+entendidas (54, 55, 56…)». **«Ver las N filas no entendidas»** enseña cada
+una con su motivo. La segunda fila que Sabadell usa para el nombre del
+pagador se une sola al movimiento de encima.
+
+Una fila **corrida** (una celda de más que empuja el resto a la derecha) no
+entra: su «importe» no sería el suyo. Pasa en el extracto de Belfius: el
+tramo de las filas 54 a 401 se pegó partiendo el importe por la coma decimal
+(«-90 | 75») y sale como «importe partido en dos columnas». Corrígelo en el
+fichero, o vuelve a exportar ese tramo, y reimporta: lo que ya entró no se
+duplica.
+
+**Lo que ya traías anotado.** Si la fila trae la factura escrita en la columna
+`factura`, el movimiento entra **conciliado** con esa factura. Lleva la marca
+«anotado en el extracto» y el porqué. Si al lado hay una nota («parcial»,
+«confirmar», «50 %») o nombra otro documento («PF 5-260083»), entra como
+propuesta para revisar. Si anotas el extracto y lo vuelves a subir, lo nuevo
+que traiga anotado se casa igual. Lo que queda sin anotar es lo que falta por
+conciliar.
+
+**Revisar.** Igual que siempre: propuestas con su confianza, «Confirmar»,
+«Elegir otra / repartir», «No es un cobro de cliente» y «Confirmar todas las
+de confianza alta». **Nada se concilia solo y FACTUSOL no se toca.**
+
+**Exportar.**
+
+- **«Descargar Excel conciliado»** devuelve el extracto con `factura` y
+  `pedido` rellenas donde hay conciliación. Las filas no entendidas no salen.
+- **«Descargar CSV de cobros»** da el CSV para `registrar_cobros_lote.ps1`.
+  - Lleva lo conciliado y no descartado, con la contrapartida de cada cuenta
+    en `cuenta`.
+  - Consulta FACTUSOL (solo lee): entra cada factura cuyo saldo pendiente
+    cuadra con lo conciliado, porque el script registra el saldo entero. Sin
+    FACTUSOL no hay CSV, y se dice.
+  - El aviso dice cuántas lleva y cuántas deja fuera y por qué (parciales, ya
+    cobradas…). Esas se registran a mano.
+  - El script simula primero y se salta lo ya cobrado.
 
 ### Respuesta a leads
 

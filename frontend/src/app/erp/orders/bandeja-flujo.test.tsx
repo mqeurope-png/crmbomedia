@@ -46,6 +46,7 @@ jest.mock("../../lib/erpApi", () => ({
   WORKFLOW_QUEUES: [
     "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
   ],
+  FALTA_CLIENTE_LABEL: { empresa: "sin empresa", nif: "sin NIF", direccion: "sin dirección" },
   customerHeadline: (o: { contact_name?: string | null; company_name?: string | null }) =>
     [o.company_name, o.contact_name].filter(Boolean).join(" · "),
   customerLabel: (o: { contact_name?: string | null; company_name?: string | null }) =>
@@ -870,3 +871,43 @@ describe("ERP · Bandeja — muestra con documento FACTUSOL (rev. 30/09/2026)", 
   });
 });
 
+
+// --- 28/10/2026: un pedido web que llega sin cliente no pasa desapercibido ----
+
+describe("ERP · Bandeja — pedido web sin cliente", () => {
+  const NADINE = order({
+    id: "o-15", order_number: "BOPRIN-100015", contact_name: "Nadine", company_name: null,
+    company_id: null, total_amount: 2129.6, preparation_status: "in_queue",
+    approved_at: "2026-10-28T10:00:00",
+    workflow: wf({
+      next_action: "vincular_cliente", next_action_label: "Vincular empresa al pedido",
+      next_action_hint: "Pedido web sin empresa, sin NIF y sin dirección de facturación: vincula la empresa antes de facturar.",
+      alerts: [{
+        code: "datos_cliente_incompletos",
+        text: "Pedido web sin empresa, sin NIF y sin dirección de facturación: vincula la empresa antes de facturar.",
+        action: "vincular_cliente", action_label: "Vincular empresa al pedido",
+        blocking: false, review: true, faltan: ["empresa", "nif", "direccion"],
+      }],
+    }),
+  });
+
+  it("se ve marcado en la lista y dice qué le falta, en tarjetas y en lista", async () => {
+    const user = userEvent.setup();
+    (listOrders as jest.Mock).mockResolvedValue(page([A, NADINE]));
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-100015");
+    const marca = within(row("BOPRIN-100015")).getByText("Sin empresa · sin NIF · sin dirección");
+    expect(marca).toHaveClass("badge", "bad");
+    expect(marca).toHaveAttribute("title", expect.stringContaining("vincula la empresa"));
+    // El que está completo no lleva la marca.
+    expect(within(row("BOPRIN-1")).queryByText(/sin empresa/i)).toBeNull();
+    // Y la siguiente acción lleva a la ficha a vincularla.
+    expect(within(row("BOPRIN-100015")).getByRole("link", {
+      name: "Vincular empresa al pedido BOPRIN-100015",
+    })).toHaveAttribute("href", expect.stringContaining("/erp/orders/o-15"));
+
+    await user.click(screen.getByRole("button", { name: "Lista" }));
+    expect(within(row("BOPRIN-100015")).getByText("Sin empresa · sin NIF · sin dirección"))
+      .toBeInTheDocument();
+  });
+});

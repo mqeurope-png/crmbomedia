@@ -29,6 +29,7 @@ tiene, y llegarán al bloque en su fase.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -81,6 +82,7 @@ ACTION_LABELS: dict[str, str] = {
     "enviar_sat": "Enviar a SAT",
     "marcar_completado": "Marcar completado",
     "vincular_empresa": "Vincular empresa a FACTUSOL",
+    "vincular_cliente": "Vincular empresa al pedido",
     "revisar_incidencia": "Revisar incidencia",
     "crear_albaran": "Crear albarán en FACTUSOL",
     "revalidar_vies": "Revalidar en VIES",
@@ -143,6 +145,63 @@ def is_web_order(order: Order) -> bool:
     return _v(order.external_source) == "woocommerce"
 
 
+# --- datos del cliente de un pedido web ----------------------------------------
+
+#: Lo que puede faltarle a un pedido web para saber a quién se factura.
+FALTA_TEXTO: dict[str, str] = {
+    "empresa": "sin empresa",
+    "nif": "sin NIF",
+    "direccion": "sin dirección de facturación",
+}
+
+
+def direccion_del_pedido(order: Order) -> dict[str, Any]:
+    """El bloque `packing_json.shipping_address` que guarda el importador de
+    WooCommerce (dirección, nombre, email y el NIF de la web)."""
+    try:
+        data = json.loads(order.packing_json) if order.packing_json else {}
+    except (TypeError, ValueError):
+        return {}
+    block = data.get("shipping_address") if isinstance(data, dict) else None
+    return block if isinstance(block, dict) else {}
+
+
+def datos_cliente_que_faltan(order: Order, company: Any) -> list[str]:
+    """Qué le falta a un pedido web SIN EMPRESA para saber a quién facturarlo:
+    `empresa` y, de lo que trajo la web, `nif` y/o `direccion`.
+
+    El caso del 28/10/2026: BOPRIN-100015 (2.129,60 €) entró de la web sin
+    empresa, sin NIF y sin dirección —lo creó una persona desde una
+    intervención de SAT— y se quedó en la bandeja con pinta de normal hasta
+    que Bart fue a facturarlo. Solo cuenta un pedido web aún sin facturar (ni
+    anulado, ni completado, ni procesado fuera, ni muestra). Con empresa no
+    aplica: el NIF y la dirección son los de su ficha, y si no está vinculada
+    a FACTUSOL ya lo dice «empresa sin vincular».
+
+    Un particular también llega sin empresa (sin razón social y CIF no se
+    crea ninguna), pero trae su dirección y se le factura con ella: no se
+    marca. Se marca el que, además, llega SIN dirección de facturación: con
+    eso no se sabe a quién facturar."""
+    if company is not None or not is_web_order(order) or is_sample_order(order):
+        return []
+    if is_invoiced(order) or (getattr(order, "cancelled_at", None) or order.completed_at
+                              or order.externally_processed_at):
+        return []
+    d = direccion_del_pedido(order)
+    if any(str(d.get(k) or "").strip() for k in ("address_line", "city", "postal_code")):
+        return []
+    faltan = ["empresa"]
+    if not str(d.get("nif") or "").strip():
+        faltan.append("nif")
+    faltan.append("direccion")
+    return faltan
+
+
+def _texto_faltan(faltan: list[str]) -> str:
+    partes = [FALTA_TEXTO[f] for f in faltan]
+    return partes[0] if len(partes) == 1 else ", ".join(partes[:-1]) + " y " + partes[-1]
+
+
 # --- alertas -----------------------------------------------------------------
 
 
@@ -193,6 +252,18 @@ def order_alerts(
     # vincular a FACTUSOL, VIES, régimen de IVA) no le aplican y no pueden
     # mandarla a «Por revisar».
     sin_fiscal = archived or is_sample_order(order)
+
+    # 0) Pedido web que entró sin empresa, sin NIF o sin dirección: no se sabe
+    #    a quién facturarlo. Lo detecta la app: «Por revisar», con lo que falta.
+    faltan = datos_cliente_que_faltan(order, company)
+    if faltan:
+        alerta = _alert(
+            "datos_cliente_incompletos",
+            f"Pedido web {_texto_faltan(faltan)}: vincula la empresa antes de facturar.",
+            action="vincular_cliente", review=True,
+        )
+        alerta["faltan"] = faltan
+        alerts.append(alerta)
 
     # 1) Empresa sin vincular a cliente de F_CLI: sin CODCLI no hay albarán ni
     #    factura posibles para ese cliente.

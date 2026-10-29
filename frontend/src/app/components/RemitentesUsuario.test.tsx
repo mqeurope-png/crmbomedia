@@ -9,7 +9,8 @@ jest.mock("../lib/userAliasesApi", () => ({
   putUserSenders: jest.fn(),
 }));
 jest.mock("../lib/errors", () => ({
-  extractErrorMessage: (_err: unknown, fallback: string) => fallback,
+  extractErrorMessage: (err: unknown, fallback: string) =>
+    err instanceof Error && err.message ? err.message : fallback,
 }));
 
 const mockGet = getUserSenders as jest.MockedFunction<typeof getUserSenders>;
@@ -247,8 +248,17 @@ describe("RemitentesUsuario — los remitentes del «De» en la ficha de Usuario
   });
 
   it("si no se pueden cargar, lo dice", async () => {
-    mockGet.mockRejectedValue(new Error("403"));
+    mockGet.mockRejectedValue(new Error(""));
     render(<RemitentesUsuario userId="u-manel" />);
     expect(await screen.findByText("No se pudieron cargar los remitentes")).toBeInTheDocument();
+  });
+
+  it("a quien no es administrador le dice, en castellano, que es solo para administradores", async () => {
+    mockGet.mockRejectedValue(new Error(
+      "La sección Remitentes es solo para administradores: los remitentes de cada usuario los gestiona un administrador desde Usuarios.",
+    ));
+    render(<RemitentesUsuario userId="u-manel" />);
+    expect(await screen.findByText(/es solo para administradores/)).toBeInTheDocument();
+    expect(screen.queryByText(/Not enough permissions/)).not.toBeInTheDocument();
   });
 });

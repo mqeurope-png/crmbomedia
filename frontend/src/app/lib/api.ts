@@ -635,6 +635,14 @@ export class ApiError extends Error {
 export async function apiDownloadBlob(
   path: string, init?: { method?: string; body?: string; headers?: Record<string, string> },
 ): Promise<Blob> {
+  return (await apiDownloadConCabeceras(path, init)).blob;
+}
+
+/** Como `apiDownloadBlob`, y además las cabeceras de la respuesta: el CSV de
+ *  cobros cuenta en `X-Cobros-*` lo que se ha dejado fuera. */
+export async function apiDownloadConCabeceras(
+  path: string, init?: { method?: string; body?: string; headers?: Record<string, string> },
+): Promise<{ blob: Blob; headers: Headers }> {
   const token = getStoredToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
@@ -667,9 +675,10 @@ export async function apiDownloadBlob(
   }
   // El nombre que manda el servidor (`Content-Disposition`) viaja pegado al
   // binario como `File`; `saveBlob` lo prefiere al que construye la pantalla.
-  return withServerFilename(
+  const blob = withServerFilename(
     await response.blob(), response.headers.get("content-disposition"),
   );
+  return { blob, headers: response.headers };
 }
 
 async function parseApiResponse<T>(response: Response, path: string): Promise<T> {

@@ -3203,6 +3203,94 @@ def change_order_date(
     return {"id": order.id, "changed": True, "placed_at": order.placed_at.isoformat()}
 
 
+# --- Pedido web sin cliente (28/10/2026, BOPRIN-100015) ------------------------
+
+
+@router.get("/{order_id}/cliente-web")
+def cliente_web(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Qué le falta a un pedido web para saber a quién facturarlo (empresa,
+    NIF, dirección) y con qué empresa se propone vincularlo: por el pedido de
+    cliente de FACTUSOL con su referencia (el enlace del #566) o por el NIF que
+    trajo la web (BoHub y FACTUSOL). Sin nada con qué emparejar, lo dice.
+    Solo lee (también FACTUSOL)."""
+    from app.erp.cliente_pedido_web import propuestas  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    return propuestas(session, order)
+
+
+class OrderCompanyIn(BaseModel):
+    """La empresa del CRM (`company_id`) o el cliente de FACTUSOL (`codcli`):
+    uno de los dos. `origen` dice de dónde salió (propuesta o búsqueda), para
+    la auditoría."""
+
+    company_id: str | None = Field(default=None, max_length=36)
+    codcli: str | None = Field(default=None, max_length=36)
+    origen: str | None = Field(default=None, max_length=40)
+
+    @model_validator(mode="after")
+    def _uno(self) -> OrderCompanyIn:
+        if bool(self.company_id) == bool(self.codcli):
+            raise ValueError("indica la empresa (company_id) o el cliente de FACTUSOL (codcli)")
+        return self
+
+
+@router.post("/{order_id}/company")
+def vincular_empresa_pedido(
+    order_id: str,
+    payload: OrderCompanyIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Vincula la empresa de un pedido desde su ficha (hasta el 28/10/2026
+    no había forma: BOPRIN-100015 se arregló por SQL). Con el cliente de
+    FACTUSOL, la empresa que ya lo tiene o, si no hay, su ficha nueva con sus
+    datos. Solo para un pedido web sin empresa y sin facturar (409 si no).
+    Queda en la auditoría del pedido. No escribe en FACTUSOL ni en la web."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.cliente_pedido_web import (  # noqa: PLC0415
+        ORDER_COMPANY_LINKED_EVENT,
+        VincularError,
+        vincular,
+    )
+
+    order = _get_order(session, order_id, current_user)
+    try:
+        company, anterior, creada = vincular(
+            session, order, company_id=payload.company_id, codcli=payload.codcli,
+        )
+    except VincularError as exc:
+        code = status.HTTP_409_CONFLICT if exc.code in (
+            "ya_facturado", "ya_tiene_empresa", "no_es_web", "cliente_sin_nif",
+            "empresa_archivada",
+        ) else status.HTTP_400_BAD_REQUEST
+        if exc.code in ("empresa_no_existe", "cliente_no_existe"):
+            code = status.HTTP_404_NOT_FOUND
+        if exc.code == "sin_factusol":
+            code = status.HTTP_503_SERVICE_UNAVAILABLE
+        raise HTTPException(code, {"code": exc.code, "detail": str(exc)}) from exc
+    record_event(
+        session, action=ORDER_COMPANY_LINKED_EVENT, target_type="order", target_id=order.id,
+        actor=current_user,
+        metadata={
+            "order_number": order.order_number, "from": anterior, "to": company.id,
+            "company_name": company.name, "codcli": company.factusol_company_id,
+            "creada": creada, "origen": payload.origen,
+        },
+        message=(f"Empresa del pedido {order.order_number}: «{company.name}»"
+                 + (" (ficha creada desde FACTUSOL)" if creada else "")),
+    )
+    session.commit()
+    return {
+        "id": order.id, "company_id": company.id, "company_name": company.name,
+        "codcli": company.factusol_company_id, "creada": creada,
+    }
+
+
 class SeguimientoFieldsIn(BaseModel):
     """ERP-F6 — campos del seguimiento editables desde la ficha. `orden` NO
     es un campo del modelo: su contenido (los comentarios de la columna

@@ -294,7 +294,14 @@ def test_un_no_admin_no_puede_tocar_los_remitentes_de_otro(
     prefs = [{"alias_email": VENTAS, "is_allowed": True, "is_default": True}]
     for rol, objetivo in (("manager", norma), ("user", bart), ("user", norma),
                           ("viewer", norma)):
-        assert _remitentes(http, objetivo, gmail, rol=rol).status_code == 403
+        r = _remitentes(http, objetivo, gmail, rol=rol)
+        assert r.status_code == 403
+        # En castellano y diciendo por qué (antes: «Not enough permissions»).
+        assert r.json()["detail"] == {
+            "code": "solo_admin",
+            "detail": ("La sección Remitentes es solo para administradores: los remitentes "
+                       "de cada usuario los gestiona un administrador desde Usuarios."),
+        }
         assert _guardar(http, objetivo, prefs, gmail, rol=rol).status_code == 403
     with session_factory() as s:
         assert _estado(s, norma) == antes

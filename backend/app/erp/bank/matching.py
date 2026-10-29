@@ -139,14 +139,19 @@ _PAYER_RE = re.compile(
 
 def extract_payer(concepto: Any, referencia2: Any = None) -> str | None:
     """«ABONO TRANSFERENCIA DE Lorenz, Wolfgang» → «Lorenz, Wolfgang». Si el
-    concepto no lo trae, REFERENCIA 2 (truncada a ~16) sirve de pista."""
+    concepto no lo trae, REFERENCIA 2 (truncada a ~16; en Sabadell la trae la
+    fila de continuación, en Belfius es el nombre del pagador) sirve de pista.
+    Si el concepto corta el nombre («…DE CLARA») y la referencia lo trae más
+    largo («CLARA FIGUERAS M»), vale la referencia."""
     text = str(concepto or "").strip()
+    ref2 = str(referencia2 or "").strip()
     match = _PAYER_RE.search(text)
     if match:
         payer = match.group(1).strip(" .-·")
         if payer:
+            if len(ref2) > len(payer) and normalize_name(ref2).startswith(normalize_name(payer)):
+                return ref2
             return payer
-    ref2 = str(referencia2 or "").strip()
     return ref2 or None
 
 
