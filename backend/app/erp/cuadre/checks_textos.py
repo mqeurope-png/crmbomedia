@@ -72,6 +72,10 @@ CAMPOS_PASO = ("subject", "subject_override", "body_html", "body_text", "from_na
 PLANTILLAS = "/emails/plantillas"
 FIRMAS = "/account/firmas"
 CUENTA = "/account"
+#: El nombre visible de los remitentes de cada usuario lo edita el
+#: administrador en su ficha de Usuarios (el /account del comercial es de
+#: solo lectura).
+USUARIOS = "/admin/users"
 AJUSTES_ERP = "/erp/settings"
 MARKETING = "/marketing/templates"
 PROGRAMADOS = "/emails/programados"
@@ -176,10 +180,12 @@ def _textos_remitentes(session: Any) -> Iterator[Texto]:
             vistos_gmail.add(alias)
             yield Texto("remitente_gmail", alias, f"Remitente «{alias}» (Gmail)",
                         "nombre visible", p.gmail_display_name or "", CUENTA)
-        # El de BoHub lo elige cada usuario para su alias.
+        # El de BoHub se pone por usuario y alias (lo edita el administrador
+        # en la ficha del usuario, bloque «Remitentes»).
         yield Texto("remitente", p.id,
                     f"Remitente «{alias}» de {nombre_usuario or email_usuario}",
-                    "nombre visible", p.display_name_override or "", CUENTA)
+                    "nombre visible", p.display_name_override or "",
+                    f"{USUARIOS}#remitentes-{p.user_id}")
 
 
 def _textos_workflows(session: Any) -> Iterator[Texto]:

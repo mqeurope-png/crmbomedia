@@ -297,7 +297,9 @@ del pedido de BoHub.
   Europe (resto de idiomas). Recorre los textos **guardados** que salen hacia
   un cliente sin pasar por la guardia del asistente —plantillas de correo
   (asunto, cuerpo HTML y de texto) y firmas; el nombre visible del «De:» de cada
-  alias; los pasos de workflow que mandan o preparan correo; en Configuración
+  alias (el que pone cada usuario lleva a su ficha de Usuarios, bloque
+  «Remitentes», que marca lo mismo con «nombra Bomedia»); los pasos de
+  workflow que mandan o preparan correo; en Configuración
   ERP, las plantillas del aviso de envío, del presupuesto y de la factura, la
   identidad, textos legales y bancos de las emisoras **salvo la serie 1**, los
   nombres de serie y los almacenes de recogida; los formularios web (nombre

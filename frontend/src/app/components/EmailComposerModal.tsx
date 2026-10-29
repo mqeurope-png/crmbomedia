@@ -892,9 +892,10 @@ export function EmailComposerModal({
       {error ? <p className="form-error">{error}</p> : null}
       {!loadingAliases && aliases.length === 0 ? (
         <p className="form-warning">
-          No has marcado ningún alias en{" "}
-          <Link href="/account">/account</Link>. Marca al menos uno para
-          enviar emails desde el CRM.
+          No tienes ningún remitente marcado para el «De». Los marca el
+          administrador en Usuarios (bloque «Remitentes» de tu ficha); un
+          administrador marca los suyos en{" "}
+          <Link href="/account">Mi cuenta</Link>.
         </p>
       ) : null}
       <form onSubmit={handleSubmit}>

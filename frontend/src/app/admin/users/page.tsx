@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AliasManager } from "../../components/AliasManager";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
+import { RemitentesUsuario } from "../../components/RemitentesUsuario";
 import { ResetPasswordModal } from "../../components/ResetPasswordModal";
 import { RoleSelect } from "../../components/RoleSelect";
 import { ErpRolesSelect } from "../../components/ErpRolesSelect";
@@ -42,6 +43,9 @@ export default function AdminUsersPage() {
   const [editErpRoles, setEditErpRoles] = useState<Record<string, string[]>>({});
   const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
   const [resetUser, setResetUser] = useState<User | null>(null);
+  // Remitentes del «De» por usuario: se cargan al abrirlos (cada uno consulta
+  // Gmail) y no al entrar en la página.
+  const [remitentesAbiertos, setRemitentesAbiertos] = useState<Record<string, boolean>>({});
 
   // Email y nombre del alta en estado (como la contraseña y el rol): así el
   // formulario se vacía por estado al crear. Antes se hacía `form.reset()`
@@ -63,8 +67,26 @@ export default function AdminUsersPage() {
     setUsers(userList);
   }
 
+  // El Cuadre enlaza aquí (`#remitentes-<id>`) para cambiar el nombre visible
+  // de un remitente: al cargar se abre ese bloque y se va a él.
+  function abrirRemitentesDelEnlace() {
+    const m = window.location.hash.match(/^#remitentes-(.+)$/);
+    if (!m) return;
+    let id: string;
+    try {
+      id = decodeURIComponent(m[1]);
+    } catch {
+      return; // enlace mal escrito: la página se queda como está
+    }
+    setRemitentesAbiertos((prev) => ({ ...prev, [id]: true }));
+    window.setTimeout(() => {
+      document.getElementById(`remitentes-${id}`)?.scrollIntoView?.({ block: "start" });
+    }, 0);
+  }
+
   useEffect(() => {
     loadUsers()
+      .then(abrirRemitentesDelEnlace)
       .catch((err) => setError(extractErrorMessage(err, "No se pudieron cargar usuarios")))
       .finally(() => setIsLoading(false));
   }, []);
@@ -255,6 +277,33 @@ export default function AdminUsersPage() {
                       <button className="button secondary small" type="button" onClick={() => toggleActive(user)}>{user.is_active ? "Desactivar" : "Reactivar"}</button>
                     </form>
                     {draft.length > 0 ? <PasswordRequirements password={draft} /> : null}
+                    <section
+                      className="alias-manager remitentes-bloque"
+                      id={`remitentes-${user.id}`}
+                      aria-label={`Remitentes de ${user.email}`}
+                    >
+                      <div className="remitentes-bloque-cabecera">
+                        <p className="alias-manager-title muted small">
+                          Remitentes (desplegable «De»)
+                        </p>
+                        <button
+                          className="button secondary small"
+                          type="button"
+                          aria-expanded={!!remitentesAbiertos[user.id]}
+                          onClick={() =>
+                            setRemitentesAbiertos((prev) => ({
+                              ...prev,
+                              [user.id]: !prev[user.id],
+                            }))
+                          }
+                        >
+                          {remitentesAbiertos[user.id] ? "Ocultar" : "Ver y cambiar"}
+                        </button>
+                      </div>
+                      {remitentesAbiertos[user.id] ? (
+                        <RemitentesUsuario userId={user.id} />
+                      ) : null}
+                    </section>
                     <AliasManager userId={user.id} />
                   </li>
                 );

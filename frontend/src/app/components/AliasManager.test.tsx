@@ -47,7 +47,7 @@ describe("AliasManager · CRM-GMAIL Parte F", () => {
     ]);
     mockCreate.mockResolvedValue(alias({ id: "ventas" }));
     render(<AliasManager userId="u1" />);
-    await screen.findByText(/Sin alias configurados/);
+    await screen.findByText(/Sin direcciones de entrada/);
 
     const input = screen.getByLabelText("Nuevo alias de email");
     const addBtn = screen.getByRole("button", { name: "+ Añadir alias" });
@@ -82,7 +82,7 @@ describe("AliasManager · CRM-GMAIL Parte F", () => {
     );
     expect(mockDelete).toHaveBeenCalledWith("u1", "norma");
     expect(
-      await screen.findByText(/Sin alias configurados/),
+      await screen.findByText(/Sin direcciones de entrada/),
     ).toBeInTheDocument();
   });
 
@@ -91,7 +91,7 @@ describe("AliasManager · CRM-GMAIL Parte F", () => {
     mockList.mockResolvedValue([]);
     mockCreate.mockRejectedValue(new Error("Ese alias ya está asignado"));
     render(<AliasManager userId="u1" />);
-    await screen.findByText(/Sin alias configurados/);
+    await screen.findByText(/Sin direcciones de entrada/);
     await user.type(
       screen.getByLabelText("Nuevo alias de email"),
       "dup@bomedia.net",

@@ -366,6 +366,16 @@ class EmailAlias(BaseModel):
     gmail_display_name: str | None = None
     display_name_override: str | None = None
     resolved_display_name: str = ""
+    # Si la dirección está verificada como «Enviar como» en la cuenta de
+    # Google del equipo: True sí; False no (Gmail rechazaría el envío y no
+    # sale en el «De»); None no se ha podido consultar Gmail. Las False y None
+    # solo las trae la vista del administrador (`services/remitentes.py`).
+    en_gmail: bool | None = True
+    # Registrada como dirección de entrada del usuario (`user_email_aliases`).
+    de_entrada: bool = False
+    # El nombre visible (el del «De:») nombra «Bomedia»: la misma regla que la
+    # comprobación del Cuadre (`empresas_grupo.menciones`).
+    menciona_bomedia: bool = False
 
 
 class MyAlias(BaseModel):

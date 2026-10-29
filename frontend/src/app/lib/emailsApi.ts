@@ -40,6 +40,17 @@ export type EmailAlias = {
   /** override > gmail > "". El chip lo pinta tal cual; el composer
    *  lo manda como `from_name` al backend al enviar. */
   resolved_display_name: string;
+  /** Si la dirección está verificada como «Enviar como» en la cuenta de
+   *  Google del equipo: true sí; false no (Gmail rechazaría el envío y no
+   *  sale en el «De»); null no se ha podido consultar Gmail. Las false y
+   *  null solo las trae la ficha de Usuarios (`/api/users/{id}/senders`). */
+  en_gmail?: boolean | null;
+  /** Registrada como dirección de ENTRADA del usuario (el correo que llega
+   *  a ella se le atribuye); no por eso es remitente. */
+  de_entrada?: boolean;
+  /** El nombre visible (el del «De:») nombra «Bomedia»: la misma regla que
+   *  la comprobación del Cuadre. */
+  menciona_bomedia?: boolean;
 };
 
 export type MyAlias = {
