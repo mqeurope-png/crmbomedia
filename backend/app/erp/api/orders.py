@@ -2529,6 +2529,15 @@ def escribir_hoja_del_movimiento(
     if acc.drive_formato == FORMATO_XLSX:
         return {**base, "estado": "no_se_escribe",
                 "detalle": "La hoja es un .xlsx subido: BoHub no escribe en él."}
+    # Un movimiento conciliado antes (o por un camino que no lo marcó) aún no
+    # está pendiente de hoja: se marca, para que se escriba ahora y, si no se
+    # puede, lo reintente la cola.
+    mov = session.get(BankMovement, movement_id)
+    if mov is not None and mov.status == "reconciled" and mov.hoja_estado is None:
+        from app.erp.bank.service import _marcar_para_hoja  # noqa: PLC0415
+
+        _marcar_para_hoja(session, mov)
+        session.commit()
     try:
         with cerrojo(acc.id) as cogido:
             if not cogido:

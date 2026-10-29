@@ -246,3 +246,19 @@ def test_si_la_hoja_falla_de_forma_inesperada_queda_constancia(
     assert r.json()["hoja"]["estado"] == "error"
     with session_factory() as s:
         assert "se reintenta" in (s.get(BankAccount, "acc-1").drive_resultado_json or "")
+
+
+def test_un_movimiento_ya_conciliado_sin_marcar_para_la_hoja_tambien_se_escribe(
+    http, session_factory, monkeypatch,
+) -> None:
+    """Conciliado antes de que la cuenta escribiera en su hoja: al cobrar
+    desde Conciliación, la factura se escribe igual."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, status="reconciled")
+        _conciliado(s, "m-1", 927.0)
+    hoja = _con_hoja(session_factory, monkeypatch)
+    r, enq = _cobrar(http, DOCUMENTOS)
+    assert r.status_code == 202, r.text
+    assert r.json()["hoja"]["estado"] == "escrita"
+    assert hoja.fila_de(CONCEPTO)[COL_FACTURA] == "2-526081"

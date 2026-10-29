@@ -48,6 +48,8 @@ function fraseHoja(h: CobroHoja, numero: string): { texto: string; ok: boolean }
       return { ok: false, texto: `No se ha encontrado la fila de ese movimiento en ${donde}: no se ha escrito nada. Se reintenta en el repaso diario.` };
     case "en_cola":
       return { ok: true, texto: `${h.detalle ?? "Se escribe en un momento"} (${donde}).` };
+    case "no_se_escribe":
+      return { ok: true, texto: `No se escribe en ${donde}: es un .xlsx subido, en el que BoHub no escribe.` };
     case "pendiente":
       return { ok: true, texto: `La fila de ese movimiento ha cambiado en ${donde} mientras se escribía: se escribe en la siguiente pasada.` };
     case "corrida":
@@ -235,6 +237,8 @@ export function RegistrarCobroModal({
         const st = await waitForInvoiceCollectionJob(res.job_id);
         if (st.status === "pending") {
           setError(`El cobro sigue en cola en FACTUSOL. ${conciliado}. Vuelve a mirarlo en unos segundos.`);
+        } else if (st.status === "finished" && st.result.status === "already") {
+          setSuccess(`La ${res.numero} ya constaba cobrada en FACTUSOL: no se ha registrado nada. ${conciliado}.`);
         } else if (st.status === "failed" || (!st.result.registered && st.result.status !== "already")) {
           const motivo = st.status === "failed" ? st.error ?? "error" : st.result.motivo ?? st.result.status;
           setError(`${conciliado}, pero FACTUSOL no ha registrado el cobro (${motivo}).`);

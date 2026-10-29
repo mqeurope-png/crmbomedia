@@ -200,3 +200,20 @@ it("si su cobro ya está en FACTUSOL solo concilia: no promete otra línea ni de
   expect(screen.getByRole("button", { name: "Conciliar" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Registrar sin este movimiento" })).not.toBeInTheDocument();
 });
+
+it("si FACTUSOL ya la tenía cobrada al llegar el cobro, no dice que lo ha registrado", async () => {
+  (cobrarFacturaConMovimiento as jest.Mock).mockResolvedValue({
+    ...RESULTADO, hoja: { cuenta: "Banco Figurante MQ", pestana: null, estado: "no_se_escribe" },
+  });
+  (waitForInvoiceCollectionJob as jest.Mock).mockResolvedValue({
+    status: "finished", result: { registered: false, status: "already" },
+  });
+  const user = userEvent.setup();
+  await abrirDesdeDocumentos();
+  await user.click(screen.getByLabelText("Confirmo el cobro"));
+  await user.click(screen.getByRole("button", { name: "Registrar cobro" }));
+  expect(await screen.findByText(/ya constaba cobrada en FACTUSOL: no se ha registrado nada/))
+    .toBeInTheDocument();
+  expect(screen.getByLabelText("La hoja de Drive")).toHaveTextContent("es un .xlsx subido");
+  expect(screen.getByLabelText("La hoja de Drive").className).not.toContain("form-error");
+});
