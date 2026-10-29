@@ -11600,6 +11600,22 @@ tr.is-inactive {
 }
 .erp-bank-proposals li { line-height: 1.3; }
 .erp-bank-proposals .badge { margin-right: 8px; }
+/* Pedido web sin cliente: la empresa propuesta y el buscador, en la ficha. */
+.vincular-empresa-pedido { display: flex; flex-direction: column; gap: 8px; }
+.vincular-empresa-pedido h3, .vincular-empresa-pedido p { margin: 0; }
+.vincular-empresa-pedido > .button { align-self: flex-start; }
+.vincular-empresa-propuestas { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 6px; }
+.vincular-empresa-propuestas li { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 8px 10px; border: 1px solid var(--line, #e5e7eb); border-radius: 8px; }
+.vincular-empresa-buscar { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.vincular-empresa-buscar > :first-child { flex: 1 1 320px; }
+/* Resultado de importar un extracto: resumen y filas no entendidas. */
+.erp-bank-import-summary { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.erp-bank-import-summary p { margin: 0; }
+.erp-bank-import-summary > .button { align-self: flex-start; }
+.erp-bank-rejected { max-height: 320px; overflow: auto; display: block; }
+.erp-bank-rejected td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .erp-bank-actions {
   display: flex;
   flex-wrap: wrap;

@@ -130,3 +130,63 @@ a ciegas.
 > aplicación exigía que los absorbidos compartieran el NIF de la superviviente,
 > cuando la condición del modo es justo que **no tengan NIF**. Ahora el guard
 > distingue el modo y solo aborta si hay dos NIF no vacíos y distintos.
+
+## 28/10/2026 — BOPRIN-100015: sin empresa, sin NIF y sin dirección, y sin avisar
+
+### Qué pasó
+
+El pedido (2.129,60 €) lo creó una persona en la web desde una intervención
+de SAT:
+
+- `_tsm_manual=yes`, `_tsm_tipo_orden=pack_servicio`;
+- `billing` vacío salvo «Nadine» y el email;
+- sin `billing_nif`.
+
+BoHub no pudo emparejar la empresa, el plugin de la web no creó el pedido de
+cliente en FACTUSOL, y el pedido se quedó en la bandeja con pinta de normal.
+Se vinculó a mano por SQL a COMPONENTS FRANCE SPORT, S.L. (CIF B17643313,
+FACTUSOL 1611).
+
+**El origen está en la web** y lo mira Bart. En BoHub se arregló que no pase
+en silencio y que se pueda corregir desde el pedido.
+
+### Lo que hace ahora BoHub
+
+**El aviso.** `workflow.datos_cliente_que_faltan` mira los pedidos web sin
+empresa y **sin dirección de facturación** que aún no están facturados (ni
+anulados, ni completados, ni procesados fuera, ni muestras). Un particular
+trae su dirección y se le factura con ella: no se marca. Les pone la alerta
+`datos_cliente_incompletos`:
+
+- dice qué falta (`faltan`: empresa, NIF, dirección), mirando lo que trajo la
+  web en `packing_json.shipping_address`;
+- lleva la acción `vincular_cliente` y va a «Por revisar»;
+- la bandeja lo marca en las dos vistas: «Sin empresa · sin NIF · sin
+  dirección».
+
+**El panel de la ficha, «Cliente del pedido».**
+
+- `GET /api/erp/orders/{id}/cliente-web` (`app/erp/cliente_pedido_web.py`)
+  propone la empresa, de más a menos segura:
+  1. el cliente de FACTUSOL del pedido de cliente con su referencia (el enlace
+     del #566);
+  2. el NIF de la web contra BoHub;
+  3. el NIF de la web contra F_CLI.
+
+  Sin nada con qué emparejar, lo dice.
+- `POST /api/erp/orders/{id}/company` la vincula:
+  - con `company_id` (una ficha del CRM) o con `codcli`; en este caso usa la
+    ficha que ya tiene ese cliente o crea una con sus datos, solo si tiene NIF;
+  - el contacto del pedido sin empresa pasa a ser de ella;
+  - solo para un pedido web sin empresa y sin facturar (409 `no_es_web`,
+    `ya_tiene_empresa`, `ya_facturado`); ni propone ni vincula una empresa
+    archivada (409 `empresa_archivada`); si FACTUSOL no responde, 503;
+  - queda en la auditoría del pedido (`erp.order_company_linked`).
+
+**El importador.** En el refresco (`_apply_shipping_address`), el bloque de
+dirección guardado **rellena lo que tenía vacío**: el NIF y la dirección que
+la web añada después. Antes no se tocaba si ya existía. La dirección (calle,
+ciudad, CP, provincia, país) va en bloque: se copia entera solo si no había
+ninguna, para no mezclar dos.
+
+Nada de esto escribe en FACTUSOL ni en la web.

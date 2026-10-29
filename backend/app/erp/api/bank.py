@@ -146,10 +146,12 @@ async def import_statement(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
-    """Sube el extracto (.xlsx/.csv). Identifica la cuenta por el IBAN de la
-    cabecera (avisa si no está dada de alta), deduplica y, si `run_match`,
-    genera las PROPUESTAS. Nunca confirma nada."""
-    _ = current_user
+    """Sube el extracto (.xlsx/.csv). Identifica la cuenta por el número de
+    la cabecera (IBAN o el antiguo) o por la cuenta que el banco repite en
+    cada fila (avisa si no está dada de alta), deduplica, importa lo que
+    entiende y devuelve lo que no (`no_entendidas`, con fila y motivo). Lo
+    anotado a mano en la columna `factura` entra casado a nombre de quien
+    importa; si `run_match`, el resto recibe PROPUESTAS."""
     content = await file.read()
     if not content or len(content) > _MAX_UPLOAD:
         raise HTTPException(
@@ -165,6 +167,7 @@ async def import_statement(
             content=content,
             filename=file.filename or "extracto",
             account_id=account_id,
+            user_id=current_user.id,
         )
     except ParseError as exc:
         raise HTTPException(
@@ -409,4 +412,54 @@ def export_xlsx(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="extracto_conciliado{suffix}.xlsx"'},
+    )
+
+
+@router.get("/export-cobros")
+def export_cobros_csv(
+    account_id: str | None = Query(default=None),
+    desde: date | None = Query(default=None),
+    hasta: date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> Response:
+    """CSV para `scripts/registrar_cobros_lote.ps1` (serie, codigo, cuenta,
+    forma, fecha, observaciones) con lo conciliado y no descartado, y la
+    contrapartida de cada cuenta en `cuenta`. Solo las facturas cuyo saldo
+    pendiente en FACTUSOL cuadra con lo conciliado (el script registra el
+    saldo entero): sin FACTUSOL no se puede saber y responde 503. NO escribe en
+    FACTUSOL. Las cabeceras `X-Cobros-*` dicen cuántas van y cuántas se
+    dejaron fuera y por qué."""
+    _ = current_user
+    try:
+        client, ejercicio = _factusol(session)
+        saldos = {
+            (int(f["serie"]), int(f["codigo"])): float(f["saldo_pendiente"] or 0)
+            for f in service.pending_invoices(client, ejercicio)
+        }
+    except Exception as exc:  # noqa: BLE001 — sin FACTUSOL no se sabe qué falta por cobrar
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable",
+            "detail": ("No se ha podido consultar FACTUSOL: sin el saldo de cada factura no se "
+                       "sabe qué falta por cobrar. Prueba de nuevo en un momento."),
+        }) from exc
+    data, stats = service.export_cobros_csv(
+        session, saldos=saldos, account_id=account_id, desde=desde, hasta=hasta,
+    )
+    suffix = f"_{desde or ''}_{hasta or ''}".rstrip("_")
+    cabeceras = {
+        "X-Cobros-Incluidos": stats["incluidas"],
+        "X-Cobros-Parciales": stats["parciales"],
+        "X-Cobros-No-Pendientes": stats["no_pendientes"],
+        "X-Cobros-No-Cuadran": stats["no_cuadran"],
+        "X-Cobros-Sin-Contrapartida": stats["sin_contrapartida"],
+    }
+    return Response(
+        content=data.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="cobros_conciliados{suffix}.csv"',
+            **{k: str(v) for k, v in cabeceras.items()},
+            "Access-Control-Expose-Headers": ", ".join(cabeceras),
+        },
     )

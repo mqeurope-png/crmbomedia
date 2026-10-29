@@ -1189,8 +1189,9 @@ def send_invoice_email_endpoint(
 #: Mensajes de por qué NO se puede enviar desde un alias (código → texto).
 _SENDER_ALIAS_PROBLEMS = {
     "alias_not_allowed": (
-        "El alias no está en tus preferencias (/account) ni es un remitente "
-        "configurado en Ajustes ERP."
+        "El alias no está entre tus remitentes ni es un remitente configurado en "
+        "Ajustes ERP. Tus remitentes te los marca un administrador en Usuarios "
+        "(bloque «Remitentes» de tu ficha)."
     ),
     "not_in_gmail": (
         "El alias no es un «enviar como» verificado de la cuenta de Gmail."

@@ -1,4 +1,4 @@
-import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
+import { ApiError, apiDownloadBlob, apiDownloadConCabeceras, apiFetch, apiUpload } from "./api";
 import { downloadName } from "./downloadName";
 import type { CustomerEmailStatus, GeneiLabelAuto } from "./geneiApi";
 import type { LinkedInvoice } from "./linkedInvoice";
@@ -29,7 +29,7 @@ export type WorkflowQueue =
 
 export type WorkflowAction =
   | "aprobar" | "emitir_factura" | "registrar_cobro" | "crear_envio"
-  | "enviar_sat" | "marcar_completado" | "vincular_empresa"
+  | "enviar_sat" | "marcar_completado" | "vincular_empresa" | "vincular_cliente"
   | "revisar_incidencia" | "crear_albaran" | "revalidar_vies" | "ninguna";
 
 export type WorkflowAlert = {
@@ -39,7 +39,63 @@ export type WorkflowAlert = {
   action_label: string | null;
   /** Bloqueante: manda el pedido a la cola «Incidencias». */
   blocking: boolean;
+  /** Aviso de la app: manda el pedido a «Por revisar». */
+  review?: boolean;
+  /** `datos_cliente_incompletos`: qué le falta al pedido web («empresa»,
+   *  «nif», «direccion»), para decirlo en la lista. */
+  faltan?: FaltaCliente[];
 };
+
+export type FaltaCliente = "empresa" | "nif" | "direccion";
+
+/** Lo que se dice en la bandeja de cada cosa que falta. */
+export const FALTA_CLIENTE_LABEL: Record<FaltaCliente, string> = {
+  empresa: "sin empresa",
+  nif: "sin NIF",
+  direccion: "sin dirección",
+};
+
+/** Una propuesta de empresa para un pedido web que entró sin cliente. Con
+ *  `company_id`, una ficha del CRM; sin él, un cliente de FACTUSOL (`codcli`)
+ *  cuya ficha se crea al vincular. */
+export type PropuestaEmpresaPedido = {
+  company_id: string | null;
+  codcli: string | null;
+  nombre: string;
+  nif: string | null;
+  motivo: string;
+  origen: "pedido_factusol" | "nif_factusol" | "nif";
+  sin_nif?: boolean;
+};
+
+export type ClienteWebPedido = {
+  faltan: FaltaCliente[];
+  faltan_texto: string[];
+  nif: string | null;
+  nombre: string | null;
+  email: string | null;
+  propuestas: PropuestaEmpresaPedido[];
+  factusol: { disponible: boolean; referencia: string; pedido_encontrado: boolean; pedido?: string };
+  /** Por qué no hay propuestas (no hay con qué emparejar). */
+  mensaje: string | null;
+};
+
+/** Qué le falta a un pedido web y con qué empresa se propone vincularlo
+ *  (pedido de cliente de FACTUSOL o NIF de la web). Solo lee. */
+export async function getClienteWebPedido(orderId: string): Promise<ClienteWebPedido> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cliente-web`);
+}
+
+/** Vincula la empresa del pedido (una del CRM o la del cliente de FACTUSOL).
+ *  Queda en la auditoría del pedido. No escribe en FACTUSOL. */
+export async function vincularEmpresaPedido(
+  orderId: string,
+  body: { company_id?: string; codcli?: string; origen?: string },
+): Promise<{ id: string; company_id: string; company_name: string; codcli: string | null; creada: boolean }> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/company`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
 
 /** Un paso de la «línea de vida» del pedido (7 en la ficha). `skipped` = no
  *  aplica (el albarán de un pedido web lo crea WooCommerce). */
@@ -4709,6 +4765,9 @@ export type BankProposal = {
   confidence: BankConfidence | null;
   reason: string | null;
   status: "proposed" | "confirmed";
+  /** «extracto» = venía anotado a mano en la columna `factura` del extracto
+   *  (la respuesta de Bart, no una propuesta de la máquina). */
+  origen?: "extracto" | null;
 };
 
 export type BankMovement = {
@@ -4723,6 +4782,9 @@ export type BankMovement = {
   payer_name: string | null;
   status: "pending" | "reconciled" | "discarded";
   discard_reason: string | null;
+  /** Lo que Bart escribió a mano en las columnas `factura`/`pedido`. */
+  anotacion_factura?: string | null;
+  anotacion_pedido?: string | null;
   confidence: BankConfidence | null;
   proposals: BankProposal[];
   reconciled: BankProposal[];
@@ -4762,7 +4824,28 @@ export type BankImportSummary = {
   total_rows: number;
   imported: number;
   duplicates: number;
+  /** Formato reconocido («Sabadell», «Belfius»…). */
+  formato?: string | null;
+  /** Filas sin fecha ni importe que se unieron al movimiento de encima. */
+  continuaciones?: number;
+  /** Las filas que no se entendieron: se importa el resto igual. */
+  no_entendidas_total?: number;
+  no_entendidas?: BankNoEntendida[];
+  /** Lo que venía anotado en la columna `factura`. */
+  anotadas?: {
+    confirmadas: number; propuestas: number; sin_factura: number;
+    /** Repetidos que no tenían anotación y ahora sí la traen. */
+    nuevas_en_reimportados?: number;
+  };
+  /** «1.240 movimientos importados, 3 filas no entendidas (139, 144, 802)». */
+  resumen?: string;
   matching?: BankMatchStats;
+};
+
+export type BankNoEntendida = {
+  fila: number;
+  motivo: string;
+  valores: string[];
 };
 
 export type BankRule = {
@@ -4898,6 +4981,42 @@ export async function downloadBankExport(
   accountId: string, opts: { desde?: string; hasta?: string } = {},
 ): Promise<Blob> {
   return apiDownloadBlob(`/api/erp/bank/export${qs({ account_id: accountId, ...opts })}`);
+}
+
+/** El CSV de cobros y lo que cuenta el servidor: cuántas facturas lleva y
+ *  cuántas se han dejado fuera, y por qué. */
+export type BankCobrosCsv = {
+  blob: Blob;
+  incluidas: number;
+  /** Cobro parcial: el script registraría el saldo entero. */
+  parciales: number;
+  /** No están pendientes en FACTUSOL (ya cobradas, o de otro ejercicio). */
+  noPendientes: number;
+  /** El movimiento tiene conciliado más que su importe. */
+  noCuadran: number;
+  /** La cuenta del banco no tiene contrapartida de cobro. */
+  sinContrapartida: number;
+};
+
+/** CSV para `registrar_cobros_lote.ps1` (serie, codigo, cuenta, forma,
+ *  fecha, observaciones) con lo conciliado y no descartado que cuadra con el
+ *  saldo pendiente de FACTUSOL. No escribe en FACTUSOL: lo registra el
+ *  script, que simula primero. */
+export async function downloadBankCobrosCsv(
+  opts: { accountId?: string; desde?: string; hasta?: string } = {},
+): Promise<BankCobrosCsv> {
+  const { blob, headers } = await apiDownloadConCabeceras(`/api/erp/bank/export-cobros${qs({
+    account_id: opts.accountId, desde: opts.desde, hasta: opts.hasta,
+  })}`);
+  const n = (h: string) => Number(headers.get(`X-Cobros-${h}`) ?? 0) || 0;
+  return {
+    blob,
+    incluidas: n("Incluidos"),
+    parciales: n("Parciales"),
+    noPendientes: n("No-Pendientes"),
+    noCuadran: n("No-Cuadran"),
+    sinContrapartida: n("Sin-Contrapartida"),
+  };
 }
 
 // --- Lote 3 · Cola SAT — edición inline de seguimiento ----------------------

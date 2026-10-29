@@ -1286,8 +1286,9 @@ def send_quote_email_template_test(
 _SENDER_PROBLEMS: dict[str, str] = {
     "sin_alias": "No hay ningún remitente configurado ni alias de envío propio.",
     "alias_not_allowed": (
-        "El remitente no está en tus preferencias de envío ni es un remitente "
-        "configurado en Ajustes ERP."
+        "El remitente no está entre tus remitentes ni es un remitente configurado "
+        "en Ajustes ERP. Tus remitentes te los marca un administrador en Usuarios "
+        "(bloque «Remitentes» de tu ficha)."
     ),
     "not_in_gmail": (
         "El remitente no es un «enviar como» verificado de la cuenta de Gmail."

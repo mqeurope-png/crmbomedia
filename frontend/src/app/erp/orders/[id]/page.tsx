@@ -21,6 +21,10 @@ import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import { OrderFactusolClientPanel } from "../../../components/erp/OrderFactusolClientPanel";
+import {
+  VINCULAR_EMPRESA_PANEL_ID,
+  VincularEmpresaPedidoPanel,
+} from "../../../components/erp/VincularEmpresaPedidoPanel";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { AnularCobroModal } from "../../../components/erp/AnularCobroModal";
@@ -622,6 +626,12 @@ function ErpOrderDetailScreen() {
             Abrir ficha de empresa
           </Link>
         ) : null;
+      case "vincular_cliente":
+        return canOffice ? (
+          <button type="button" className="button small" onClick={irAVincularEmpresa}>
+            {label}
+          </button>
+        ) : null;
       case "revisar_incidencia":
         // El taller resuelve las incidencias de sus muestras en la Cola SAT
         // (pestaña «Incidencias»); la bandeja de excepciones es de oficina.
@@ -633,6 +643,12 @@ function ErpOrderDetailScreen() {
       default:
         return null;
     }
+  }
+
+  /** Lleva al panel «Cliente del pedido» (pedido web que entró sin cliente). */
+  function irAVincularEmpresa() {
+    document.getElementById(VINCULAR_EMPRESA_PANEL_ID)
+      ?.scrollIntoView?.({ behavior: "smooth", block: "start" });
   }
 
   /** Botón que resuelve cada alerta de la barra (la alerta dice QUÉ pasa;
@@ -657,6 +673,13 @@ function ErpOrderDetailScreen() {
           {a.action === "revalidar_vies" ? "Revalidar en VIES" : "Ver ficha cliente"}
         </Link>
       ) : null;
+    }
+    if (a.code === "datos_cliente_incompletos") {
+      return (
+        <button type="button" className="button small secondary" onClick={irAVincularEmpresa}>
+          Vincular empresa
+        </button>
+      );
     }
     // «cobro_no_registrado»: el botón de cobro ya está en «Siguiente paso» o
     // en el panel FACTUSOL; la alerta solo avisa.
@@ -1120,6 +1143,15 @@ function ErpOrderDetailScreen() {
           // Con incidencia bloqueante, «Siguiente paso» ya lleva ESA acción:
           // la alerta no la repite.
           renderAction={(a) => (wf.blocked && a.action === wf.next_action ? null : alertAction(a))}
+        />
+      ) : null}
+      {/* Pedido web que entró sin cliente (BOPRIN-100015, 28/10/2026): qué
+          falta, la empresa propuesta y el buscador, a la vista. */}
+      {wf?.alerts.some((a) => a.code === "datos_cliente_incompletos") && canOffice ? (
+        <VincularEmpresaPedidoPanel
+          orderId={order.id}
+          canEdit={canEditOrder}
+          onLinked={() => void load()}
         />
       ) : null}
       {order.completed ? (

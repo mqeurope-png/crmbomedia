@@ -79,6 +79,11 @@ class BankMovement(TimestampMixin, Base):
     source_row: Mapped[int | None] = mapped_column(Integer)
     #: Fila original completa (JSON) — se exporta tal cual, sin reformatear.
     raw_json: Mapped[str | None] = mapped_column(Text)
+    #: Lo que Bart escribió a mano en las columnas `factura` y `pedido` del
+    #: extracto, tal cual. Si nombra facturas, el movimiento entra ya casado
+    #: (ver `BankReconciliation.origen`); si no («falta facturar»), se enseña.
+    anotacion_factura: Mapped[str | None] = mapped_column(String(255))
+    anotacion_pedido: Mapped[str | None] = mapped_column(String(255))
 
 
 class BankReconciliation(TimestampMixin, Base):
@@ -106,6 +111,12 @@ class BankReconciliation(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="proposed", index=True)
     confirmed_by_user_id: Mapped[str | None] = mapped_column(String(36))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: De dónde sale: «extracto» = venía anotado a mano en la columna
+    #: `factura` del extracto (la respuesta, no una propuesta: entra confirmada
+    #: si la anotación es solo el número; con una nota al lado, propuesta para
+    #: revisar). NULL = el casado automático o una decisión en la pantalla.
+    #: El recálculo de propuestas no toca las de «extracto».
+    origen: Mapped[str | None] = mapped_column(String(16))
 
 
 class BankLearnedRule(TimestampMixin, Base):

@@ -34,6 +34,7 @@ import {
   customerLabel,
   excludeSeguimiento,
   type ExclusionReasonCode,
+  FALTA_CLIENTE_LABEL,
   getErpSettings,
   includeSeguimiento,
   listOrders,
@@ -928,6 +929,20 @@ function ErpOrdersScreen() {
     );
   }
 
+  /** Pedido web que entró sin empresa / NIF / dirección (BOPRIN-100015,
+   *  28/10/2026): se dice en la fila qué le falta, en las dos vistas. */
+  function sinCliente(o: OrderSummary): ReactNode {
+    const alerta = o.workflow?.alerts.find((a) => a.code === "datos_cliente_incompletos");
+    if (!alerta) return null;
+    const faltan = (alerta.faltan ?? []).map((f) => FALTA_CLIENTE_LABEL[f]);
+    const texto = faltan.length ? faltan.join(" · ") : "sin cliente";
+    return (
+      <span className="badge bad" title={alerta.text} data-falta-cliente="">
+        {texto.charAt(0).toUpperCase() + texto.slice(1)}
+      </span>
+    );
+  }
+
   /** Los badges pequeños de los OTROS estados (los cuatro principales van en
    *  las pastillas): por qué no está pagado, cobro FACTUSOL pendiente / sin
    *  comprobar, bloqueado, externalizado, oculto, anulado. */
@@ -948,6 +963,7 @@ function ErpOrdersScreen() {
         {wf?.blocked ? (
           <span className="badge bad" title={wf.next_action_hint}>Bloqueado</span>
         ) : null}
+        {sinCliente(o)}
         {o.externally_processed_at ? (
           <span className="badge muted">Externalizado</span>
         ) : null}
