@@ -565,9 +565,12 @@ def _recolocar(
     posiciones se corrió la fila (`k`). Delante de la divisa van el importe y
     la fecha valor. Lo que se partió es el nombre del pagador, el texto del
     movimiento, o los dos (el nombre suele ir también dentro del texto): el
-    texto del movimiento empieza en la celda que lo parece
-    (`Formato.transaccion`, o que lleva el IBAN del pagador); lo que sobra
-    antes de ella se une al nombre, y lo que sobra después, al texto.
+    texto del movimiento empieza en la celda que empieza como uno
+    (`Formato.transaccion`); lo que sobra después de ella se une al texto.
+    Lo que sobra antes es del nombre si, unido, sigue estando dentro del
+    texto del movimiento; si no, de la dirección (calle y número). Si ni el
+    nombre está en el texto, no se adivina. Solo se corre el tramo del banco:
+    las columnas que rellena Bart (`factura`, `pedido`…) no se mueven.
 
     Devuelve la fila recolocada y `k`; un motivo si está corrida pero no se
     puede recolocar sin adivinar (el importe también partido por la coma
@@ -589,17 +592,21 @@ def _recolocar(
     celdas = [row.get(c) for c in columnas]
     if (texto(celdas[i_div]) or "").upper() in _DIVISAS:
         return None
+    # Hasta dónde llega el tramo del banco: lo de Bart va detrás y no se corre.
+    fin = min((p for p in (pos(c) for c in FILLED_COLUMNS) if p is not None and p > i_div),
+              default=len(celdas))
     j = next(
-        (i for i in range(i_div + 1, len(celdas)) if (texto(celdas[i]) or "").upper() in _DIVISAS),
+        (i for i in range(i_div + 1, fin) if (texto(celdas[i]) or "").upper() in _DIVISAS),
         None,
     )
     if j is None:
         return None
     k = j - i_div
     importe, antes = celdas[j - 1], celdas[j - 2]
+    valuta = celdas[j - 3]
     if (
         re.fullmatch(r"\d{1,2}", texto(importe) or "") and _es_numero(antes)
-        and _es_fecha(celdas[j - 3])
+        and (_es_fecha(valuta) or not (texto(valuta) or "").strip("# "))
     ):
         motivo = f"importe partido en dos columnas («{texto(antes)}» y «{texto(importe)}»)"
         if k > 1:
@@ -608,26 +615,43 @@ def _recolocar(
     corrida = f"fila corrida {_plural(k, 'columna')} (la divisa está en «{columnas[j]}»)"
     if not (_es_numero(importe) and _es_fecha(antes)):
         return corrida + ": no se sabe dónde acaba el importe; corrígela en el fichero"
-    i_iban = pos("iban_pagador")
-    iban = normalize_iban(texto(celdas[i_iban]) if i_iban is not None else "")
+    no_se_sabe = corrida + ": no se sabe qué texto se partió; corrígela en el fichero"
+    if not parsed.transaccion or k > _MAX_CORRIDA:
+        return no_se_sabe
 
     def parece_movimiento(value: Any) -> bool:
-        t = texto(value) or ""
-        if parsed.transaccion and re.match(parsed.transaccion, t, re.IGNORECASE):
-            return True
-        return len(iban) >= 10 and iban in normalize_iban(t)
+        return bool(re.match(parsed.transaccion or "", texto(value) or "", re.IGNORECASE))
 
     # `a`: cuántas celdas de más hay antes del texto del movimiento.
     inicios = [a for a in range(k + 1) if parece_movimiento(celdas[i_con + a])]
-    if k > _MAX_CORRIDA or len(inicios) != 1:
-        return corrida + ": no se sabe qué texto se partió; corrígela en el fichero"
+    if len(inicios) != 1:
+        return no_se_sabe
     a = inicios[0]
+    concepto = _unir(celdas[i_con + a:i_con + k + 1])
+    medio = celdas[i_nom:i_con + a]       # nombre, dirección…, con `a` celdas de más
+    if a:
+        # Cuántas de las celdas de más son del nombre: las que, unidas, aún
+        # están dentro del texto del movimiento.
+        letras = _solo_letras(concepto)
+        del_nombre = [x for x in range(a + 1) if _solo_letras(_unir(medio[:x + 1])) in letras]
+        if not del_nombre:
+            return no_se_sabe
+        x = max(del_nombre)
+        resto = medio[x + 1:]
+        medio = [_unir(medio[:x + 1])]
+        if a - x:
+            medio.append(_unir(resto[:a - x + 1]))   # la calle, partida por una coma
+            resto = resto[a - x + 1:]
+        medio += resto
     nuevas = [
-        *celdas[:i_nom], _unir(celdas[i_nom:i_nom + a + 1]),
-        *celdas[i_nom + a + 1:i_con + a], _unir(celdas[i_con + a:i_con + k + 1]),
-        *celdas[i_con + k + 1:], *([None] * k),
+        *celdas[:i_nom], *medio, concepto,
+        *celdas[i_con + k + 1:fin], *([None] * k), *celdas[fin:],
     ]
     return {"__row__": row["__row__"], **dict(zip(columnas, nuevas, strict=True))}, k
+
+
+def _solo_letras(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value).upper()
 
 
 def interpretar(parsed: ParsedStatement, mapping: dict[str, str]) -> Lectura:

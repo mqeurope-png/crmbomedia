@@ -106,14 +106,20 @@ está en su sitio, el importe es el suyo y la fila entra, aunque lo de detrás
 (`parsing._recolocar`).
 
 - **Se recoloca** cuando delante de la divisa están el importe y la fecha
-  valor. Lo que se partió es el nombre del pagador («Streamtec, Sl»), el texto
-  del movimiento, o los dos (el nombre suele ir también dentro del texto). El
-  texto del movimiento empieza en la celda que lo parece
-  (`Formato.transaccion`: «STORTING VAN…», «OVERSCHRIJVING…», o la que lleva el
-  IBAN del pagador). Lo que sobra antes se une al nombre y lo que sobra
-  después al texto, con la coma que los partió. El resumen lo cuenta
-  («N filas corridas recolocadas») y el movimiento queda marcado
-  (`recolocada`). Hasta 4 columnas; más ya no es una coma suelta.
+  valor. Lo que se partió es el nombre del pagador («Streamtec, Sl»), la
+  calle, el texto del movimiento, o varios (el nombre suele ir también dentro
+  del texto).
+  - El texto del movimiento empieza en la celda que empieza como uno
+    (`Formato.transaccion`: «STORTING VAN…», «OVERSCHRIJVING…»); lo que sobra
+    después se le une, con la coma que lo partió.
+  - Lo que sobra antes es del nombre mientras el nombre así unido siga
+    estando dentro del texto del movimiento; lo demás, de la calle. Si ni el
+    nombre está en el texto, no se adivina.
+  - Solo se corre el tramo del banco: las columnas de Bart (`factura`,
+    `pedido`) se quedan donde están.
+  - El resumen lo cuenta («N filas corridas recolocadas») y el movimiento
+    queda marcado (`recolocada`). Hasta 4 columnas; más ya no es una coma
+    suelta.
 - **No se recoloca, y se dice:**
   - **«importe partido en dos columnas («-90» y «75»)»**: el tramo de las
     filas 54 a 401 del Belfius real se pegó partiendo también por la coma
@@ -124,6 +130,8 @@ está en su sitio, el importe es el suyo y la fila entra, aunque lo de detrás
     sola al reimportar.
   - **«fila corrida N columnas (…): no se sabe …»**: delante de la divisa no
     están el importe y la fecha valor, o no se sabe qué texto se partió.
+  - Con la fecha valor ilegible («##») o vacía, el importe partido se dice
+    igual.
   - **«fila descolocada: la fecha valor trae «…»»** y **«…divisa trae «…»»**:
     la fila no está corrida pero no cuadra.
 
@@ -131,8 +139,9 @@ Con el Belfius real, las 41 que quedaban no entendidas tras arreglar las 153:
 
 | Qué les pasa | Filas | Cómo quedan |
 |---|---|---|
-| El importe partido **y** el nombre o el texto partidos | 24 | Siguen fuera, con «importe partido…, y la fila corrida N columnas más». Unido el importe, 17 se recolocan solas (comprobado con el fichero real en local) |
-| Corridas sin importe y fecha valor delante de la divisa | 6 | Fuera: «fila corrida…: no se sabe dónde acaba el importe» |
+| El importe partido **y** el nombre, la calle o el texto partidos | 24 | Siguen fuera, con «importe partido…, y la fila corrida N columnas más». Unido el importe, 17 se recolocan solas (comprobado con el fichero real en local) |
+| Corridas sin el importe y la fecha valor delante de la divisa | 5 | Fuera: «fila corrida…: no se sabe dónde acaba el importe» |
+| Corrida más allá de las columnas del banco | 1 | Fuera: «fila descolocada: divisa trae…» |
 | Sin importe | 6 | Fuera, como antes |
 | Sueltas (sin fecha ni importe) | 2 | Fuera, como antes |
 | Un nombre en la columna del importe | 1 | Fuera, como antes |
@@ -210,18 +219,33 @@ Las reglas, las de Seguimiento:
 - **Nunca pisar lo que ya hay.** Solo se rellena la celda vacía. Una celda
   con algo, aunque sea una nota, no se toca (`ocupada`). La única excepción
   es lo que escribió el propio BoHub (`hoja_factura`, `hoja_pedido`): si el
-  movimiento se reabre y se concilia con otra factura, BoHub cambia lo suyo.
+  movimiento se concilia con otra factura, BoHub cambia lo suyo, también el
+  pedido (lo deja vacío si la factura nueva no tiene pedido en BoHub).
 - **Nunca borrar ni reordenar.** El código solo escribe celdas sueltas.
 - **La fila se busca por el movimiento**, con la misma clave del importador,
   nunca por su número.
-- **Si la fila ya no está**, no se escribe nada y queda constancia
+- **Si la fila no está**, no se escribe nada y queda constancia
   (`no_encontrada`, y una línea en el registro con el id del movimiento, sin
-  datos de la hoja).
-- **Justo antes de escribir** se vuelven a leer esas celdas y las del importe
-  y el concepto de la fila: si Bart ha insertado filas entretanto, no se
-  escribe y se reintenta en la siguiente pasada.
+  datos de la hoja). Se vuelve a mirar en cada pasada: si la fila llega
+  después (se concilió desde el fichero a mano antes de que Bart la pegara),
+  se escribe entonces.
+- **Justo antes de escribir** se vuelven a leer esas celdas y las que
+  identifican la fila (importe, saldo, concepto, nº de transacción): si Bart
+  ha insertado filas entretanto, no se escribe y se reintenta en la
+  siguiente pasada. Dos movimientos gemelos (mismo día, importe y concepto)
+  no se confunden.
+- **Una nota en la fila de continuación** (Sabadell parte el movimiento en
+  dos filas) también cuenta: si Bart anotó abajo, arriba no se escribe.
 - **Una fila corrida** (recolocada al leer) no se escribe: su `factura` no
-  está en su columna (`corrida`).
+  está en su columna (`corrida`). Si se corrige, se escribe.
+- **Si se reasigna o se reabre mientras se escribe**, gana eso: la pasada no
+  pisa el estado y la siguiente vuelve a mirar el movimiento.
+- **Si la escritura falla** (la hoja compartida como Lector, Drive caído),
+  la lectura cuenta igual: lo nuevo se importa y se casa, y el error se dice
+  aparte; lo pendiente sigue pendiente.
+- **Cambiar la hoja de la cuenta** (por ejemplo, a la convertida a hoja de
+  Google) vuelve a poner como pendiente lo que no se pudo escribir en la
+  anterior.
 
 `factura` lleva las facturas confirmadas (varias, separadas por coma) y
 `pedido` el pedido de BoHub de esas facturas, si lo hay: lo mismo que el

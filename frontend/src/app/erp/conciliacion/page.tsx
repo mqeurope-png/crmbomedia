@@ -205,9 +205,26 @@ function escrituraTexto(e: BankDriveEscritura | null | undefined): string | null
     e.ocupadas ? `${e.ocupadas} con la celda «factura» ya ocupada (no se tocan)` : null,
     e.no_encontradas ? `${e.no_encontradas} que ya no están en la hoja` : null,
     e.corridas ? `${e.corridas} en filas corridas de la hoja` : null,
+    e.sin_columna ? `${e.sin_columna} sin escribir: la hoja no tiene columna «factura»` : null,
     e.movidas ? `${e.movidas} por reintentar (la hoja cambió mientras se escribía)` : null,
   ].filter(Boolean);
   return partes.length ? partes.join(" · ") : null;
+}
+
+/** Lo que salió del casado tras importar (o por qué no se pudo). */
+function ResumenCasado({ matching }: { matching: BankImportSummary["matching"] }) {
+  if (!matching) return null;
+  if (!matching.ok) return <> · {matching.detail}</>;
+  return (
+    <>
+      {" "}· propuestas <strong>{matching.proposed}</strong>
+      {" "}(alta {matching.by_confidence?.alta ?? 0},
+      media {matching.by_confidence?.media ?? 0},
+      baja {matching.by_confidence?.baja ?? 0}) ·
+      sin propuesta {matching.no_proposal} ·
+      excluidos {matching.excluded}
+    </>
+  );
 }
 
 /** El resultado de «Traer de Drive» en una cuenta. */
@@ -223,6 +240,7 @@ function TraidaDeDrive({ traida: t }: { traida: BankDriveTraida }) {
         Leído de Drive ({t.drive?.formato === "xlsx" ? ".xlsx subido: solo se lee" : "hoja de Google"})
         {t.duplicates ? <> · {t.duplicates} ya estaban</> : null}
         {escrito ? <> · {escrito}</> : null}
+        <ResumenCasado matching={t.matching} />
       </p>
     </>
   );
@@ -384,7 +402,7 @@ export default function ConciliacionPage() {
           suggested={suggested}
           drive={drive}
           isAdmin={isAdmin}
-          onChanged={loadAccounts}
+          onChanged={async () => { await Promise.all([loadAccounts(), loadMovements()]); }}
           onError={setError}
         />
       ) : null}
@@ -524,18 +542,7 @@ export default function ConciliacionPage() {
               <p className="muted small" role="status">
                 Importados <strong>{importSummary.imported}</strong> de {importSummary.total_rows} ·
                 descartados por repetidos <strong>{importSummary.duplicates}</strong>
-                {importSummary.matching?.ok ? (
-                  <>
-                    {" "}· propuestas <strong>{importSummary.matching.proposed}</strong>
-                    {" "}(alta {importSummary.matching.by_confidence?.alta ?? 0},
-                    media {importSummary.matching.by_confidence?.media ?? 0},
-                    baja {importSummary.matching.by_confidence?.baja ?? 0}) ·
-                    sin propuesta {importSummary.matching.no_proposal} ·
-                    excluidos {importSummary.matching.excluded}
-                  </>
-                ) : importSummary.matching ? (
-                  <> · {importSummary.matching.detail}</>
-                ) : null}
+                <ResumenCasado matching={importSummary.matching} />
               </p>
             ) : null}
           </section>
@@ -899,7 +906,7 @@ function HojaDriveCuenta({
   const [pestana, setPestana] = useState(a.drive_pestana ?? "");
   const [escribir, setEscribir] = useState(a.drive_escribir ?? true);
   const [ocupado, setOcupado] = useState(false);
-  const [escrito, setEscrito] = useState<string | null>(null);
+  const [escrito, setEscrito] = useState<{ texto: string; error: boolean } | null>(null);
   const r = a.drive_resultado;
   const email = drive?.service_account_email ?? "la cuenta de servicio";
 
@@ -924,7 +931,8 @@ function HojaDriveCuenta({
     setOcupado(true);
     setEscrito(null);
     try {
-      setEscrito(escrituraTexto(await escribirBankDrive(a.id)) ?? "Nada que escribir.");
+      const hecho = await escribirBankDrive(a.id);
+      setEscrito({ texto: escrituraTexto(hecho) ?? "Nada que escribir.", error: Boolean(hecho.error) });
       await onChanged();
     } catch (e) {
       onError(extractErrorMessage(e, "No se pudo escribir en la hoja de Drive."));
@@ -934,7 +942,7 @@ function HojaDriveCuenta({
   }
 
   return (
-    <div className="erp-bank-drive" aria-label={`Hoja de Drive de ${a.name}`}>
+    <div className="erp-bank-drive" role="group" aria-label={`Hoja de Drive de ${a.name}`}>
       <div className="muted small">
         Hoja de Drive:{" "}
         {a.drive_file_id ? (
@@ -960,7 +968,7 @@ function HojaDriveCuenta({
           pon aquí su enlace.
         </p>
       ) : null}
-      {r ? (
+      {r?.at ? (
         <p className="muted small">
           Última lectura ({r.origen === "programada" ? "repaso diario" : "a mano"}, {cuando(r.at)}):{" "}
           {r.ok ? (
@@ -988,7 +996,12 @@ function HojaDriveCuenta({
           ) : null}
         </p>
       ) : null}
-      {escrito ? <p className="form-success small" role="status">{escrito}</p> : null}
+      {escrito ? (
+        <p className={escrito.error ? "form-error small" : "form-success small"}
+          role={escrito.error ? "alert" : "status"}>
+          {escrito.texto}
+        </p>
+      ) : null}
       {isAdmin ? (
         editando ? (
           <form className="form-card embedded" onSubmit={(e) => { e.preventDefault(); void guardar(); }}>

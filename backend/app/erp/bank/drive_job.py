@@ -65,6 +65,7 @@ def run_daily(session: Session) -> dict[str, str]:
                     _run_match(session, account.id)
                 out[account.id] = "ok" if resumen.get("ok") else str(resumen.get("code"))
             except (DriveBancoError, ParseError) as exc:
+                session.rollback()
                 out[account.id] = getattr(exc, "code", "parse_error")
             except Exception:  # noqa: BLE001 — una cuenta no tumba el tic
                 session.rollback()

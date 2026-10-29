@@ -634,13 +634,18 @@ BELFIUS_COLUMNAS = [
 ]
 
 
-def _belfius_fila(numero: float, nombre: list[str], transactie: list[str], importe: list[float],
-                  *, fecha: datetime = _d(2026, 9, 21)) -> list:
-    """Una fila de Belfius con el nombre, el texto y el importe partidos en las
-    celdas que se digan (como al pegar un CSV partido por las comas)."""
-    return [MQ_IBAN, fecha, 29.0, numero, "DE89 3704 0044 0532 0130 00", *nombre,
-            "Calle Ejemplo 1", "08000 Barcelona", *transactie, fecha, *importe, "EUR",
-            "GKCCBEBB", "BE"]
+def _belfius_fila(numero: float, nombre: list[str], transactie: list[str], importe: list[Any],
+                  *, fecha: datetime = _d(2026, 9, 21), calle: list[str] | None = None,
+                  valuta: Any = None, factura: str | None = None) -> list:
+    """Una fila de Belfius con el nombre, la calle, el texto y el importe
+    partidos en las celdas que se digan (como al pegar un CSV partido por las
+    comas). `factura`: lo que Bart anota a mano en su columna (no se corre)."""
+    fila = [MQ_IBAN, fecha, 29.0, numero, "DE89 3704 0044 0532 0130 00", *nombre,
+            *(calle or ["Calle Ejemplo 1"]), "08000 Barcelona", *transactie,
+            fecha if valuta is None else valuta, *importe, "EUR", "GKCCBEBB", "BE"]
+    if factura:
+        fila += [None] * (18 - len(fila)) + [factura]
+    return fila
 
 
 def _leer(grid: list[list]) -> Any:
@@ -650,40 +655,54 @@ def _leer(grid: list[list]) -> Any:
 
 def test_las_filas_con_el_nombre_partido_por_una_coma_se_recolocan():
     texto_ok = "STORTING VAN DE89 3704 0044 0532 0130 00 STREAMTEC, SL REF. : 1 VAL. 21-09"
+    texto_3 = "STORTING VAN DE89 STREAMTEC SL REF. : 3"
     lectura = _leer([
         BELFIUS_COLUMNAS, [],
         # 3: en su sitio
         _belfius_fila(1.0, ["Ejemplo SL"], ["STORTING VAN DE89 EJEMPLO REF. : 2"], [100.0]),
-        # 4: el nombre partido («Streamtec, Sl»): una columna corrida
-        _belfius_fila(2.0, ["Streamtec", " Sl"], ["STORTING VAN DE89 STREAMTEC REF. : 3"],
-                      [288.5]),
+        # 4: el nombre partido («Streamtec, Sl»): una columna corrida. La factura
+        # que Bart anotó en su columna no se mueve.
+        _belfius_fila(2.0, ["Streamtec", " Sl"], [texto_3], [288.5], factura="2-526140"),
         # 5: el nombre y el texto partidos: dos columnas corridas
         _belfius_fila(3.0, ["Streamtec", " Sl"], texto_ok.split(","), [-2000.0]),
         # 6: además, el importe partido por la coma decimal: no se adivinan los céntimos
         _belfius_fila(4.0, ["Streamtec", " Sl"], ["STORTING VAN DE89 X REF. : 5"], [-90.0, 75.0]),
+        # 7: la coma estaba en la calle: el nombre se queda entero
+        _belfius_fila(5.0, ["Streamtec SL"], [texto_3], [50.0], calle=["Aribau", " 12"]),
+        # 8: el nombre partido no está en el texto: no se sabe de qué celda es la coma
+        _belfius_fila(6.0, ["Otra", " Cosa"], ["STORTING VAN DE89 NADA REF. : 9"], [10.0]),
+        # 9: importe partido con la fecha valor ilegible («##»)
+        _belfius_fila(7.0, ["Ejemplo SL"], ["STORTING VAN DE89 EJEMPLO REF. : 8"], [-5.0, 5.0],
+                      valuta="##"),
     ])
     movs = {m["source_row"]: m for m in lectura.movimientos}
-    assert sorted(movs) == [3, 4, 5]
-    assert lectura.recolocadas == 2
+    assert sorted(movs) == [3, 4, 5, 7]
+    assert lectura.recolocadas == 3
     assert (movs[4]["importe"], movs[4]["referencia2"], movs[4]["recolocada"]) == (
         288.5, "Streamtec, Sl", 1)
-    assert movs[4]["concepto"] == "STORTING VAN DE89 STREAMTEC REF. : 3"
+    assert (movs[4]["concepto"], movs[4]["factura"]) == (texto_3, "2-526140")
     assert (movs[5]["importe"], movs[5]["concepto"], movs[5]["recolocada"]) == (
         -2000.0, texto_ok, 2)
     assert movs[5]["fecha_valor"].isoformat() == "2026-09-21"
     assert movs[3]["recolocada"] == 0
-    [mala] = lectura.no_entendidas
-    assert mala["fila"] == 6
-    assert mala["motivo"] == (
-        "importe partido en dos columnas («-90» y «75»), y la fila corrida 1 columna más: "
-        "corrígelo en el fichero o vuelve a exportar ese tramo")
+    assert (movs[7]["referencia2"], movs[7]["raw"]["Straat en nummer"], movs[7]["importe"]) == (
+        "Streamtec SL", "Aribau, 12", 50.0)
+    motivos = {x["fila"]: x["motivo"] for x in lectura.no_entendidas}
+    assert motivos == {
+        6: "importe partido en dos columnas («-90» y «75»), y la fila corrida 1 columna más: "
+           "corrígelo en el fichero o vuelve a exportar ese tramo",
+        8: "fila corrida 1 columna (la divisa está en «BIC»): no se sabe qué texto se partió; "
+           "corrígela en el fichero",
+        9: "importe partido en dos columnas («-5» y «5»): corrígelo en el fichero o vuelve a "
+           "exportar ese tramo",
+    }
 
 
 def test_en_una_fila_recolocada_no_se_escribe(session_factory, monkeypatch):
     """Su `factura` no está en su columna: escribir ahí sería en la celda de al lado."""
     grid = [
         BELFIUS_COLUMNAS, [],
-        _belfius_fila(2.0, ["Streamtec", " Sl"], ["STORTING VAN DE89 STREAMTEC REF. : 3"],
+        _belfius_fila(2.0, ["Streamtec", " Sl"], ["STORTING VAN DE89 STREAMTEC SL REF. : 3"],
                       [288.5]),
     ]
     h = HojaFalsa(grid, pestana="Blad1")
@@ -700,3 +719,154 @@ def test_en_una_fila_recolocada_no_se_escribe(session_factory, monkeypatch):
         assert (stats["escritas"], stats["corridas"]) == (0, 1)
         assert s.get(BankMovement, mov.id).hoja_estado == "corrida"
     assert h.escrituras == []
+
+
+# --- lo que salió de la revisión --------------------------------------------------------------
+
+
+def test_si_falla_la_escritura_la_lectura_cuenta_igual(http, session_factory, cuenta, hoja):
+    """La hoja compartida como Lector y la escritura encendida: lo leído se
+    importa, se casa y queda anotado; el error de escritura se dice aparte."""
+    _traer(http, cuenta)
+    soler = _mov(session_factory, "ABONO TRANSFERENCIA DE IMPRENTA SOLER")
+    _elegir(http, soler.id, 260090, 2310.00)
+
+    def solo_lectura(_celdas):
+        raise DriveBancoError("solo_lectura", "solo puede leer la hoja: compártela como Editor")
+
+    hoja.escribir_celdas = solo_lectura
+    hoja.insertar_arriba([[_d(2026, 10, 29), "ABONO TRANSFERENCIA DE NUEVA", _d(2026, 10, 29),
+                           77.0, 99.0, None, "NUEVA"]])
+    r = _traer(http, cuenta)
+    assert (r["ok"], r["imported"]) == (True, 1)
+    assert r["drive"]["escritura"]["error"].startswith("solo puede leer")
+    with session_factory() as s:
+        acc = s.get(service.BankAccount, cuenta)
+        resultado = json.loads(acc.drive_resultado_json)
+        assert (resultado["ok"], resultado["imported"]) == (True, 1)
+        assert resultado["escritura"]["at"]
+    assert _mov(session_factory, soler.concepto).hoja_estado == "pendiente"
+
+
+def test_al_cambiar_de_factura_bohub_cambia_lo_suyo_tambien_el_pedido(
+    http, session_factory, cuenta, hoja,
+):
+    _traer(http, cuenta)
+    with session_factory() as s:
+        s.add(Order(external_source=OrderSource.WOOCOMMERCE, order_number="BOPRIN-100044",
+                    factusol_invoice_number="260090", factusol_invoice_serie=5))
+        s.commit()
+    soler = _mov(session_factory, "ABONO TRANSFERENCIA DE IMPRENTA SOLER")
+    _elegir(http, soler.id, 260090, 2310.00)
+    _escribir(session_factory, cuenta)
+    fila = hoja.fila_de(soler.concepto)
+    assert (fila[COL_FACTURA], fila[COL_PEDIDO]) == ("5-260090", "BOPRIN-100044")
+    _elegir(http, soler.id, 260095, 2310.00)           # otra factura, sin pedido en BoHub
+    _escribir(session_factory, cuenta)
+    assert (fila[COL_FACTURA], fila[COL_PEDIDO]) == ("5-260095", "")
+    mov = _mov(session_factory, soler.concepto)
+    assert (mov.hoja_factura, mov.hoja_pedido) == ("5-260095", None)
+
+
+def test_lo_que_no_estaba_en_la_hoja_se_escribe_cuando_llega(http, session_factory, cuenta, hoja):
+    """Conciliado desde el fichero a mano antes de que Bart pegue la fila en
+    su hoja: cuando la pega, BoHub lo escribe."""
+    nuevo = [_d(2026, 10, 30), "ABONO TRANSFERENCIA DE LLEGA TARDE", _d(2026, 10, 30), 321.0,
+             10321.0, None, "LLEGA TARDE"]
+    _traer(http, cuenta)
+    with patch("app.integrations.factusol.client.FactusolClient.from_settings",
+               side_effect=RuntimeError("sin FACTUSOL")):
+        r = http.post("/api/erp/bank/import", files={"file": (
+            "extracto.xlsx", _libro(_sabadell([nuevo, *DATOS])), "application/octet-stream")},
+            headers=auth_headers(http, "admin"))
+    assert r.json()["imported"] == 1
+    tarde = _mov(session_factory, "ABONO TRANSFERENCIA DE LLEGA TARDE")
+    _elegir(http, tarde.id, 260130, 321.0)
+    assert _escribir(session_factory, cuenta)["no_encontradas"] == 1
+    hoja.insertar_arriba([nuevo])                    # Bart la pega al día siguiente
+    assert _traer(http, cuenta)["drive"]["escritura"]["escritas"] == 1
+    assert hoja.fila_de(tarde.concepto)[COL_FACTURA] == "5-260130"
+
+
+def test_dos_gemelos_seguidos_no_se_confunden_si_la_hoja_se_mueve(
+    http, session_factory, cuenta, monkeypatch,
+):
+    """Mismo día, importe y concepto: en Sabadell solo los distingue el saldo."""
+    gemelos = [
+        [_d(2026, 10, 22), "ABONO TRANSFERENCIA DE GEMELO", _d(2026, 10, 22), 500.0, 9000.0],
+        [_d(2026, 10, 22), "ABONO TRANSFERENCIA DE GEMELO", _d(2026, 10, 22), 500.0, 8500.0],
+    ]
+    h = HojaFalsa(_sabadell(gemelos))
+    monkeypatch.setattr(drive, "abrir_hoja", lambda _s, _a: h)
+    monkeypatch.setattr(drive_job, "encolar_escritura", lambda _a: True)
+    _traer(http, cuenta)
+    with session_factory() as s:
+        segundo = s.scalar(select(BankMovement).where(BankMovement.saldo == 8500.0))
+        mov_id = segundo.id
+    _elegir(http, mov_id, 260140, 500.0)
+    # Bart pega una fila justo después de que BoHub baje la hoja: el gemelo
+    # de arriba baja a la fila 11, donde estaba el que se concilió.
+    h.antes_de_leer_celdas = lambda hh: hh.insertar_arriba([
+        [_d(2026, 10, 29), "ABONO TRANSFERENCIA DE OTRO", _d(2026, 10, 29), 1.0, 9001.0],
+    ])
+    assert _escribir(session_factory, cuenta)["movidas"] == 1
+    assert h.escrituras == []
+    assert _escribir(session_factory, cuenta)["escritas"] == 1
+    [fila] = [f for f in h.grid if len(f) > 4 and f[4] == 8500.0]
+    assert fila[COL_FACTURA] == "5-260140"
+
+
+def test_una_nota_en_la_fila_de_continuacion_tambien_cuenta(session_factory, monkeypatch):
+    """Sabadell parte el movimiento en dos filas: si Bart anotó en la de
+    abajo, la de arriba no se rellena."""
+    datos = [
+        [_d(2026, 10, 21), "ABONO TRANSFERENCIA DE CLARA", _d(2026, 10, 21), 145.2, 955.25,
+         271815809.0],
+        [None, None, None, None, 956.46, None, "CLARA FIGUERAS M", "pendiente de abono"],
+    ]
+    h = HojaFalsa(_sabadell(datos))
+    monkeypatch.setattr(drive, "abrir_hoja", lambda _s, _a: h)
+    with session_factory() as s:
+        acc = service.create_account(s, {"name": "Sabadell Streamtec", "iban": STREAMTEC_IBAN,
+                                          "drive_file_id": HOJA_ID})
+        drive.traer_de_drive(s, acc)
+        mov = s.scalar(select(BankMovement))
+        service.reassign_movement(s, mov.id, [{"serie": 5, "codigo": 260119, "importe": 145.2}],
+                                  "u-bart")
+        assert drive.escribir_cuenta(s, acc)["ocupadas"] == 1
+    assert h.escrituras == []
+
+
+def test_si_se_reasigna_mientras_se_escribe_gana_la_reasignacion(
+    http, session_factory, cuenta, hoja,
+):
+    _traer(http, cuenta)
+    soler = _mov(session_factory, "ABONO TRANSFERENCIA DE IMPRENTA SOLER")
+    _elegir(http, soler.id, 260090, 2310.00)
+
+    def reasignar_entretanto(_h):
+        with session_factory() as otra:
+            m = otra.get(BankMovement, soler.id)
+            m.hoja_estado, m.hoja_estado_at = "pendiente", datetime(2030, 1, 1)
+            otra.commit()
+
+    hoja.antes_de_leer_celdas = reasignar_entretanto
+    stats = _escribir(session_factory, cuenta)
+    assert (stats["escritas"], stats["movidas"]) == (0, 1)
+    assert _mov(session_factory, soler.concepto).hoja_estado == "pendiente"
+
+
+def test_al_cambiar_de_hoja_se_reintenta_lo_que_no_se_pudo_escribir(
+    http, session_factory, cuenta, hoja,
+):
+    _traer(http, cuenta)
+    roca = _mov(session_factory, "ABONO TRANSFERENCIA DE TALLERES ROCA")
+    _elegir(http, roca.id, 260101, 1210.00)
+    hoja.grid.remove(hoja.fila_de(roca.concepto))
+    _escribir(session_factory, cuenta)
+    assert _mov(session_factory, roca.concepto).hoja_estado == "no_encontrada"
+    r = http.patch(f"/api/erp/bank/accounts/{cuenta}", json={
+        "drive_file_id": "https://docs.google.com/spreadsheets/d/1HojaConvertidaDeEjemplo000002/edit",
+    }, headers=auth_headers(http, "admin"))
+    assert r.status_code == 200
+    assert _mov(session_factory, roca.concepto).hoja_estado == "pendiente"

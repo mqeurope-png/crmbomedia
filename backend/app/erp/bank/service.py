@@ -190,13 +190,24 @@ def update_account(session: Session, account_id: str, data: dict[str, Any]) -> B
         acc.column_mapping_json = (
             json.dumps(data["column_mapping"]) if data["column_mapping"] else None
         )
+    hoja_antes = (acc.drive_file_id, acc.drive_pestana)
     _datos_drive(acc, data)
+    ahora = datetime.now(UTC).replace(tzinfo=None)
     if not acc.drive_file_id or not acc.drive_escribir:
         # Sin hoja, o sin escribir en ella: lo pendiente ya no se escribe.
         for mov in session.scalars(select(BankMovement).where(
             BankMovement.account_id == acc.id, BankMovement.hoja_estado == HOJA_PENDIENTE,
         )):
-            mov.hoja_estado = None
+            mov.hoja_estado, mov.hoja_estado_at = None, ahora
+    elif (acc.drive_file_id, acc.drive_pestana) != hoja_antes:
+        # Otra hoja (la convertida a hoja de Google) u otra pestaña: lo que no
+        # se pudo escribir en la anterior se vuelve a intentar en esta.
+        for mov in session.scalars(select(BankMovement).where(
+            BankMovement.account_id == acc.id,
+            BankMovement.status == "reconciled",
+            BankMovement.hoja_estado.in_(_HOJA_REINTENTAR_AL_CAMBIAR),
+        )):
+            mov.hoja_estado, mov.hoja_estado_at = HOJA_PENDIENTE, ahora
     session.commit()
     session.refresh(acc)
     return acc
@@ -889,6 +900,8 @@ def _mov(session: Session, movement_id: str) -> BankMovement:
 #: `BankMovement.hoja_estado`: conciliado por una persona, falta escribirlo
 #: en la hoja de Drive de la cuenta.
 HOJA_PENDIENTE = "pendiente"
+#: Lo que se vuelve a intentar si la cuenta pasa a otra hoja o pestaña.
+_HOJA_REINTENTAR_AL_CAMBIAR = ("ocupada", "no_encontrada", "corrida", "sin_columna")
 
 
 def _marcar_para_hoja(session: Session, mov: BankMovement) -> None:

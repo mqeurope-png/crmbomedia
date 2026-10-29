@@ -44,7 +44,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.erp.bank.parsing import (
@@ -390,7 +390,15 @@ def traer_de_drive(
         raise
     escritura: dict[str, Any] | None = None
     if resumen.get("ok") and account.drive_escribir:
-        escritura = escribir_pendientes(session, account, hoja=hoja, contenido=contenido)
+        try:
+            escritura = escribir_pendientes(session, account, hoja=hoja, contenido=contenido)
+        except (DriveBancoError, ParseError) as exc:
+            # La lectura ya está importada (y guardada): un fallo al escribir
+            # se dice aparte y lo pendiente sigue pendiente.
+            escritura = {"error": str(exc), "code": getattr(exc, "code", "parse_error")}
+            logger.info("bank.drive: cuenta %s leída pero sin escribir (%s)", account.id,
+                        escritura["code"])
+        escritura = {**escritura, "origen": origen, "at": momento.isoformat()}
     drive = {
         "origen": origen,
         "at": momento.isoformat(),
@@ -451,8 +459,8 @@ def _igual(valor: Any, esperado: str | None) -> bool:
 
 
 def _misma_fila(vivos: list[Any], esperados: list[Any]) -> bool:
-    """¿Las celdas de identidad (importe, concepto) siguen siendo las del
-    movimiento? Si Bart ha insertado filas entretanto, no."""
+    """¿Las celdas de identidad (importe, saldo, concepto, referencia) siguen
+    siendo las del movimiento? Si Bart ha insertado filas entretanto, no."""
     for vivo, esperado in zip(vivos, esperados, strict=True):
         if isinstance(esperado, float):
             try:
@@ -465,9 +473,26 @@ def _misma_fila(vivos: list[Any], esperados: list[Any]) -> bool:
     return True
 
 
-def _poner_estado(mov: BankMovement, estado: str) -> None:
-    mov.hoja_estado = estado
-    mov.hoja_estado_at = _ahora()
+#: Estados que se reintentan en cada pasada: lo pendiente y lo que no se pudo
+#: escribir por cómo estaba la hoja (la fila aún no estaba, estaba corrida o
+#: sin columna). Una celda `ocupada` por Bart no se reintenta.
+_POR_ESCRIBIR = (HOJA_PENDIENTE, HOJA_NO_ENCONTRADA, HOJA_CORRIDA, HOJA_SIN_COLUMNA)
+
+
+def _fijar(
+    session: Session, mov: BankMovement, version: datetime | None, estado: str | None,
+) -> bool:
+    """Pone el estado de la escritura SOLO si nadie lo ha tocado desde que se
+    leyó (`hoja_estado_at` = `version`): si mientras tanto se reasignó o se
+    reabrió el movimiento, gana eso y la siguiente pasada lo vuelve a mirar."""
+    q = update(BankMovement).where(BankMovement.id == mov.id)
+    q = q.where(BankMovement.hoja_estado_at == version) if version is not None else q.where(
+        BankMovement.hoja_estado_at.is_(None))
+    r = session.execute(
+        q.values(hoja_estado=estado, hoja_estado_at=_ahora())
+        .execution_options(synchronize_session=False)
+    )
+    return bool(r.rowcount)
 
 
 def escribir_pendientes(
@@ -483,12 +508,13 @@ def escribir_pendientes(
         "pendientes": 0, "escritas": 0, "ocupadas": 0, "no_encontradas": 0,
         "corridas": 0, "sin_columna": 0, "movidas": 0, "error": None,
     }
-    pendientes = list(session.scalars(select(BankMovement).where(
-        BankMovement.account_id == account.id, BankMovement.hoja_estado == HOJA_PENDIENTE,
+    candidatos = list(session.scalars(select(BankMovement).where(
+        BankMovement.account_id == account.id, BankMovement.hoja_estado.in_(_POR_ESCRIBIR),
     )))
-    stats["pendientes"] = len(pendientes)
-    if not pendientes or not account.drive_file_id or not account.drive_escribir:
+    stats["pendientes"] = len(candidatos)
+    if not candidatos or not account.drive_file_id or not account.drive_escribir:
         return stats
+    version = {m.id: m.hoja_estado_at for m in candidatos}
     hoja = hoja or abrir_hoja(session, account)
     if contenido is None:
         contenido, account.drive_formato = hoja.descargar()
@@ -505,30 +531,32 @@ def escribir_pendientes(
     for m, clave in zip(movimientos, claves_de_movimientos(account.id, movimientos), strict=True):
         por_clave.setdefault(clave, m)
     col_fac, col_ped = _columna(parsed, "factura"), _columna(parsed, "pedido")
-    col_imp, col_con = _columna(parsed, "importe"), _columna(parsed, "concepto")
-    valores = valores_conciliados(session, [m.id for m in pendientes])
+    col_imp, col_sal = _columna(parsed, "importe"), _columna(parsed, "saldo")
+    col_con, col_ref = _columna(parsed, "concepto"), _columna(parsed, "referencia1")
+    valores = valores_conciliados(session, [m.id for m in candidatos])
 
     plan: list[tuple[BankMovement, dict[str, Any]]] = []
-    for mov in pendientes:
+    for mov in candidatos:
         if mov.status != "reconciled" or mov.id not in valores:
-            mov.hoja_estado = None   # ya no hay nada que escribir
+            _fijar(session, mov, version[mov.id], None)   # ya no hay nada que escribir
             continue
         fila = por_clave.get(mov.dedupe_key)
         if fila is None:
-            _poner_estado(mov, HOJA_NO_ENCONTRADA)
+            if mov.hoja_estado != HOJA_NO_ENCONTRADA:
+                logger.info(
+                    "bank.drive: el movimiento %s no está en la hoja de la cuenta %s; "
+                    "no se escribe", mov.id, account.id,
+                )
+            _fijar(session, mov, version[mov.id], HOJA_NO_ENCONTRADA)
             stats["no_encontradas"] += 1
-            logger.info(
-                "bank.drive: el movimiento %s ya no está en la hoja de la cuenta %s; "
-                "no se escribe", mov.id, account.id,
-            )
             continue
         if fila["recolocada"]:
             # La fila está corrida en la hoja: su `factura` no está en su columna.
-            _poner_estado(mov, HOJA_CORRIDA)
+            _fijar(session, mov, version[mov.id], HOJA_CORRIDA)
             stats["corridas"] += 1
             continue
         if col_fac is None:
-            _poner_estado(mov, HOJA_SIN_COLUMNA)
+            _fijar(session, mov, version[mov.id], HOJA_SIN_COLUMNA)
             stats["sin_columna"] += 1
             continue
         plan.append((mov, fila))
@@ -536,50 +564,75 @@ def escribir_pendientes(
         return stats
 
     pestana = account.drive_pestana or hoja.pestanas()[0]
-    identidad = [c for c in (col_imp, col_con) if c is not None]
+    identidad = [c for c in (col_imp, col_sal, col_con, col_ref) if c is not None]
     columnas = [col_fac, *([col_ped] if col_ped is not None else []), *identidad]
     vivos = hoja.leer_celdas([
         _rango(pestana, fila["source_row"], c) for _, fila in plan for c in columnas
     ])
+
+    def esperado(fila: dict[str, Any], c: int) -> Any:
+        if c == col_imp:
+            return float(fila["importe"])
+        if c == col_sal and fila["saldo"] is not None:
+            return float(fila["saldo"])
+        return fila["raw"].get(parsed.columns[c])
+
     escribir: list[tuple[str, str]] = []
-    hechos: list[tuple[BankMovement, str | None, str | None]] = []
+    hechos: list[tuple[BankMovement, str | None, str | None, bool]] = []
     n = len(columnas)
     for i, (mov, fila) in enumerate(plan):
         celdas = dict(zip(columnas, vivos[i * n:(i + 1) * n], strict=True))
-        esperados = [
-            float(fila["importe"]) if c == col_imp else fila["raw"].get(parsed.columns[c])
-            for c in identidad
-        ]
-        if not _misma_fila([celdas[c] for c in identidad], esperados):
-            stats["movidas"] += 1   # sigue pendiente: la próxima pasada la encuentra
+        if not _misma_fila([celdas[c] for c in identidad], [esperado(fila, c) for c in identidad]):
+            stats["movidas"] += 1   # se queda como estaba: la próxima pasada la encuentra
             continue
         factura, pedido = valores[mov.id]
         vivo_fac = celdas[col_fac]
-        if not (_vacia(vivo_fac) or _igual(vivo_fac, mov.hoja_factura)
-                or _igual(vivo_fac, factura)):
-            _poner_estado(mov, HOJA_OCUPADA)   # algo de Bart: no se toca
+        # Lo que trae la fila en `factura`, con la de continuación (Sabadell):
+        # si Bart anotó algo, aunque sea abajo, la celda no se toca.
+        anotado = fila.get("factura")
+        propio_o_igual = (
+            (_vacia(vivo_fac) or _igual(vivo_fac, mov.hoja_factura) or _igual(vivo_fac, factura))
+            and (not anotado or anotado in (mov.hoja_factura, factura))
+        )
+        if not propio_o_igual:
+            _fijar(session, mov, version[mov.id], HOJA_OCUPADA)   # algo de Bart: no se toca
             stats["ocupadas"] += 1
             continue
         fila_hoja = fila["source_row"]
-        escrita_fac = escrita_ped = None
+        escrita_fac: str | None = None
         if not _igual(vivo_fac, factura):
             escribir.append((_rango(pestana, fila_hoja, col_fac), factura))
             escrita_fac = factura
-        if pedido and col_ped is not None:
+        escrita_ped: str | None = None
+        cambia_ped = False
+        if col_ped is not None:
             vivo_ped = celdas[col_ped]
-            if _vacia(vivo_ped) or _igual(vivo_ped, mov.hoja_pedido):
-                if not _igual(vivo_ped, pedido):
-                    escribir.append((_rango(pestana, fila_hoja, col_ped), pedido))
-                    escrita_ped = pedido
-        hechos.append((mov, escrita_fac, escrita_ped))
+            anotado_ped = fila.get("pedido")
+            libre = _vacia(vivo_ped) and not anotado_ped
+            propio = _igual(vivo_ped, mov.hoja_pedido)
+            if (libre and pedido) or (propio and (pedido or "") != (mov.hoja_pedido or "")):
+                # Vacía: el pedido. Con lo que escribió BoHub: el pedido nuevo,
+                # o vacía si la factura nueva no tiene pedido en BoHub.
+                escribir.append((_rango(pestana, fila_hoja, col_ped), pedido or ""))
+                escrita_ped, cambia_ped = pedido, True
+        hechos.append((mov, escrita_fac, escrita_ped, cambia_ped))
     hoja.escribir_celdas(escribir)
-    for mov, escrita_fac, escrita_ped in hechos:
-        _poner_estado(mov, HOJA_ESCRITA)
+    for mov, escrita_fac, escrita_ped, cambia_ped in hechos:
+        # Lo que hay ahora en la hoja es de BoHub: se guarda siempre.
+        valores_hoja: dict[str, Any] = {}
         if escrita_fac:
-            mov.hoja_factura = escrita_fac
-        if escrita_ped:
-            mov.hoja_pedido = escrita_ped
-        stats["escritas"] += 1
+            valores_hoja["hoja_factura"] = escrita_fac
+        if cambia_ped:
+            valores_hoja["hoja_pedido"] = escrita_ped
+        if valores_hoja:
+            session.execute(
+                update(BankMovement).where(BankMovement.id == mov.id).values(**valores_hoja)
+                .execution_options(synchronize_session=False)
+            )
+        if _fijar(session, mov, version[mov.id], HOJA_ESCRITA):
+            stats["escritas"] += 1
+        else:
+            stats["movidas"] += 1   # se reasignó mientras se escribía: se repasa
     if stats["escritas"] or stats["ocupadas"]:
         logger.info(
             "bank.drive: cuenta %s: %s filas escritas en la hoja, %s con la celda ocupada",

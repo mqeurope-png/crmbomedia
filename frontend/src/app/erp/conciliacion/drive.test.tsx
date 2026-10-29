@@ -88,6 +88,7 @@ const TRAIDA: BankDriveTraida = {
   total_rows: 8, imported: 2, duplicates: 6, formato: "Sabadell", no_entendidas_total: 0,
   no_entendidas: [], resumen: "2 movimientos importados",
   drive: { formato: "hoja", escritura: { escritas: 1, ocupadas: 1 } },
+  matching: { ok: false, detail: "FACTUSOL no disponible: sin conexión" },
 };
 
 describe("Conciliación — el extracto por Drive", () => {
@@ -122,7 +123,8 @@ describe("Conciliación — el extracto por Drive", () => {
     await waitFor(() => expect(traerBankDrive).toHaveBeenCalledWith(undefined));
     expect(await screen.findByText("2 movimientos importados")).toBeInTheDocument();
     expect(screen.getByText(/Leído de Drive \(hoja de Google\)/)).toHaveTextContent(
-      "6 ya estaban · 1 escrito en la hoja · 1 con la celda «factura» ya ocupada (no se tocan)",
+      "6 ya estaban · 1 escrito en la hoja · 1 con la celda «factura» ya ocupada (no se tocan)"
+      + " · FACTUSOL no disponible: sin conexión",
     );
   });
 
@@ -171,7 +173,9 @@ describe("Conciliación — el extracto por Drive", () => {
 
     await user.click(within(bloque).getByRole("button", { name: "Escribir ahora" }));
     expect(escribirBankDrive).toHaveBeenCalledWith("a1");
-    expect(await within(bloque).findByText("2 escritos en la hoja")).toBeInTheDocument();
+    expect(await within(bloque).findByText("2 escritos en la hoja")).toHaveAttribute("role", "status");
+    // Lo que se hace en Cuentas refresca también la lista de Revisión.
+    expect(listBankMovements).toHaveBeenCalledTimes(2);
 
     await user.click(within(bloque).getByRole("button", { name: "Cambiar la hoja de Drive" }));
     expect(within(bloque).getByText("Editor")).toBeInTheDocument();
@@ -198,4 +202,30 @@ describe("Conciliación — el extracto por Drive", () => {
     expect(bloque).toHaveTextContent("Archivo → Guardar como hoja de cálculo de Google");
     expect(within(bloque).queryByRole("button", { name: "Escribir ahora" })).not.toBeInTheDocument();
   });
+});
+
+it("si «Escribir ahora» falla, lo dice en rojo; y sin ninguna lectura no hay «Última lectura»", async () => {
+  const user = userEvent.setup();
+  jest.clearAllMocks();
+  (getCurrentUser as jest.Mock).mockResolvedValue({ id: "u1", role: "admin" } as User);
+  (getBankDrive as jest.Mock).mockResolvedValue({
+    configured: true, service_account_email: EMAIL, hora: "05:20",
+  });
+  (listBankAccounts as jest.Mock).mockResolvedValue([{
+    ...CUENTA,
+    drive_resultado: { escritura: { error: "no compartida", at: "2026-10-30T09:00:00" } },
+  }]);
+  (listSuggestedBankAccounts as jest.Mock).mockResolvedValue([]);
+  (listBankRules as jest.Mock).mockResolvedValue([]);
+  (listBankMovements as jest.Mock).mockResolvedValue({ items: [], total: 0, counters: null });
+  (escribirBankDrive as jest.Mock).mockResolvedValue({
+    error: "bohub-seguimiento@… solo puede leer la hoja: compártela con ella como Editor",
+  });
+  render(<ConciliacionPage />);
+  await user.click(await screen.findByRole("button", { name: "Cuentas" }));
+  const bloque = await screen.findByRole("group", { name: "Hoja de Drive de Sabadell Streamtec" });
+  expect(within(bloque).queryByText(/Última lectura/)).not.toBeInTheDocument();
+  expect(within(bloque).getByText(/Última escritura/)).toHaveTextContent("no compartida");
+  await user.click(within(bloque).getByRole("button", { name: "Escribir ahora" }));
+  expect(await within(bloque).findByRole("alert")).toHaveTextContent("solo puede leer la hoja");
 });
