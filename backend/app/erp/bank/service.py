@@ -869,6 +869,23 @@ def movement_to_dict(m: BankMovement, recons: list[BankReconciliation]) -> dict[
     }
 
 
+def _ocultar_externas(item: dict[str, Any]) -> None:
+    """Sin «incluir facturas externas»: las propuestas contra una factura sin
+    pedido de BoHub no se ofrecen. Se quitan de `proposals`, se cuentan en
+    `externas_ocultas` (para decir que las hay) y la confianza sale de lo que
+    queda. Lo conciliado (`reconciled`) no se toca nunca."""
+    visibles = [p for p in item["proposals"] if p.get("pedido")]
+    item["externas_ocultas"] = len(item["proposals"]) - len(visibles)
+    item["proposals"] = visibles
+    item["confidence"] = visibles[0]["confidence"] if visibles else None
+
+
+def _solo_externas(item: dict[str, Any]) -> bool:
+    """Por conciliar, sin nada que ofrecer y con alguna factura externa que
+    encaja: lo que hay pero se ha decidido no ver."""
+    return item["status"] == "pending" and not item["proposals"] and item["externas_ocultas"] > 0
+
+
 def list_movements(
     session: Session,
     *,
@@ -881,24 +898,76 @@ def list_movements(
     limit: int = 100,
     offset: int = 0,
     movement_id: str | None = None,
+    ejercicio: str | None = None,
+    externas: bool = True,
+    solo_externas: bool = False,
 ) -> dict[str, Any]:
+    """Los movimientos, con sus propuestas y lo conciliado. `ejercicio`: solo
+    los de ese año (fecha de operación); los contadores, también. Sin
+    `externas`, las propuestas solo ofrecen facturas con pedido de BoHub
+    (`_ocultar_externas`) y `counters.solo_externas` dice cuántos movimientos
+    por conciliar solo casan con facturas externas; `solo_externas` deja la
+    lista en esos. El extracto se enseña entero: ningún movimiento se esconde
+    por la casilla."""
+    from app.erp.ejercicio import limites  # noqa: PLC0415
+
+    rango = limites(ejercicio) if ejercicio and not movement_id else None
     q = select(BankMovement)
     if movement_id:
         # «Ver el movimiento» desde la ficha del pedido: solo ese.
         q = q.where(BankMovement.id == movement_id)
     if account_id:
         q = q.where(BankMovement.account_id == account_id)
+    if rango:
+        q = q.where(BankMovement.fecha_oper.between(*rango))
     if desde:
         q = q.where(BankMovement.fecha_oper >= desde)
     if hasta:
         q = q.where(BankMovement.fecha_oper <= hasta)
-    if status:
+    if status and not solo_externas:
         q = q.where(BankMovement.status == status)
     if only_incoming:
         q = q.where(BankMovement.importe > 0)
     rows = session.scalars(
         q.order_by(BankMovement.fecha_oper.desc(), BankMovement.source_row.asc())
     ).all()
+    items = _con_propuestas(session, rows, externas=externas)
+    if solo_externas:
+        # El contador pulsado: los mismos que cuenta (por conciliar, sin
+        # propuesta visible), sin que la confianza los vacíe.
+        items = [i for i in items if _solo_externas(i)]
+        confidence = None
+    if confidence:
+        if confidence == "none":
+            items = [i for i in items if i["status"] == "pending" and not i["proposals"]]
+        else:
+            items = [i for i in items if i["confidence"] == confidence]
+    total = len(items)
+    # Contadores globales (misma cuenta y ejercicio, sin filtro de estado ni
+    # confianza): el extracto entero, pase lo que pase con la casilla.
+    base = select(BankMovement).where(BankMovement.importe > 0)
+    if account_id:
+        base = base.where(BankMovement.account_id == account_id)
+    if rango:
+        base = base.where(BankMovement.fecha_oper.between(*rango))
+    all_in = session.scalars(base).all()
+    counters = {
+        "pending": sum(1 for m in all_in if m.status == "pending"),
+        "reconciled": sum(1 for m in all_in if m.status == "reconciled"),
+        "discarded": sum(1 for m in all_in if m.status == "discarded"),
+        "pending_amount": round(sum(float(m.importe) for m in all_in if m.status == "pending"), 2),
+        "solo_externas": 0 if externas else sum(
+            1 for i in _con_propuestas(
+                session, [m for m in all_in if m.status == "pending"], externas=False,
+            ) if _solo_externas(i)
+        ),
+    }
+    return {"items": items[offset : offset + limit], "total": total, "counters": counters}
+
+
+def _con_propuestas(
+    session: Session, rows: list[BankMovement], *, externas: bool,
+) -> list[dict[str, Any]]:
     ids = [m.id for m in rows]
     recons_by_mov: dict[str, list[BankReconciliation]] = {}
     if ids:
@@ -914,24 +983,11 @@ def list_movements(
     for item in items:
         for r in (*item["proposals"], *item["reconciled"]):
             r["pedido"] = pedidos.get((r["serie"], r["codigo"]))
-    if confidence:
-        if confidence == "none":
-            items = [i for i in items if i["status"] == "pending" and not i["proposals"]]
+        if externas:
+            item["externas_ocultas"] = 0
         else:
-            items = [i for i in items if i["confidence"] == confidence]
-    total = len(items)
-    # Contadores globales (misma cuenta/rango, sin filtro de estado/confianza).
-    base = select(BankMovement).where(BankMovement.importe > 0)
-    if account_id:
-        base = base.where(BankMovement.account_id == account_id)
-    all_in = session.scalars(base).all()
-    counters = {
-        "pending": sum(1 for m in all_in if m.status == "pending"),
-        "reconciled": sum(1 for m in all_in if m.status == "reconciled"),
-        "discarded": sum(1 for m in all_in if m.status == "discarded"),
-        "pending_amount": round(sum(float(m.importe) for m in all_in if m.status == "pending"), 2),
-    }
-    return {"items": items[offset : offset + limit], "total": total, "counters": counters}
+            _ocultar_externas(item)
+    return items
 
 
 # --- decisiones (la persona decide) -----------------------------------------------
@@ -994,8 +1050,12 @@ def _son_alternativas(mov: BankMovement, props: list[BankReconciliation]) -> boo
     return len(props) > 1 and total > round(float(mov.importe), 2) + 0.01
 
 
-def confirm_movement(session: Session, movement_id: str, user_id: str | None) -> dict[str, Any]:
-    """Confirma la PROPUESTA actual. Sin propuesta → error (no se inventa)."""
+def confirm_movement(
+    session: Session, movement_id: str, user_id: str | None, *, externas: bool = True,
+) -> dict[str, Any]:
+    """Confirma la PROPUESTA actual. Sin propuesta → error (no se inventa).
+    Sin `externas`, nada contra una factura sin pedido: si la propuesta lleva
+    alguna (que en pantalla no se ve), no se confirma y se dice."""
     mov = _mov(session, movement_id)
     props = session.scalars(
         select(BankReconciliation).where(
@@ -1005,6 +1065,14 @@ def confirm_movement(session: Session, movement_id: str, user_id: str | None) ->
     ).all()
     if not props:
         raise ValueError("este movimiento no tiene propuesta que confirmar")
+    if not externas:
+        con_pedido = _pedidos_con_id(session, {(p.serie, p.codigo) for p in props})
+        if any((p.serie, p.codigo) not in con_pedido for p in props):
+            raise ValueError(
+                "la propuesta incluye facturas externas (solo FACTUSOL, sin pedido), que no se "
+                "están enseñando: enciende «Incluir facturas externas» para verlas, o elige "
+                "con «Elegir / repartir»"
+            )
     if _son_alternativas(mov, props):
         raise ValueError(
             "las propuestas son alternativas (cada una por el importe entero): elige "
@@ -1123,13 +1191,21 @@ def reopen_movement(session: Session, movement_id: str) -> dict[str, Any]:
 
 
 def confirm_all_high(
-    session: Session, user_id: str | None, *, account_id: str | None = None
+    session: Session, user_id: str | None, *, account_id: str | None = None,
+    externas: bool = True, ejercicio: str | None = None,
 ) -> int:
     """Acción EN BLOQUE (un clic de Bart): confirma las propuestas de confianza
-    ALTA. Sigue siendo una decisión suya, no automática."""
+    ALTA. Sigue siendo una decisión suya, no automática. Sin `externas`, un
+    movimiento con alguna propuesta contra una factura sin pedido no entra:
+    lo que no se ve en pantalla no se confirma. Con `ejercicio`, solo los
+    movimientos de ese año (los que se ven)."""
+    from app.erp.ejercicio import limites  # noqa: PLC0415
+
     q = select(BankMovement).where(BankMovement.status == "pending")
     if account_id:
         q = q.where(BankMovement.account_id == account_id)
+    if ejercicio:
+        q = q.where(BankMovement.fecha_oper.between(*limites(ejercicio)))
     n = 0
     for mov in session.scalars(q).all():
         props = session.scalars(
@@ -1138,6 +1214,10 @@ def confirm_all_high(
                 BankReconciliation.status == "proposed",
             )
         ).all()
+        if props and not externas:
+            con_pedido = _pedidos_con_id(session, {(p.serie, p.codigo) for p in props})
+            if any((p.serie, p.codigo) not in con_pedido for p in props):
+                continue
         if props and all(p.confidence == "alta" for p in props) and not _son_alternativas(
             mov, props,
         ):

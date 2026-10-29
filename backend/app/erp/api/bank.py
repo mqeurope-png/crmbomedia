@@ -403,6 +403,13 @@ def list_movements(
     offset: int = Query(default=0, ge=0),
     #: «Ver el movimiento» desde la ficha del pedido: solo ese movimiento.
     movimiento: str | None = Query(default=None, max_length=36),
+    #: El ejercicio: solo los movimientos de ese año (y sus contadores).
+    ejercicio: str | None = Query(default=None, pattern=r"^\d{4}$"),
+    #: «Incluir facturas externas»: sin ella, solo se proponen facturas con
+    #: pedido de BoHub. La pantalla la manda apagada al entrar.
+    externas: bool = Query(default=True),
+    #: El contador pulsado: solo los que casan únicamente con externas.
+    solo_externas: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
@@ -417,6 +424,9 @@ def list_movements(
         limit=limit,
         offset=offset,
         movement_id=movimiento,
+        ejercicio=ejercicio,
+        externas=externas,
+        solo_externas=solo_externas,
     )
 
 
@@ -445,11 +455,13 @@ class DiscardIn(BaseModel):
 @router.post("/movements/{movement_id}/confirm")
 def confirm_movement(
     movement_id: str,
+    #: Sin «Incluir facturas externas» no se confirma nada contra una externa.
+    externas: bool = Query(default=True),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
-        out = service.confirm_movement(session, movement_id, current_user.id)
+        out = service.confirm_movement(session, movement_id, current_user.id, externas=externas)
         _encolar_hoja(session, {out["account_id"]})
         return out
     except LookupError as exc:
@@ -516,15 +528,21 @@ def reopen_movement(
 @router.post("/movements/confirm-high")
 def confirm_all_high(
     account_id: str | None = Query(default=None),
+    externas: bool = Query(default=True),
+    ejercicio: str | None = Query(default=None, pattern=r"^\d{4}$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
-    """Acción en BLOQUE (un clic de Bart): confirma las de confianza alta."""
+    """Acción en BLOQUE (un clic de Bart): confirma las de confianza alta.
+    Con lo que se ve en pantalla: el ejercicio elegido y, sin `externas`,
+    solo las propuestas contra facturas con pedido."""
     from sqlalchemy import select  # noqa: PLC0415
 
     from app.erp.models import BankAccount  # noqa: PLC0415
 
-    n = service.confirm_all_high(session, current_user.id, account_id=account_id)
+    n = service.confirm_all_high(
+        session, current_user.id, account_id=account_id, externas=externas, ejercicio=ejercicio,
+    )
     if n:
         _encolar_hoja(session, set(session.scalars(select(BankAccount.id))))
     return {"confirmed": n}

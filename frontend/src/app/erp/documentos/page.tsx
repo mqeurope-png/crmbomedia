@@ -43,6 +43,7 @@ import {
   type PlantillaDocumento,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { EjercicioSelector, useEjercicio } from "../../components/erp/EjercicioSelector";
 
 const PAGE_SIZE = 100;
 
@@ -100,22 +101,12 @@ const pad2 = (n: number) => String(n).padStart(2, "0");
 
 /** Atajo «Mes en curso» (para cuadrar cierres), en la zona horaria del
  *  navegador. Era el rango por defecto (Lote 2 · PR-2); ahora el defecto es
- *  el año en curso (`yearToDateRange`) y esto queda como atajo. */
+ *  el ejercicio (no un rango de fechas) y esto queda como atajo. */
 function currentMonthRange(now = new Date()): { desde: string; hasta: string } {
   const y = now.getFullYear();
   const m = now.getMonth();
   const last = new Date(y, m + 1, 0).getDate();
   return { desde: `${y}-${pad2(m + 1)}-01`, hasta: `${y}-${pad2(m + 1)}-${pad2(last)}` };
-}
-
-/** Rango por defecto: del 1 de enero del año en curso a hoy. «Limpiar
- *  filtros» vuelve aquí (no a «sin fechas»). */
-function yearToDateRange(now = new Date()): { desde: string; hasta: string } {
-  const y = now.getFullYear();
-  return {
-    desde: `${y}-01-01`,
-    hasta: `${y}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`,
-  };
 }
 
 /** «hace X» desde una marca ISO del servidor (la de la lectura en vivo). */
@@ -224,8 +215,15 @@ export default function FactusolDocumentosPage() {
   const [serie, setSerie] = useState<string>("");
   const [clienteInput, setClienteInput] = useState("");
   const [clienteQ, setClienteQ] = useState("");
-  const [fechaDesde, setFechaDesde] = useState(() => yearToDateRange().desde);
-  const [fechaHasta, setFechaHasta] = useState(() => yearToDateRange().hasta);
+  // El ejercicio (el de FACTUSOL) es lo que acota; las fechas, un filtro más
+  // dentro de él, vacías de entrada.
+  const { info: ejercicios, ejercicio, anterior, setEjercicio } = useEjercicio();
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
+  // «Incluir externas» (albaranes y facturas solo en FACTUSOL, sin pedido de
+  // BoHub): apagada al entrar en la pantalla; vive mientras se está en ella
+  // (sobrevive a recargar la lista) y no se guarda en ningún sitio.
+  const [incluirExternas, setIncluirExternas] = useState(false);
   const [q, setQ] = useState("");
   const [ciclo, setCiclo] = useState<string>("");
   // ERP-F3 — filtro por estado de COBRO (solo facturas), por `estado`.
@@ -257,6 +255,10 @@ export default function FactusolDocumentosPage() {
     return () => window.clearInterval(id);
   }, []);
 
+  // Solo se manda si no es el en curso (el backend lee el en curso por
+  // defecto): así no se lee dos veces al saber cuál es.
+  const ejercicioLeido = anterior && ejercicio ? ejercicio : "";
+
   const load = useCallback(async (nextOffset: number, fresh = false) => {
     setLoading(true);
     setSyncing(fresh);
@@ -270,7 +272,11 @@ export default function FactusolDocumentosPage() {
         q: q.trim() || undefined,
         ciclo: (ciclo || undefined) as FactusolDocumentFilters["ciclo"],
         estado: tab === "facturas" && pago ? pago : undefined,
-        linked: soloSinVincular ? false : undefined,
+        // Albaranes y facturas: por defecto, solo los que tienen pedido.
+        linked: (tab === "albaranes" || tab === "facturas") && !incluirExternas
+          ? true
+          : soloSinVincular ? false : undefined,
+        ejercicio: ejercicioLeido || undefined,
         fresh_ciclo: fresh || undefined,
         sort,
         dir,
@@ -294,20 +300,21 @@ export default function FactusolDocumentosPage() {
       setLoading(false);
       setSyncing(false);
     }
-  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, pago, soloSinVincular, sort, dir]);
+  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, pago, soloSinVincular,
+    incluirExternas, ejercicioLeido, sort, dir]);
 
   useEffect(() => {
     void load(0);
   }, [load]);
 
   function limpiar() {
-    const def = yearToDateRange();
     setSerie("");
     setClienteInput("");
     setClienteQ("");
-    // Las fechas vuelven al defecto (año en curso), no a «sin fechas».
-    setFechaDesde(def.desde);
-    setFechaHasta(def.hasta);
+    // Sin fechas: lo acota el ejercicio, que vuelve al en curso.
+    setFechaDesde("");
+    setFechaHasta("");
+    if (ejercicios) setEjercicio(ejercicios.en_curso);
     setQ("");
     setCiclo("");
     setPago("");
@@ -435,11 +442,10 @@ export default function FactusolDocumentosPage() {
 
   const month = currentMonthRange();
   const isCurrentMonth = fechaDesde === month.desde && fechaHasta === month.hasta;
-  const def = yearToDateRange();
-  const isDefaultRange = fechaDesde === def.desde && fechaHasta === def.hasta;
+  const isDefaultRange = fechaDesde === "" && fechaHasta === "";
   const hasFilters =
     serie !== "" || clienteQ !== "" || !isDefaultRange ||
-    q.trim() !== "" || ciclo !== "" || pago !== "" || soloSinVincular;
+    q.trim() !== "" || ciclo !== "" || pago !== "" || soloSinVincular || anterior;
   const cicloOptions = CICLO_OPTIONS[tab];
   const isFacturas = tab === "facturas";
   const isLinkable = tab === "albaranes" || tab === "facturas";
@@ -485,7 +491,7 @@ export default function FactusolDocumentosPage() {
         </Link>
       );
     }
-    if (!canEdit || d.serie === null || d.codigo === null) {
+    if (!canEdit || anterior || d.serie === null || d.codigo === null) {
       return <span className="muted">Sin vincular</span>;
     }
     if (tab === "presupuestos" || tab === "pedidos") {
@@ -538,6 +544,7 @@ export default function FactusolDocumentosPage() {
 
   /** Acción principal por documento (la que toca según el tipo/estado). */
   function primaryAction(d: FactusolDocument) {
+    if (anterior) return null;   // otro ejercicio: solo consulta
     if (isFacturas && canEdit && !facturaCobrada(d) && d.serie !== null && d.codigo !== null) {
       return (
         <button
@@ -598,7 +605,33 @@ export default function FactusolDocumentosPage() {
       {dlError ? <p className="form-error">{dlError}</p> : null}
 
       <div className="erp-flow-filters" role="search" aria-label="Filtros de documentos">
-        <button
+        <EjercicioSelector
+          info={ejercicios} ejercicio={ejercicio}
+          onChange={(e) => { setEjercicio(e); setOffset(0); }}
+          que="Los documentos"
+        />
+        {isLinkable ? (
+          <label className={`erp-doc-chip ${incluirExternas ? "is-active" : ""}`}
+                 title="Albaranes y facturas que solo están en FACTUSOL, sin pedido de BoHub detrás">
+            <input
+              type="checkbox"
+              checked={incluirExternas}
+              onChange={(e) => {
+                setIncluirExternas(e.target.checked);
+                if (!e.target.checked) setSoloSinVincular(false);
+              }}
+            />
+            {" "}Incluir {tab === "facturas" ? "facturas externas" : "albaranes externos"}
+            {" "}(solo FACTUSOL, sin pedido)
+            {unlinkedTotal !== null ? (
+              <span className="erp-doc-chip-n mono"
+                    aria-label={`${unlinkedTotal} externos`}>
+                {" "}· {unlinkedTotal}{incluirExternas ? "" : " fuera"}
+              </span>
+            ) : null}
+          </label>
+        ) : null}
+        {!isLinkable || incluirExternas ? <button
           type="button"
           className={`erp-doc-chip ${soloSinVincular ? "is-active" : ""}`}
           aria-pressed={soloSinVincular}
@@ -617,7 +650,7 @@ export default function FactusolDocumentosPage() {
             </>
           ) : null}
           {soloSinVincular ? <> <span aria-hidden>✕</span></> : null}
-        </button>
+        </button> : null}
         <label className="field erp-flow-filter-grow">
           <span className="sr-only">Buscar documento</span>
           <input
@@ -716,7 +749,7 @@ export default function FactusolDocumentosPage() {
             Limpiar filtros
           </button>
         ) : null}
-        {isFacturas && selected.size > 0 ? (
+        {isFacturas && !anterior && selected.size > 0 ? (
           <button
             type="button" className="button small" disabled={downloading}
             onClick={() => void downloadSelectedZip()}
@@ -735,7 +768,7 @@ export default function FactusolDocumentosPage() {
           <table className="data-table data-table--responsive erp-doc-table">
             <thead>
               <tr>
-                {isFacturas ? (
+                {isFacturas && !anterior ? (
                   <th className="erp-doc-check">
                     <input
                       type="checkbox"
@@ -761,10 +794,13 @@ export default function FactusolDocumentosPage() {
                 return (
                   <tr
                     key={`${d.serie}-${d.codigo}`}
-                    className={`erp-doc-row ${d.order ? "" : "is-unlinked"}`}
-                    onClick={() => setDetail(d)}
+                    className={`erp-doc-row ${d.order ? "" : "is-unlinked"}${
+                      isLinkable && !d.order ? " erp-doc-externa" : ""}`}
+                    // Otro ejercicio: solo el listado (el detalle y el PDF leen
+                    // el ejercicio en curso).
+                    onClick={() => { if (!anterior) setDetail(d); }}
                   >
-                    {isFacturas ? (
+                    {isFacturas && !anterior ? (
                       <td className="erp-doc-check" data-label="Seleccionar"
                           onClick={(e) => e.stopPropagation()}>
                         <input
@@ -775,7 +811,15 @@ export default function FactusolDocumentosPage() {
                         />
                       </td>
                     ) : null}
-                    <td data-label="Nº"><strong className="mono">{d.numero}</strong></td>
+                    <td data-label="Nº">
+                      <strong className="mono">{d.numero}</strong>
+                      {isLinkable && !d.order ? (
+                        <span className="erp-doc-externa-pill"
+                              title="Solo está en FACTUSOL: no tiene pedido de BoHub detrás.">
+                          Externa · sin pedido
+                        </span>
+                      ) : null}
+                    </td>
                     <td data-label="Cliente">
                       <div className="erp-doc-cliente">
                         {d.company ? (
@@ -835,12 +879,12 @@ export default function FactusolDocumentosPage() {
                         {primaryAction(d)}
                         <button
                           type="button" className="button small secondary"
-                          disabled={downloading || d.serie === null || d.codigo === null}
+                          disabled={downloading || anterior || d.serie === null || d.codigo === null}
                           onClick={() => void downloadOne(d)}
                         >
                           PDF
                         </button>
-                        <ActionsMenu label={`Más acciones ${d.numero}`}>
+                        {anterior ? null : <ActionsMenu label={`Más acciones ${d.numero}`}>
                           <button type="button" onClick={() => setDetail(d)}>
                             Ver detalle
                           </button>
@@ -864,7 +908,7 @@ export default function FactusolDocumentosPage() {
                               Guardar como plantilla
                             </button>
                           ) : null}
-                        </ActionsMenu>
+                        </ActionsMenu>}
                       </div>
                     </td>
                   </tr>

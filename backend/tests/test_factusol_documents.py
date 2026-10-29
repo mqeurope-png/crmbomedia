@@ -776,3 +776,50 @@ def test_factura_cobro_info_requires_auth(client) -> None:
     assert client.get(
         "/api/erp/factusol/documents/facturas/5/260066/cobro"
     ).status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# 29/10/2026 — el ejercicio: lo que se lee es el ejercicio de FACTUSOL (cada
+# uno es una base de datos), el en curso por defecto.
+# ---------------------------------------------------------------------------
+
+
+class FakeClientPorEjercicio(FakeClient):
+    """Una tabla por ejercicio; uno que no está responde como FACTUSOL."""
+
+    def __init__(self, por_ejercicio: dict[str, dict[str, list[dict[str, Any]]]]):
+        super().__init__({})
+        self.por_ejercicio = por_ejercicio
+        self.ejercicios: list[str | None] = []
+
+    def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+        self.ejercicios.append(ejercicio)
+        if ejercicio not in self.por_ejercicio:
+            raise FactusolError("POST /admin/CargaTabla → ejercicio sin base de datos en "
+                                "FACTUSOL (respuesta='BDNoExiste')")
+        self.tables = self.por_ejercicio[ejercicio]
+        return super().load_table(tabla, filtro=filtro, ejercicio=ejercicio)
+
+
+def test_documentos_leen_el_ejercicio_en_curso_y_el_que_se_pida(client, session_factory) -> None:
+    _ = session_factory
+    fake = FakeClientPorEjercicio({
+        "2026": {"F_FAC": FACTURAS},
+        "2025": {"F_FAC": [_fac(250001, "5", FECFAC="2025-03-01T00:00:00")]},
+    })
+    with _patched_factusol(fake):
+        en_curso = _list(client, "/api/erp/factusol/documents/facturas")
+        anterior = _list(client, "/api/erp/factusol/documents/facturas?ejercicio=2025")
+        r = client.get("/api/erp/factusol/documents/facturas?ejercicio=2019",
+                       headers=auth_headers(client, "user"))
+        ej = client.get("/api/erp/factusol/ejercicios", headers=auth_headers(client, "user"))
+    assert (en_curso["ejercicio"], en_curso["ejercicio_en_curso"]) == ("2026", "2026")
+    assert en_curso["total"] == len(FACTURAS)
+    assert (anterior["ejercicio"], anterior["ejercicio_en_curso"]) == ("2025", "2026")
+    assert [d["numero"] for d in anterior["items"]] == ["5-250001"]
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "ejercicio_sin_datos"
+    assert "2019" in r.json()["detail"]["detail"]
+    assert ej.json() == {"en_curso": "2026",
+                         "ejercicios": ["2026", "2025", "2024", "2023", "2022", "2021"]}

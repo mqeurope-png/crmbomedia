@@ -207,6 +207,19 @@ def series(
 # --- explorador de documentos (ERP-E3-A, solo lectura) -----------------------
 
 
+@router.get("/ejercicios")
+def ejercicios_endpoint(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """El ejercicio en curso (el de FACTUSOL, Configuración ERP) y los que
+    ofrece el selector de las pantallas de documentos, facturas y cobros."""
+    _ = current_user
+    from app.erp.ejercicio import ejercicios  # noqa: PLC0415
+
+    return ejercicios(session)
+
+
 @router.get("/documents/{doc_type}")
 def list_factusol_documents(
     doc_type: str,
@@ -222,6 +235,8 @@ def list_factusol_documents(
     ),
     fresh_ciclo: bool = Query(default=False),
     linked: bool | None = Query(default=None),
+    #: El ejercicio de FACTUSOL que se lee (por defecto, el en curso).
+    ejercicio_q: str | None = Query(default=None, alias="ejercicio", pattern=r"^\d{4}$"),
     sort: str = Query(
         default="numero", pattern="^(numero|cliente|fecha|total|saldo)$",
     ),
@@ -255,7 +270,12 @@ def list_factusol_documents(
     `fetched_at` (hora del servidor de esta lectura en vivo, ISO) y
     `cycle_index_age_seconds` (antigüedad del índice del ciclo cacheado, 0
     si se acaba de leer, `null` si no está cargado) para que la UI diga
-    «sincronizado hace X»."""
+    «sincronizado hace X».
+
+    `ejercicio` (29/10/2026): el ejercicio de FACTUSOL que se lee; por
+    defecto el en curso (`app.erp.ejercicio`). La respuesta dice cuál se ha
+    leído y cuál es el en curso; uno que FACTUSOL no tiene da 404
+    `ejercicio_sin_datos`."""
     _ = current_user
     from app.integrations.factusol.chain import cycle_annotator  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
@@ -270,7 +290,8 @@ def list_factusol_documents(
             status.HTTP_404_NOT_FOUND,
             f"Tipo de documento desconocido: {doc_type!r}",
         )
-    client, ejercicio = _client_and_ejercicio(session)
+    client, en_curso = _client_and_ejercicio(session)
+    ejercicio = ejercicio_q or en_curso
     annotate = None
     try:
         base_annotate = cycle_annotator(
@@ -340,10 +361,19 @@ def list_factusol_documents(
             annotate=annotate, ciclo=ciclo, linked=linked,
         )
     except FactusolError as exc:
+        from app.erp.ejercicio import es_sin_base_de_datos  # noqa: PLC0415
+
+        if es_sin_base_de_datos(exc):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "ejercicio_sin_datos",
+                "detail": f"FACTUSOL no tiene el ejercicio {ejercicio}.",
+            }) from exc
         logger.warning("factusol documents/%s KO: %s", doc_type, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
             "code": "factusol_list_failed", "detail": str(exc)[:200],
         }) from exc
+    result["ejercicio"] = ejercicio
+    result["ejercicio_en_curso"] = en_curso
     result["fetched_at"] = datetime.now(UTC).isoformat()
     result["cycle_index_age_seconds"] = _cycle_index_age_seconds(ejercicio)
     return result

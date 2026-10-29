@@ -15944,3 +15944,25 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-revincular-tabla th,
 .erp-revincular-tabla td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .erp-revincular-avisos { margin: var(--sp-2) 0; padding-left: 1.2em; font-size: var(--fs-label); color: var(--muted); }
+
+/* El ejercicio de la pantalla (29/10/2026): uno anterior se nota. */
+.erp-ejercicio.is-anterior select {
+  border-color: var(--warning);
+  background: #fffbe5;
+  color: var(--warning);
+  font-weight: 600;
+}
+.erp-ejercicio-aviso { display: flex; flex-wrap: wrap; width: 100%; }
+/* Las filas de documentos externos (solo FACTUSOL, sin pedido). */
+.erp-doc-externa { background: #fbf7ef; }
+.erp-doc-externa-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid #e7d7b5;
+  background: #fff6e0;
+  color: #7a5b12;
+  font-size: var(--fs-small, 12px);
+  white-space: nowrap;
+}

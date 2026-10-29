@@ -53,6 +53,7 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import { ExportBancoADrive } from "../../components/erp/ExportBancoADrive";
+import { EjercicioSelector, useEjercicio } from "../../components/erp/EjercicioSelector";
 
 const CONFIDENCE_LABEL: Record<BankConfidence, { label: string; tone: string }> = {
   alta: { label: "Alta", tone: "ok" },
@@ -310,15 +311,31 @@ function ConciliacionScreen() {
   const canEdit = can(user, Cap.CONCILIACION);
   const isAdmin = user?.role === "admin";
 
+  // El ejercicio (el de FACTUSOL): los movimientos de ese año.
+  const { info: ejercicios, ejercicio, anterior, setEjercicio } = useEjercicio();
+  // Un ejercicio anterior es solo consulta: ni confirmar ni elegir.
+  const canDecidir = canEdit && (!anterior || !!movimiento);
+  // «Incluir facturas externas»: apagada al entrar en la pantalla; vive
+  // mientras se está en ella (sobrevive a recargar la lista tras confirmar o
+  // registrar) y no se guarda en ningún sitio.
+  const [incluirExternas, setIncluirExternas] = useState(false);
+  // El contador «solo casan con facturas externas», pulsado.
+  const [soloExternas, setSoloExternas] = useState(false);
+
   const loadMovements = useCallback(async () => {
+    // Sin saber el ejercicio en curso no se pide nada (saldrían todos los años).
+    if (!movimiento && !ejercicio) return;
     try {
       // Un movimiento concreto va sin los demás filtros: puede estar ya
       // conciliado y el estado por defecto es «Pendiente».
-      setPage(await listBankMovements(movimiento ? { movimiento } : { ...filters, limit: 200 }));
+      setPage(await listBankMovements(movimiento ? { movimiento, externas: incluirExternas } : {
+        ...filters, limit: 200, ejercicio: ejercicio ?? undefined, externas: incluirExternas,
+        solo_externas: !incluirExternas && soloExternas,
+      }));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron cargar los movimientos."));
     }
-  }, [filters, movimiento]);
+  }, [filters, movimiento, ejercicio, incluirExternas, soloExternas]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -614,6 +631,10 @@ function ConciliacionScreen() {
               </div>
             ) : (
               <div className="erp-doc-filters">
+                <EjercicioSelector
+                  info={ejercicios} ejercicio={ejercicio}
+                  onChange={setEjercicio} que="Los movimientos"
+                />
                 <label className="field">
                   <span>Desde</span>
                   <input type="date" aria-label="Desde" value={filters.desde ?? ""}
@@ -649,14 +670,16 @@ function ConciliacionScreen() {
                     <option value="discarded">Descartado</option>
                   </select>
                 </label>
-                {canEdit ? (
+                {canDecidir ? (
                   <button
                     type="button"
                     className="button small"
                     disabled={busy}
                     onClick={() => {
                       if (!window.confirm("¿Confirmar TODAS las propuestas de confianza alta? Es una decisión tuya, no automática.")) return;
-                      void act("Confirmadas las de confianza alta.", () => confirmAllHighBank(filters.account_id));
+                      void act("Confirmadas las de confianza alta.", () => confirmAllHighBank(
+                        filters.account_id, { externas: incluirExternas, ejercicio: ejercicio ?? undefined },
+                      ));
                     }}
                   >
                     Confirmar todas las de confianza alta
@@ -664,6 +687,31 @@ function ConciliacionScreen() {
                 ) : null}
               </div>
             )}
+            {!movimiento ? (
+              <div className="erp-doc-filters">
+                <label className={`erp-doc-chip ${incluirExternas ? "is-active" : ""}`}
+                       title="Que las propuestas y «Elegir otra» ofrezcan también facturas que solo están en FACTUSOL, sin pedido de BoHub">
+                  <input
+                    type="checkbox"
+                    checked={incluirExternas}
+                    onChange={(e) => { setIncluirExternas(e.target.checked); setSoloExternas(false); }}
+                  />
+                  {" "}Incluir facturas externas (solo FACTUSOL, sin pedido)
+                </label>
+                {!incluirExternas && (page?.counters.solo_externas ?? 0) > 0 ? (
+                  <button
+                    type="button"
+                    className={`erp-doc-chip ${soloExternas ? "is-active" : ""}`}
+                    aria-pressed={soloExternas}
+                    title="Por conciliar que solo casan con facturas externas: no se ofrecen con la casilla apagada"
+                    onClick={() => setSoloExternas((v) => !v)}
+                  >
+                    {page?.counters.solo_externas} por conciliar solo casan con facturas externas
+                    {soloExternas ? <> <span aria-hidden>✕</span></> : null}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
             {!page ? <p className="muted">Cargando…</p> : page.items.length === 0 ? (
               <p className="muted">
@@ -699,7 +747,18 @@ function ConciliacionScreen() {
                       <td><strong>{eur(m.importe)}</strong></td>
                       <td>
                         {(m.status === "reconciled" ? m.reconciled : m.proposals).length === 0 ? (
-                          <span className="muted">Sin propuesta</span>
+                          <>
+                            <span className="muted">Sin propuesta</span>
+                            {m.status === "pending" && (m.externas_ocultas ?? 0) > 0 ? (
+                              <div className="muted small erp-bank-externas">
+                                {m.externas_ocultas === 1
+                                  ? "Hay 1 factura externa (solo FACTUSOL, sin pedido) que encaja"
+                                  : `Hay ${m.externas_ocultas} facturas externas (solo FACTUSOL, sin pedido) que encajan`}
+                                : no se ofrece{m.externas_ocultas === 1 ? "" : "n"} con
+                                «Incluir facturas externas» apagada.
+                              </div>
+                            ) : null}
+                          </>
                         ) : (
                           <ul className="erp-bank-proposals">
                             {(m.status === "reconciled" ? m.reconciled : m.proposals).map((p) => (
@@ -714,7 +773,12 @@ function ConciliacionScreen() {
                                       {p.pedido.order_number}
                                     </Link>
                                   </>
-                                ) : null}
+                                ) : (
+                                  <span className="erp-doc-externa-pill"
+                                        title="Solo está en FACTUSOL: no tiene pedido de BoHub detrás.">
+                                    Externa · sin pedido
+                                  </span>
+                                )}
                                 {" · "}{p.cliente_nombre ?? "—"} · {eur(p.importe)}
                                 {p.origen === "extracto" ? (
                                   <span className="badge info small" title="Bart lo anotó a mano en la columna factura del extracto">
@@ -746,11 +810,11 @@ function ConciliacionScreen() {
                       </td>
                       <td>{STATUS_LABEL[m.status]}</td>
                       <td className="erp-bank-actions">
-                        {canEdit && m.status === "pending" ? (
+                        {canDecidir && m.status === "pending" ? (
                           <>
                             {m.proposals.length > 0 ? (
                               <button type="button" className="button small" disabled={busy}
-                                onClick={() => act(`Conciliado ${m.fecha_oper}.`, () => confirmBankMovement(m.id))}>
+                                onClick={() => act(`Conciliado ${m.fecha_oper}.`, () => confirmBankMovement(m.id, incluirExternas))}>
                                 Confirmar
                               </button>
                             ) : null}
@@ -764,7 +828,7 @@ function ConciliacionScreen() {
                             </button>
                           </>
                         ) : null}
-                        {canEdit && m.status !== "pending" ? (
+                        {canDecidir && m.status !== "pending" ? (
                           <button type="button" className="button small secondary" disabled={busy}
                             onClick={() => act("Movimiento reabierto.", () => reopenBankMovement(m.id))}>
                             Reabrir
@@ -783,6 +847,7 @@ function ConciliacionScreen() {
       {reassignFor ? (
         <ReassignModal
           movement={reassignFor}
+          incluirExternas={incluirExternas}
           onClose={() => setReassignFor(null)}
           onDone={async (targets, learn) => {
             const mov = reassignFor;
@@ -1198,9 +1263,11 @@ function RulesPanel({
 // --- elegir otra factura / repartir --------------------------------------------
 
 function ReassignModal({
-  movement, onClose, onDone,
+  movement, incluirExternas, onClose, onDone,
 }: {
   movement: BankMovement;
+  /** Sin la casilla, la búsqueda solo da facturas con pedido de BoHub. */
+  incluirExternas: boolean;
   onClose: () => void;
   onDone: (targets: BankReassignTarget[], learn: boolean) => Promise<void>;
 }) {
@@ -1213,12 +1280,14 @@ function ReassignModal({
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      listFactusolDocuments("facturas", { q: q.trim() || undefined, limit: 15 })
+      listFactusolDocuments("facturas", {
+        q: q.trim() || undefined, limit: 15, linked: incluirExternas ? undefined : true,
+      })
         .then((r) => setResults(r.items))
         .catch(() => setResults([]));
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [q]);
+  }, [q, incluirExternas]);
 
   const assigned = targets.reduce((s, t) => s + t.importe, 0);
   const remaining = Math.round((movement.importe - assigned) * 100) / 100;
@@ -1236,7 +1305,14 @@ function ReassignModal({
         <ul className="item-list">
           {results.filter((d) => d.serie !== null && typeof d.codigo === "number").map((d) => (
             <li key={`${d.serie}-${d.codigo}`}>
-              <strong>{d.numero}</strong> · {d.cliente_nombre ?? "—"} · saldo {eur(d.saldo_pendiente ?? d.total)}
+              <strong>{d.numero}</strong>
+              {d.order ? null : (
+                <span className="erp-doc-externa-pill"
+                      title="Solo está en FACTUSOL: no tiene pedido de BoHub detrás.">
+                  Externa · sin pedido
+                </span>
+              )}
+              {" "}· {d.cliente_nombre ?? "—"} · saldo {eur(d.saldo_pendiente ?? d.total)}
               <button type="button" className="button small secondary" style={{ marginLeft: 8 }}
                 onClick={() => setTargets((t) => [...t, {
                   serie: d.serie as number, codigo: d.codigo as number, numero: d.numero,

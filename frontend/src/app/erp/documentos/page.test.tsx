@@ -79,6 +79,7 @@ jest.mock("../../components/erp/LinkDocumentOrderModal", () => ({
   ),
 }));
 jest.mock("../../lib/erpApi", () => ({
+  getEjercicios: jest.fn(() => Promise.resolve({ en_curso: "2026", ejercicios: ["2026", "2025"] })),
   listFactusolDocuments: jest.fn(),
   getFactusolDocument: jest.fn(),
   getFactusolSeries: jest.fn(),
@@ -193,11 +194,10 @@ function currentMonth() {
 }
 
 /** Rango por defecto: 1 de enero del año en curso → hoy. */
-function yearToDate() {
-  const now = new Date();
-  const y = now.getFullYear();
-  return { desde: `${y}-01-01`, hasta: `${y}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` };
-}
+/** La casilla «Incluir … externos» (su etiqueta lleva el contador). */
+const casillaExternas = () =>
+  screen.getByRole("checkbox", { name: /Incluir (facturas externas|albaranes externos)/ })
+    .closest("label") as HTMLElement;
 
 beforeEach(() => {
   (getCurrentUser as jest.Mock).mockResolvedValue({ role: "admin" });
@@ -387,12 +387,11 @@ describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
     expect(saveBlob).toHaveBeenCalledWith(expect.anything(), "facturas_pdf.zip");
   });
 
-  it("«Limpiar filtros» resetea y re-consulta con las fechas por defecto (año en curso)", async () => {
+  it("«Limpiar filtros» resetea y re-consulta sin fechas (lo acota el ejercicio)", async () => {
     const user = userEvent.setup();
-    const { desde, hasta } = yearToDate();
     render(<FactusolDocumentosPage />);
     await screen.findByRole("option", { name: "2 · MQ Europe" });
-    // Con solo el rango por defecto no hay nada que limpiar.
+    // Sin filtros no hay nada que limpiar.
     expect(screen.queryByRole("button", { name: "Limpiar filtros" })).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Serie / empresa"), "2");
     // Un «hasta» distinto del defecto (no se usa «Mes en curso»: el 31 de
@@ -403,38 +402,59 @@ describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
     await waitFor(() => {
       const last = mockList.mock.calls.at(-1);
       expect(last?.[1].serie).toBeUndefined();
-      // Las fechas vuelven al defecto (1 ene → hoy), no a «sin fechas».
-      expect(last?.[1].fecha_desde).toBe(desde);
-      expect(last?.[1].fecha_hasta).toBe(hasta);
+      // Sin fechas: el ejercicio en curso es lo que acota.
+      expect(last?.[1].fecha_desde).toBeUndefined();
+      expect(last?.[1].fecha_hasta).toBeUndefined();
+      expect(last?.[1].ejercicio).toBeUndefined();
     });
     expect(screen.queryByRole("button", { name: "Limpiar filtros" })).not.toBeInTheDocument();
   });
 });
 
 describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
-  it("el chip «Solo sin vincular · N» lleva el contador y filtra con `linked=false`", async () => {
+  it("por defecto solo facturas con pedido; la casilla de externas las incluye, con su contador", async () => {
     const user = userEvent.setup();
     mockList.mockResolvedValue({ items: [factura()], total: 7, unlinked_total: 4 });
     render(<FactusolDocumentosPage />);
     await screen.findByText("5-260066");
-    const chip = screen.getByRole("button", { name: /Solo sin vincular/ });
-    expect(chip).toHaveAttribute("aria-pressed", "false");
-    expect(chip).toHaveTextContent("Solo sin vincular · 4");
-    expect(mockList).toHaveBeenCalledWith(
-      "facturas", expect.objectContaining({ linked: undefined }),
-    );
-    await user.click(chip);
-    await waitFor(() =>
-      expect(mockList).toHaveBeenCalledWith(
-        "facturas", expect.objectContaining({ linked: false }),
-      ),
-    );
-    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
-      .toHaveAttribute("aria-pressed", "true");
-    // Se desactiva con otro clic (vuelve a «todos»).
-    mockList.mockClear();
-    await user.click(screen.getByRole("button", { name: /Solo sin vincular/ }));
+    // Apagada al entrar: solo las que tienen pedido, y dice cuántas quedan fuera.
+    expect(screen.getByRole("checkbox", { name: /Incluir facturas externas/ })).not.toBeChecked();
+    expect(casillaExternas()).toHaveTextContent(
+      "Incluir facturas externas (solo FACTUSOL, sin pedido) · 4 fuera");
+    expect(mockList).toHaveBeenCalledWith("facturas", expect.objectContaining({ linked: true }));
+    expect(screen.queryByRole("button", { name: /Solo sin vincular/ })).not.toBeInTheDocument();
+    // Encendida: entran (sin `linked`), el contador dice cuántas, y aparece el
+    // chip para quedarse solo con ellas.
+    await user.click(screen.getByRole("checkbox", { name: /Incluir facturas externas/ }));
     await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].linked).toBeUndefined());
+    expect(casillaExternas()).toHaveTextContent("· 4");
+    expect(casillaExternas()).not.toHaveTextContent("fuera");
+    const chip = screen.getByRole("button", { name: /Solo sin vincular/ });
+    expect(chip).toHaveTextContent("Solo sin vincular · 4");
+    await user.click(chip);
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].linked).toBe(false));
+    // Recargar la lista (otro filtro) no apaga la casilla.
+    await user.selectOptions(screen.getByLabelText("Serie / empresa"), "2");
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].serie).toBe(2));
+    expect(screen.getByRole("checkbox", { name: /Incluir facturas externas/ })).toBeChecked();
+    // Apagarla vuelve a «solo con pedido».
+    await user.click(screen.getByRole("checkbox", { name: /Incluir facturas externas/ }));
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].linked).toBe(true));
+  });
+
+  it("una factura externa se distingue de un vistazo y, con la casilla apagada, no ofrece cobrarla", async () => {
+    mockList.mockResolvedValue({
+      items: [factura(), factura({ codigo: 260067, numero: "5-260067",
+                                   order: { id: "o-x", order_number: "MAN-7001" } })],
+      total: 2, unlinked_total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    const externa = (await screen.findByText("5-260066")).closest("tr") as HTMLElement;
+    const conPedido = screen.getByText("5-260067").closest("tr") as HTMLElement;
+    expect(externa.className).toContain("erp-doc-externa");
+    expect(within(externa).getByText("Externa · sin pedido")).toBeInTheDocument();
+    expect(conPedido.className).not.toContain("erp-doc-externa");
+    expect(within(conPedido).queryByText("Externa · sin pedido")).not.toBeInTheDocument();
   });
 
   it("una factura sin pedido lleva banda ámbar y «Vincular»; al vincular, la fila y el contador cambian", async () => {
@@ -470,8 +490,7 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(within(row).getByRole("link", { name: "Abrir pedido BOPRIN-99919" }))
       .toHaveAttribute("href", "/erp/orders/o-bop");
     expect(row.className).not.toContain("is-unlinked");
-    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
-      .toHaveTextContent("Solo sin vincular · 0");
+    expect(casillaExternas()).toHaveTextContent("· 0 fuera");
     expect(mockList).not.toHaveBeenCalled();
   });
 
@@ -553,8 +572,7 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Albarán 5-000091: pedido ALB-5-000091 creado.",
     );
-    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
-      .toHaveTextContent("Solo sin vincular · 0");
+    expect(casillaExternas()).toHaveTextContent("· 0 fuera");
     expect(mockList).not.toHaveBeenCalled();
   });
 
@@ -571,8 +589,7 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(screen.queryByRole("dialog", { name: /Crear pedido desde/ })).not.toBeInTheDocument();
     expect(mockCreate).not.toHaveBeenCalled();
     expect(screen.queryByRole("link", { name: /Abrir pedido/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
-      .toHaveTextContent("Solo sin vincular · 1");
+    expect(casillaExternas()).toHaveTextContent("· 1 fuera");
   });
 
   it("una factura también ofrece «Crear pedido» y, si el alta falla, avisa en el modal", async () => {
@@ -684,32 +701,34 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(screen.queryByRole("button", { name: /a un pedido$/ })).not.toBeInTheDocument();
   });
 
-  it("el rango de fechas arranca en el año en curso (1 ene → hoy); «Mes en curso» es un atajo y se puede borrar", async () => {
+  it("arranca en el ejercicio en curso, sin fechas; el selector deja ver uno anterior y avisa", async () => {
     const user = userEvent.setup();
-    const ytd = yearToDate();
     const mes = currentMonth();
     render(<FactusolDocumentosPage />);
     await screen.findByText("5-260066");
-    expect(screen.getByLabelText("Fecha desde")).toHaveValue(ytd.desde);
-    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(ytd.hasta);
-    expect(mockList).toHaveBeenCalledWith(
-      "facturas", expect.objectContaining({ fecha_desde: ytd.desde, fecha_hasta: ytd.hasta }),
-    );
-    // Atajo al mes en curso (salvo el 31 de enero, cuando ya ES el rango por
-    // defecto y el atajo no se enseña; las comprobaciones valen igual).
-    const atajoVisible = ytd.desde !== mes.desde || ytd.hasta !== mes.hasta;
-    if (atajoVisible) await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
+    const selector = await screen.findByLabelText("Ejercicio");
+    expect(selector).toHaveValue("2026");
+    expect(screen.getByRole("option", { name: "2026 (en curso)" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Fecha desde")).toHaveValue("");
+    expect(mockList.mock.calls.at(-1)?.[1]).toEqual(expect.objectContaining({
+      fecha_desde: undefined, fecha_hasta: undefined, ejercicio: undefined,
+    }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // Un ejercicio anterior: se lee ese, se nota y no se ofrece cobrar.
+    await user.selectOptions(selector, "2025");
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].ejercicio).toBe("2025"));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Ejercicio 2025, no el en curso (2026). Los documentos son de 2025. Es solo consulta");
+    expect(selector.closest("label")?.className).toContain("is-anterior");
+    expect(screen.queryByRole("button", { name: "Registrar cobro" })).not.toBeInTheDocument();
+    // Ni selección para el ZIP (leería el ejercicio en curso).
+    expect(screen.queryByRole("checkbox", { name: /Seleccionar factura/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Volver a 2026" }));
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].ejercicio).toBeUndefined());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // «Mes en curso» sigue siendo un atajo dentro del ejercicio.
+    await user.click(screen.getByRole("button", { name: "Mes en curso" }));
     await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(mes.desde));
-    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(mes.hasta);
-    expect(screen.queryByRole("button", { name: "Mes en curso" })).not.toBeInTheDocument();
-    // Borrar «desde» consulta sin ese límite.
-    await user.clear(screen.getByLabelText("Fecha desde"));
-    await waitFor(() =>
-      expect(mockList.mock.calls.at(-1)?.[1]).toEqual(
-        expect.objectContaining({ fecha_desde: undefined, fecha_hasta: mes.hasta }),
-      ),
-    );
-    expect(await screen.findByRole("button", { name: "Mes en curso" })).toBeInTheDocument();
   });
 
   it("dice «Solo lectura · sincronizado hace X» y «Sincronizar ahora» relee saltando el cache", async () => {

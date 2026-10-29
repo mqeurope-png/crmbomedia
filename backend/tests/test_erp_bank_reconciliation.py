@@ -576,7 +576,7 @@ def test_nothing_is_auto_confirmed(session_factory, http) -> None:
     assert all(i["status"] == "pending" for i in page["items"])
     assert all(i["reconciled"] == [] for i in page["items"])
     assert page["counters"] == {"pending": 4, "reconciled": 0, "discarded": 0,
-                                "pending_amount": 11002.44}
+                                "pending_amount": 11002.44, "solo_externas": 0}
     with session_factory() as s:
         assert s.scalar(select(func.count(BankReconciliation.id))
                         .where(BankReconciliation.status == "confirmed")) == 0
