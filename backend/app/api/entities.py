@@ -27,10 +27,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.auth import require_viewer
-from app.core.errors import not_found
+from app.core.auth import ROLE_LEVELS, require_viewer
+from app.core.errors import forbidden, not_found
 from app.db.session import get_session
-from app.models.crm import User
+from app.models.crm import User, UserRole
 from app.services.entities import (
     get_entity,
     list_entities,
@@ -149,6 +149,32 @@ def _visibility_clauses(descriptor: Any, *, include_archived: bool) -> list[Any]
     return []
 
 
+#: Entidades cuya pantalla propia exige ser Usuario (no Solo lectura): el
+#: correo (`/api/emails/*`) y el marketing (`/api/brevo/*`). La búsqueda
+#: genérica no puede abrir más que su pantalla (auditoría de permisos
+#: 30/10/2026, F-1).
+_ENTIDADES_DE_USUARIO = frozenset({"email_thread", "brevo_template", "brevo_campaign"})
+
+
+def _alcance_del_usuario(
+    descriptor: Any, session: Session, user: User,
+) -> list[Any]:
+    """Lo que este usuario puede ver de la entidad, como en su pantalla.
+    El correo, con la misma regla que el buzón y la ficha de contacto
+    (`thread_visibility_filter`): el admin todo; el resto, sus hilos. Sin
+    esto, cualquier rol del CRM leía los asuntos de todos los buzones."""
+    if descriptor.key in _ENTIDADES_DE_USUARIO and (
+        ROLE_LEVELS[user.role] < ROLE_LEVELS[UserRole.USER]
+    ):
+        raise forbidden()
+    if descriptor.key == "email_thread":
+        from app.services.email_aliases import thread_visibility_filter  # noqa: PLC0415
+
+        filtro = thread_visibility_filter(session, user)
+        return [] if filtro is None else [filtro]
+    return []
+
+
 def _segment_resolver_for(session: Session):
     """Closure factory for `in_segment` field. Sprint Filtros & Listas
     (PR-Cf): el motor levanta `SegmentRuleError("in_segment requires a
@@ -174,8 +200,7 @@ def entity_search(
 ) -> EntitySearchPage:
     """Generic paginated list. The body's `rules_json` is the engine's IR
     tree (same shape as `POST /api/contacts/search`); empty body returns
-    the entity universe."""
-    _ = current_user
+    the entity universe (what this user may see of it)."""
     descriptor = get_entity(entity)
     if descriptor is None:
         raise not_found("Entity")
@@ -191,7 +216,10 @@ def entity_search(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
-    visibility = _visibility_clauses(descriptor, include_archived=payload.include_archived)
+    visibility = [
+        *_visibility_clauses(descriptor, include_archived=payload.include_archived),
+        *_alcance_del_usuario(descriptor, session, current_user),
+    ]
     column, sort_dir = _resolve_sort(descriptor, payload)
     order_by = column.asc() if sort_dir == "asc" else column.desc()
 
@@ -246,7 +274,6 @@ def entity_search_ids(
     Capped at MAX_IDS; truncation is reported back so the UI can warn
     the operator. (PR-C lands the proper set-based bulk that doesn't
     enumerate ids at all.)"""
-    _ = current_user
     descriptor = get_entity(entity)
     if descriptor is None:
         raise not_found("Entity")
@@ -262,7 +289,10 @@ def entity_search_ids(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
-    visibility = _visibility_clauses(descriptor, include_archived=payload.include_archived)
+    visibility = [
+        *_visibility_clauses(descriptor, include_archived=payload.include_archived),
+        *_alcance_del_usuario(descriptor, session, current_user),
+    ]
     rows = list(
         session.scalars(
             select(descriptor.id_column).where(clause, *visibility).limit(MAX_IDS + 1)

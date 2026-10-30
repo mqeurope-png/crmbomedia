@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import Action, record_event
@@ -247,6 +247,39 @@ def my_aliases(
     return out
 
 
+def _solo_remitentes_concedidos(
+    session: Session, user: User, preferencias: list[Any],
+) -> None:
+    """Desde «mi cuenta» se puede apagar un remitente, elegir el
+    predeterminado entre los que ya se tienen y cambiar el nombre visible,
+    pero NO encender una dirección que el administrador no haya concedido
+    (#570: los remitentes los asigna el admin en Usuarios). La dirección
+    propia siempre vale. 403 si se intenta (auditoría 30/10/2026, F-2)."""
+    concedidos = {
+        a.strip().lower() for a in session.scalars(
+            select(UserEmailAliasPref.alias_email).where(
+                UserEmailAliasPref.user_id == user.id,
+                # Concedido = encendido, o elegido por el admin aunque Gmail
+                # aún no lo tuviera (queda apagado hasta el sync).
+                or_(UserEmailAliasPref.is_allowed.is_(True),
+                    UserEmailAliasPref.user_opted_in.is_(True)),
+            )
+        )
+    }
+    concedidos.add((user.email or "").strip().lower())
+    nuevos = [p.alias_email for p in preferencias
+              if p.is_allowed and p.alias_email.strip().lower() not in concedidos]
+    if nuevos:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "remitente_no_concedido",
+                "detail": ("Ese remitente no está entre los tuyos. Los asigna el "
+                           "administrador en Usuarios (bloque «Remitentes» de tu ficha)."),
+            },
+        )
+
+
 @router.put("/aliases/preferences", response_model=list[EmailAlias])
 def upsert_alias_preferences(
     payload: AliasPreferencesPayload,
@@ -266,6 +299,8 @@ def upsert_alias_preferences(
     (`user_opted_in`, un solo predeterminado, filas apagadas que se
     conservan) vive en `services/remitentes.guardar`, compartida con la
     ficha de Usuarios."""
+    if current_user.role != UserRole.ADMIN:
+        _solo_remitentes_concedidos(session, current_user, payload.preferences)
     remitentes.guardar(session, current_user, payload.preferences)
     _ = request
     session.commit()

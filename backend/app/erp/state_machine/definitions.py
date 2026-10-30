@@ -40,7 +40,11 @@ _COMERCIAL = UserRole.COMERCIAL.value
 
 #: "Oficina": quienes gestionan pedidos desde el back-office. El COMERCIAL
 #: trabaja sus pedidos (no web) de punta a punta, así que también es oficina.
-_OFFICE = frozenset({_ADMIN, _MANAGER, _PEDIDOS, _COMERCIAL})
+#: El Responsable (`manager`) NO está: es un rol del CRM que ve el ERP pero no
+#: lo trabaja (`capabilities.py`, mapa); antes cambiaba pago, transporte y
+#: factura desde la ficha (auditoría 30/10/2026, F-4). Con un rol ERP añadido
+#: entra por ese rol.
+_OFFICE = frozenset({_ADMIN, _PEDIDOS, _COMERCIAL})
 _OFFICE_OR_SYSTEM = _OFFICE | {SYSTEM}
 
 
@@ -99,7 +103,9 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
     TransitionDef(
         StatusDomain.PAYMENT, PaymentStatus.PENDING.value,
         PaymentStatus.CREDIT_APPROVED.value,
-        "Crédito B2B aprobado", frozenset({_ADMIN, _MANAGER}),
+        # Solo admin (auditoría 30/10/2026, F-4): el Responsable es un rol del
+        # CRM; con un rol ERP añadido tampoco aprueba crédito (Pedidos no puede).
+        "Crédito B2B aprobado", frozenset({_ADMIN}),
     ),
     TransitionDef(
         StatusDomain.PAYMENT, PaymentStatus.PENDING.value, PaymentStatus.FAILED.value,

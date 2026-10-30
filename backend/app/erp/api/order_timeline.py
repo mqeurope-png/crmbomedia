@@ -77,10 +77,13 @@ def order_timeline(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    _ = current_user
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
     order = session.get(Order, order_id)
     if order is None:
         raise not_found("Order")
+    # Como la ficha: un pedido web no existe para quien no ve web (F-3).
+    order_web_or_403(order, current_user)
 
     wanted = (
         {t.strip() for t in types.split(",") if t.strip()} & ALL_TYPES

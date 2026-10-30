@@ -28,9 +28,11 @@ from app.erp.api.deps import (
     require_erp_view,
     require_office_view,
     require_order_manage,
+    require_order_transitions,
     require_samples_create,
     require_sat_tracking,
 )
+from app.erp.capabilities import can_fire_transitions
 from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
 from app.erp.linked_invoice import linked_invoice_payload
 from app.erp.models import (
@@ -452,6 +454,8 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
                 {"to_status": t.to_status, "label": t.label,
                  "required_evidence": list(t.required_evidence)}
                 for t in available_transitions(o, domain, actor)
+                # Sin la puerta del endpoint (F-4), ni un botón.
+                if actor is None or can_fire_transitions(actor)
             ]
             for domain in StatusDomain
         },
@@ -711,6 +715,22 @@ def _can_see_web_orders(user) -> bool:  # noqa: ANN001
     from app.erp.capabilities import can_view_web_orders  # noqa: PLC0415
 
     return can_view_web_orders(user)
+
+
+def sin_web_si_no_puede(stmt, user):  # noqa: ANN001, ANN201 — Select[Order]
+    """Quita los pedidos WEB de una consulta si `user` no puede verlos
+    (Comercial). Para las consultas que no pasan por `worklist_visible`."""
+    if user is not None and not _can_see_web_orders(user):
+        stmt = stmt.where(Order.external_source != OrderSource.WOOCOMMERCE.value)
+    return stmt
+
+
+def web_oculto(order: Order | None, user) -> bool:  # noqa: ANN001
+    """¿Es un pedido WEB que `user` no puede ver? Para tratarlo como si no
+    existiera en las acciones en bloque, sin escribir nada."""
+    from app.erp.factusol_albaran import is_web_order  # noqa: PLC0415
+
+    return order is not None and is_web_order(order) and not _can_see_web_orders(user)
 
 
 def order_web_or_403(order: Order, user) -> None:  # noqa: ANN001
@@ -1183,14 +1203,14 @@ def list_orders(
         stmt = stmt.where(Order.completed_at.is_(None))
     if show_cancelled:
         # Vista de revisión: solo los anulados (con motivo y quién).
-        stmt = stmt.where(Order.cancelled_at.isnot(None))
+        stmt = sin_web_si_no_puede(stmt.where(Order.cancelled_at.isnot(None)), current_user)
     elif show_excluded:
         # Vista de revisión: solo los quitados a mano (con motivo y quién).
         # Lote 2 A2: un pedido quitado Y anulado es un anulado — vive SOLO en
         # «Ver anulados»; «Ver ocultados» nunca mezcla anulados.
-        stmt = stmt.where(
+        stmt = sin_web_si_no_puede(stmt.where(
             Order.seguimiento_excluded_at.isnot(None), Order.cancelled_at.is_(None),
-        )
+        ), current_user)
     else:
         # Control manual: los quitados no aparecen en la bandeja.
         stmt = worklist_visible(stmt, current_user)
@@ -1924,10 +1944,11 @@ def fire_transition(
     order_id: str,
     payload: TransitionIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_order_transitions),
 ) -> dict[str, Any]:
-    """Dispara una transición vía engine. El gate aquí es de VISTA — la
-    matriz fina por arco la aplica el engine (role_forbidden → 403)."""
+    """Dispara una transición vía engine. El gate aquí es de TRABAJAR pedidos
+    (no basta con verlos, F-4); la matriz fina por arco la aplica el engine
+    (role_forbidden → 403)."""
     order = _get_order(session, order_id, current_user)
     try:
         domain = StatusDomain(payload.domain)
@@ -2778,7 +2799,9 @@ def bulk_complete_orders(
         seen.add(order_id)
         try:
             order = session.get(Order, order_id)
-            if order is None:
+            # Un pedido web que no puede ver no existe para él: nada se
+            # escribe (antes se completaba y DESPUÉS daba 403).
+            if order is None or web_oculto(order, current_user):
                 failed.append({"order_id": order_id, "error": "El pedido no existe."})
                 continue
             from app.erp.capabilities import can_manage_order  # noqa: PLC0415
@@ -2844,7 +2867,7 @@ def bulk_approve_orders(
         seen.add(order_id)
         try:
             order = session.get(Order, order_id)
-            if order is None:
+            if order is None or web_oculto(order, current_user):
                 failed.append({"order_id": order_id, "error": "El pedido no existe."})
                 continue
             if _status_value(order.preparation_status) != "pending_review":
@@ -3463,6 +3486,8 @@ def bulk_mark_externally_processed(
             stmt = stmt.where(Order.placed_at < payload.before_date)
     else:
         raise HTTPException(400, "Indica `order_ids` o `store_id`.")
+    # Quien no ve pedidos web (Comercial) no los marca, ni por ids ni por tienda.
+    stmt = sin_web_si_no_puede(stmt, current_user)
     marked = 0
     for order in session.scalars(stmt):
         if mark_order_externally_processed(
@@ -3618,7 +3643,7 @@ def refresh_factusol_cobros(
 
     stmt = select(Order).where(Order.factusol_invoice_number.isnot(None))
     if payload.ids:
-        stmt = stmt.where(Order.id.in_(payload.ids))
+        stmt = sin_web_si_no_puede(stmt.where(Order.id.in_(payload.ids)), current_user)
     else:
         stmt = worklist_visible(stmt, current_user).where(Order.externally_processed_at.is_(None))
     orders = list(session.scalars(stmt.order_by(Order.placed_at.desc()).limit(500)))

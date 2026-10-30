@@ -601,11 +601,26 @@ _ = patch
 # ---------------------------------------------------------------------------
 
 
+def _conceder(session_factory: sessionmaker, *aliases: str, opted_in: bool | None = None) -> None:
+    """Los remitentes los concede el admin (#570; auditoría 30/10/2026, F-2):
+    desde «mi cuenta» solo se gestionan los ya concedidos."""
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        for alias in aliases:
+            session.add(UserEmailAliasPref(user_id=uid, alias_email=alias, is_allowed=True,
+                                           is_default=False, user_opted_in=opted_in))
+        session.commit()
+
+
 def test_put_preferences_upserts_rows(
     client: TestClient,
     session_factory: sessionmaker,
 ) -> None:
     from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    _conceder(session_factory, "info@bomedia.net", "ventas@bomedia.net")
 
     response = client.put(
         "/api/emails/aliases/preferences",
@@ -667,6 +682,8 @@ def test_put_preferences_normalises_zero_default_to_first_allowed(
     Garantía: el composer siempre tiene un default determinista."""
     from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
 
+    _conceder(session_factory, "info@bomedia.net", "ventas@bomedia.net")
+
     response = client.put(
         "/api/emails/aliases/preferences",
         json={
@@ -707,6 +724,8 @@ def test_put_preferences_disallow_default_reassigns(
     superviviente. Sin esto el user quedaría sin default y el
     composer no sabría cuál pre-seleccionar."""
     from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    _conceder(session_factory, "info@bomedia.net", "ventas@bomedia.net")
 
     # Seed con default = info.
     client.put(
@@ -766,20 +785,8 @@ def test_put_preferences_disallow_keeps_row_off_as_a_rejection(
     centenares apagadas.)"""
     from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
 
-    # Seed: marcarlo es una elección → user_opted_in=True.
-    client.put(
-        "/api/emails/aliases/preferences",
-        json={
-            "preferences": [
-                {
-                    "alias_email": "info@bomedia.net",
-                    "is_allowed": True,
-                    "is_default": False,
-                },
-            ]
-        },
-        headers=auth_headers(client, "user"),
-    )
+    # Seed: concedido y elegido (lo hace el admin desde Usuarios).
+    _conceder(session_factory, "info@bomedia.net", opted_in=True)
     with session_factory() as session:
         fila = session.scalar(select(UserEmailAliasPref))
         assert fila is not None and fila.is_allowed and fila.user_opted_in is True

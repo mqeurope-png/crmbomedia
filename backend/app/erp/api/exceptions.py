@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_event
@@ -69,6 +69,7 @@ from app.erp.models import (
     InvoiceMode,
     Order,
 )
+from app.erp.models.orders import OrderSource
 from app.erp.ofertas import CONFIG_KEY as OFERTAS_CONFIG_KEY
 from app.erp.ofertas import normalizar_config as normalizar_ofertas
 from app.erp.ofertas import validar_config as validar_ofertas
@@ -373,6 +374,15 @@ def list_exceptions(
         stmt = stmt.where(ErpException.assigned_to_user_id == current_user.id)
     elif assigned:
         stmt = stmt.where(ErpException.assigned_to_user_id == assigned)
+    from app.erp.capabilities import can_view_web_orders  # noqa: PLC0415
+
+    if not can_view_web_orders(current_user):
+        # Las de pedidos web no existen para quien no ve web (Comercial; F-3).
+        stmt = stmt.where(or_(
+            ErpException.order_id.is_(None),
+            ErpException.order_id.not_in(select(Order.id).where(
+                Order.external_source == OrderSource.WOOCOMMERCE.value)),
+        ))
     rows = list(session.scalars(
         stmt.order_by(ErpException.created_at.desc()).limit(limit)
     ))
@@ -383,11 +393,14 @@ def list_exceptions(
 def _require_manage_exception(session: Session, user: User, exc: ErpException) -> None:
     """La incidencia la gestiona quien gestiona su pedido: la oficina, todas;
     el taller (14/10/2026), solo las de sus muestras (`can_manage_order`)."""
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
     from app.erp.capabilities import Cap, can_manage_order, has_capability  # noqa: PLC0415
 
+    order = session.get(Order, exc.order_id) if exc.order_id else None
+    # La de un pedido web no se gestiona si no se puede ver (Comercial; F-3).
+    order_web_or_403(order, user)
     if has_capability(user, Cap.ORDERS_CREATE):
         return
-    order = session.get(Order, exc.order_id) if exc.order_id else None
     if order is None or not can_manage_order(user, order):
         raise HTTPException(403, {
             "code": "order_not_manageable",
