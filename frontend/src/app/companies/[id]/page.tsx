@@ -662,7 +662,7 @@ export default function CompanyDetailPage() {
                 type="text"
                 value={company.website ?? ""}
                 onChange={(e) => onChange("website", e.target.value || null)}
-                placeholder="https://bomedia.net"
+                placeholder="https://www.empresa.com"
               />
             </label>
             <label className="field">
@@ -671,7 +671,7 @@ export default function CompanyDetailPage() {
                 type="text"
                 value={company.domain ?? ""}
                 onChange={(e) => onChange("domain", e.target.value || null)}
-                placeholder="bomedia.net"
+                placeholder="empresa.com"
               />
             </label>
             <label className="field">

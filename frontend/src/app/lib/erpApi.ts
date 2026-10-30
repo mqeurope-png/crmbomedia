@@ -7810,3 +7810,66 @@ export async function getHistoricoCompradores(f: HistoricoFiltro): Promise<{
 export async function downloadHistoricoCompradoresCsv(f: HistoricoFiltro): Promise<Blob> {
   return apiDownloadBlob(`/api/erp/historico/compradores.csv${qs({ ...f })}`);
 }
+
+// --- Ficha de un documento (factura, albarán, proforma) de cualquier año -----
+
+export type HistoricoTipoDocumento = "factura" | "albaran" | "proforma";
+
+export type FichaDocumentoLinea = {
+  posicion: number | null;
+  codart: string | null;
+  descripcion: string | null;
+  /** Nombre del artículo en el catálogo DE SU AÑO. */
+  articulo: string | null;
+  familia: string | null;
+  clase: HistoricoClase | null;
+  gama: string | null;
+  cantidad: number | null;
+  precio: number | null;
+  total: number | null;
+  /** Línea sin artículo: una nota (portes, condiciones…), no una venta. */
+  es_nota: boolean;
+};
+
+export type FichaDocumento = {
+  /** «volcado» (cualquier año) o «vivo» (de hoy, aún sin volcar). */
+  fuente: "volcado" | "vivo";
+  cargado_at: string | null;
+  /** El estado de cobro / total se han leído en vivo (ejercicio en curso). */
+  estado_en_vivo: boolean;
+  tipo: HistoricoTipoDocumento;
+  tipo_label: string;
+  doc_type: FactusolDocType;
+  ejercicio: string;
+  serie: string;
+  codigo: number;
+  numero: string;
+  fecha: string | null;
+  fecha_original: string | null;
+  cliente: { codcli: string | null; nombre: string | null;
+             empresa: { id: string; nombre: string } | null };
+  referencia: string | null;
+  /** Con impuestos; null si se volcó antes de guardar el total. */
+  total: number | null;
+  /** Suma de las líneas de producto, sin impuestos. */
+  suma_lineas: number;
+  estado: string | null;
+  estado_label: string | null;
+  pedido: { id: string; order_number: string } | null;
+  lineas: FichaDocumentoLinea[];
+};
+
+export async function getFichaDocumento(
+  tipo: string, ejercicio: string, serie: string, codigo: string,
+): Promise<FichaDocumento> {
+  return apiFetch(`/api/erp/historico/documentos/${encodeURIComponent(tipo)}/${
+    encodeURIComponent(ejercicio)}/${encodeURIComponent(serie)}/${encodeURIComponent(codigo)}`);
+}
+
+/** Ruta de la ficha de un documento. */
+export function fichaDocumentoHref(
+  tipo: HistoricoTipoDocumento, ejercicio: string | number, serie: string | number,
+  codigo: string | number,
+): string {
+  return `/erp/documentos/ficha/${tipo}/${ejercicio}/${serie}/${Number(codigo)}`;
+}

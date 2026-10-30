@@ -24,6 +24,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
   - [Proformas](#proformas)
   - [Plantillas](#plantillas)
   - [Documentos de FACTUSOL](#documentos-de-factusol)
+  - [Ficha de un documento (factura, albarán, proforma)](#ficha-de-un-documento-factura-albarán-proforma)
   - [Quién compró qué (histórico de ventas)](#quién-compró-qué-histórico-de-ventas)
   - [Cola SAT (el taller)](#cola-sat-el-taller)
   - [Seguimiento](#seguimiento)
@@ -971,6 +972,24 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 - **«Ver detalle»** — abre una ventana con las líneas, los cobros y opciones de
   PDF; desde ahí también puedes **crear el albarán/la factura** o **vincular** el
   documento a un pedido existente (**«Vincular a pedido»**, sin tocar FACTUSOL).
+
+### Ficha de un documento (factura, albarán, proforma)
+
+Desde la **«Actividad reciente»** de la ficha de una empresa, pulsar una
+factura o una proforma abre su **ficha**, de cualquier año (2014 → hoy):
+
+- **Cabecera:** número, fecha, ejercicio, cliente (con enlace a su empresa o
+  «Sin empresa vinculada»), total y, en una factura, su **estado de cobro**.
+- **Líneas:** artículo (con el nombre que tenía en el catálogo de ese año),
+  descripción, cantidad, precio y total. Las **notas** (portes, condiciones…)
+  salen aparte y no cuentan como venta.
+- **Pedido de BoHub:** enlace si lo tiene; si no, «Sin pedido de BoHub».
+- **PDF:** botón arriba a la derecha (necesita que FACTUSOL tenga ese ejercicio
+  abierto).
+
+Es solo consulta: cobrar, añadir mención o vincular siguen en ERP · Documentos
+y en la ficha del pedido. Un documento de hoy que aún no está en la carga
+nocturna se lee en vivo.
 
 ### Quién compró qué (histórico de ventas)
 

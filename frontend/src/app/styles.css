@@ -16023,3 +16023,16 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   .erp-historico-filtros { grid-template-columns: 1fr 1fr; }
   .erp-historico-filtros .field:first-child { grid-column: 1 / -1; }
 }
+
+/* Ficha de un documento de FACTUSOL */
+.erp-ficha-documento {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 24px;
+  margin: 0;
+}
+.erp-ficha-documento dt { font-size: var(--fs-label); color: var(--muted); }
+.erp-ficha-documento dd { margin: 2px 0 0; }
+.erp-ficha-notas { margin-top: 16px; }
+.erp-ficha-notas h4 { margin: 0 0 6px; font-size: var(--fs-body); }
+.erp-ficha-notas ul { margin: 0; padding-left: 18px; }

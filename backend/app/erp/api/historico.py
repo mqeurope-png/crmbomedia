@@ -13,7 +13,7 @@ import csv
 import io
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -331,3 +331,64 @@ def compradores_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="quien_compro.csv"'},
     )
+
+
+# --- ficha de un documento (factura, albarán, proforma) de cualquier año --------------
+
+
+def _lector_vivo(session: Session):
+    """Lee un documento del ejercicio en curso en vivo (lo creado después de la
+    última carga, o solo su cabecera para el cobro de hoy). None si no existe;
+    `FactusolNoResponde` si FACTUSOL no contesta (no es lo mismo)."""
+    from app.erp.historico_documento import FactusolNoResponde  # noqa: PLC0415
+
+    def leer(doc_type: str, serie: str, codigo: int, *, solo_cabecera: bool = False):
+        from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+        from app.integrations.factusol.documents import (  # noqa: PLC0415
+            get_document,
+            get_header,
+        )
+
+        try:
+            client, ejercicio = _client_and_ejercicio(session)
+            leer_fn = get_header if solo_cabecera else get_document
+            return leer_fn(client, doc_type, serie=int(serie), codigo=codigo,
+                           ejercicio=ejercicio)
+        except Exception as exc:  # noqa: BLE001 — se dice, no se inventa
+            raise FactusolNoResponde(type(exc).__name__) from exc
+    return leer
+
+
+@router.get("/documentos/{tipo}/{ejercicio}/{serie}/{codigo}")
+def ficha_documento(
+    tipo: str,
+    ejercicio: str = Path(pattern=r"^\d{4}$"),
+    serie: str = Path(max_length=8),
+    codigo: int = Path(ge=0),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Cabecera, líneas (las de nota marcadas), estado, pedido de BoHub y lo
+    necesario para el PDF. Solo lectura."""
+    from app.erp.historico_documento import (  # noqa: PLC0415
+        DocumentoNoEncontrado,
+        FactusolNoResponde,
+        ficha,
+    )
+
+    try:
+        return ficha(session, tipo=tipo, ejercicio=ejercicio, serie=serie, codigo=codigo,
+                     user=user, en_curso=_en_curso(session),
+                     lector_vivo=_lector_vivo(session))
+    except FactusolNoResponde as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable",
+            "detail": ("Es un documento de este ejercicio que aún no está en la carga de "
+                       "anoche, y FACTUSOL no responde. Prueba de nuevo en un momento."),
+        }) from exc
+    except DocumentoNoEncontrado as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "documento_no_encontrado",
+            "detail": ("Ese documento no está en lo volcado. Si es de un año antiguo, "
+                       "cárgalo desde Quién compró qué → Carga."),
+        }) from exc

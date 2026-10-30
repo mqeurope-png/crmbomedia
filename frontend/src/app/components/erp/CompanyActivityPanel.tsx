@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+  fichaDocumentoHref,
+  getEjercicios,
   listFactusolDocuments,
   listFactusolQuotes,
   listOrders,
@@ -97,21 +99,38 @@ function orderRow(o: OrderSummary): ActivityRow {
   };
 }
 
-function invoiceRow(f: FactusolDocument): ActivityRow {
+/** Ejercicio de un documento leído en vivo: el en curso, que es el que leen
+ *  las dos listas (facturas y proformas). Sin saberlo, no hay enlace. */
+function ejercicioDe(ejercicio: string | null | undefined): string | null {
+  return ejercicio || null;
+}
+
+function invoiceRow(f: FactusolDocument, ejercicio?: string | null): ActivityRow {
   const cobrada = f.saldo_pendiente != null && f.saldo_pendiente <= 0.005;
   const pendiente = f.saldo_pendiente != null && f.saldo_pendiente > 0.005;
+  // La factura abre su ficha (antes no abría nada).
+  const ej = ejercicioDe(ejercicio);
+  const href = ej && f.serie != null && f.codigo != null && f.codigo !== ""
+    ? fichaDocumentoHref("factura", ej, f.serie, f.codigo)
+    : null;
   return {
-    key: `f-${f.numero}`, kind: "factura", numero: f.numero, href: null, detalle: null,
+    key: `f-${f.numero}`, kind: "factura", numero: f.numero, href, detalle: null,
     fecha: f.fecha, importe: f.total, moneda: "EUR",
     estado: cobrada ? "Cobrada" : pendiente ? "Por cobrar" : f.estado_label || "—",
     tone: cobrada ? "g" : pendiente ? "a" : "n",
   };
 }
 
-function quoteRow(q: FactusolQuote): ActivityRow {
+function quoteRow(q: FactusolQuote, ejercicio?: string | null): ActivityRow {
   const numero = q.numero ?? q.codpre ?? "—";
+  const serie = q.serie ?? q.tippre;
+  // La proforma abre su ficha; sin serie o código, el listado como antes.
+  const ej = ejercicioDe(ejercicio);
+  const href = ej && serie != null && serie !== "" && q.codpre
+    ? fichaDocumentoHref("proforma", ej, serie, q.codpre)
+    : "/erp/proformas";
   return {
-    key: `q-${q.codpre ?? numero}`, kind: "proforma", numero, href: "/erp/proformas",
+    key: `q-${q.codpre ?? numero}`, kind: "proforma", numero, href,
     detalle: q.referencia || null, fecha: q.fecha, importe: q.total, moneda: "EUR",
     estado: q.estado_label || "Proforma",
     tone: q.queue ? QUOTE_TONE[q.queue] ?? "n" : "n",
@@ -123,8 +142,13 @@ function quoteRow(q: FactusolQuote): ActivityRow {
  *  fecha, al final). No se pierde nada de lo que devuelven las tres lecturas. */
 export function buildActivityRows(
   orders: OrderSummary[], invoices: FactusolDocument[], quotes: FactusolQuote[],
+  ejercicio?: string | null,
 ): ActivityRow[] {
-  const rows = [...orders.map(orderRow), ...invoices.map(invoiceRow), ...quotes.map(quoteRow)];
+  const rows = [
+    ...orders.map(orderRow),
+    ...invoices.map((f) => invoiceRow(f, ejercicio)),
+    ...quotes.map((q) => quoteRow(q, ejercicio)),
+  ];
   return rows.sort((a, b) => {
     if (!a.fecha && !b.fecha) return 0;
     if (!a.fecha) return 1;
@@ -162,6 +186,8 @@ export function CompanyActivityPanel({
 }) {
   const [orders, setOrders] = useState<OrderSummary[] | null>(null);
   const [invoices, setInvoices] = useState<FactusolDocument[] | null>(null);
+  // Ejercicio en curso: el de las fichas de facturas y proformas.
+  const [ejercicio, setEjercicio] = useState<string | null>(null);
   const [quotes, setQuotes] = useState<FactusolQuote[] | null>(null);
   // Error por origen: cada uno se explica en la tabla por separado.
   const [ordersError, setOrdersError] = useState(false);
@@ -192,6 +218,11 @@ export function CompanyActivityPanel({
 
   useEffect(() => {
     let alive = true;
+    // El ejercicio en curso (el que leen facturas y proformas): el de sus fichas.
+    Promise.resolve()
+      .then(() => getEjercicios())
+      .then((e) => { if (alive) setEjercicio(e.en_curso); })
+      .catch(() => undefined);
     // Pedidos de BoHub (con su cola): siempre.
     Promise.resolve()
       .then(() => listOrders({
@@ -224,8 +255,8 @@ export function CompanyActivityPanel({
 
   const loading = orders === null || invoices === null || quotes === null;
   const rows = useMemo(
-    () => buildActivityRows(orders ?? [], invoices ?? [], quotes ?? []),
-    [orders, invoices, quotes],
+    () => buildActivityRows(orders ?? [], invoices ?? [], quotes ?? [], ejercicio),
+    [orders, invoices, quotes, ejercicio],
   );
   const counts = useMemo(() => {
     const c: Record<ActivityKind, number> = { pedido: 0, factura: 0, proforma: 0 };

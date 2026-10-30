@@ -21,7 +21,7 @@ incremental fino.
 | Tabla | Qué guarda |
 |---|---|
 | `historico_ejercicios` | Estado de la carga de cada ejercicio (`cargado`, `cargando`, `no_disponible`, `error`), fechas y recuentos. Sin datos de clientes. |
-| `historico_documentos` | Cabeceras de `F_FAC` y `F_ALB`: tipo, serie (tal cual, sin interpretar), número, fecha (solo si es razonable) y la original, `codcli`, nombre del cliente. Único por (ejercicio, tipo, serie, número). |
+| `historico_documentos` | Cabeceras de `F_FAC`, `F_ALB` y, desde la 0155, `F_PRE` (proformas, `tipo = 'proforma'`, **no cuentan como venta**): tipo, serie (tal cual, sin interpretar), número, fecha (solo si es razonable) y la original, `codcli`, nombre del cliente, `total` con impuestos y `estado` tal cual (0155). Único por (ejercicio, tipo, serie, número). |
 | `historico_lineas` | `F_LFA` / `F_LAL`: `codart`, descripción, cantidad, precio, total, `es_producto` (False = línea de nota, sin artículo). |
 | `historico_articulos` | El `F_ART` de **cada** ejercicio (clave ejercicio + `codart`): un artículo descatalogado sale con el nombre de su año. |
 | `historico_familias` | `F_FAM`, su `clase` (`maquina` / `consumible` / `recambio` / `accesorio` / `otro`) y su `gama`, que pone oficina en la pantalla; se conservan al recargar. `propuesta_descartada`: la propuesta que Bart vio y rechazó («Mantener la mía»). |
@@ -71,6 +71,29 @@ serie-número), unidades, nº de compras y artículos. Solo líneas de producto.
   la pantalla marca «Sin empresa vinculada».
 - `EQUART` (SKU comercial) no se usa para casar: solo lo tiene el 4 %.
 
+## Ficha de un documento (`app/erp/historico_documento.py`, migración 0155)
+
+`GET /api/erp/historico/documentos/{tipo}/{ejercicio}/{serie}/{codigo}` (tipo
+`factura` / `albaran` / `proforma`), pantalla `/erp/documentos/ficha/...`. Se
+abre desde la «Actividad reciente» de la ficha de empresa.
+
+- **De lo volcado**, cualquier año: cabecera (número, fecha, ejercicio,
+  cliente con su empresa, total, estado de cobro de la factura a fecha de la
+  última carga), líneas con el nombre del artículo **del catálogo de su año**,
+  y las líneas de nota aparte.
+- **En vivo** solo si es del ejercicio en curso y aún no está volcado (creado
+  después de la carga nocturna). Uno antiguo que no esté volcado da 404 con el
+  aviso de cargarlo; nunca una ficha vacía.
+- Pedido de BoHub enlazado (la misma regla que ERP · Documentos) o «Sin pedido
+  de BoHub». Un pedido web que el usuario no puede ver cuenta como sin pedido.
+- PDF: el de ERP · Documentos con su `ejercicio` (necesita que FACTUSOL tenga
+  ese ejercicio abierto).
+- Lo volcado antes de la 0155 no tiene total ni estado: la ficha enseña la
+  suma de las líneas (sin impuestos) y lo dice. Se rellena al volver a cargar
+  el ejercicio («Cargar los 13 ejercicios»), que es también lo que trae las
+  proformas de los años cerrados.
+- Solo lectura: cobrar, mención y vincular siguen donde estaban.
+
 ## Clase y gama (`app/erp/historico_clasificacion.py`, migración 0154)
 
 - **Clase:** qué es. Un accesorio no es una máquina (el parque instalado no
@@ -102,6 +125,7 @@ serie-número), unidades, nº de compras y artículos. Solo líneas de producto.
 | `PATCH /familias/{codigo}` (clase y/o gama), `POST /familias/{codigo}/aceptar`, `POST /familias/{codigo}/mantener`, `POST /familias/aceptar-propuestas`, `POST /gamas`, `POST/PUT/DELETE /reglas` | `erp.config` |
 | `GET /articulos?q=` | `erp.office.view` |
 | `GET /compradores`, `GET /compradores.csv` | `erp.office.view` |
+| `GET /documentos/{tipo}/{ejercicio}/{serie}/{codigo}` (ficha) | `erp.office.view` |
 
 ## Fuera de alcance
 

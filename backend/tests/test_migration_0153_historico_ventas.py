@@ -75,3 +75,15 @@ def test_0154_suma_gama_reglas_y_gamas_sin_tocar_la_clase(alembic_setup):
     command.downgrade(cfg, "20261030_0153")
     cols = {col["name"] for col in inspect(engine).get_columns("historico_familias")}
     assert "gama" not in cols
+
+
+def test_0155_suma_total_y_estado_a_los_documentos(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261030_0155")
+    cols = {c["name"] for c in inspect(engine).get_columns("historico_documentos")}
+    assert {"total", "estado"} <= cols
+    command.downgrade(cfg, "20261030_0154")
+    cols = {c["name"] for c in inspect(engine).get_columns("historico_documentos")}
+    assert not {"total", "estado"} & cols

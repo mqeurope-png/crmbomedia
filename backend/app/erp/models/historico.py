@@ -8,8 +8,9 @@ vuelcan una vez y se guardan.
 - `historico_ejercicios`: el estado de la carga de cada ejercicio (cuándo, qué
   pasó y los recuentos). Un ejercicio que la API no tiene queda como
   `no_disponible`, sin borrar lo que ya se hubiera volcado.
-- `historico_documentos`: cabeceras de factura (`F_FAC`) y albarán (`F_ALB`):
-  fecha, cliente y serie. La serie se guarda tal cual y NO se interpreta (la 5
+- `historico_documentos`: cabeceras de factura (`F_FAC`), albarán (`F_ALB`)
+  y, desde la 0155, proforma (`F_PRE`, que no cuenta como venta): fecha,
+  cliente, serie, total y estado. La serie se guarda tal cual y NO se interpreta (la 5
   de 2017 no es la 5 de hoy). La fecha puede ser imposible (hay una de
   1900): se guarda la original y, aparte, la fecha solo si es razonable.
 - `historico_lineas`: las líneas (`F_LFA` / `F_LAL`): artículo, descripción,
@@ -57,6 +58,11 @@ ESTADO_CARGANDO = "cargando"
 #: `historico_documentos.tipo`
 TIPO_FACTURA = "factura"
 TIPO_ALBARAN = "albaran"
+#: Proformas (presupuestos, `F_PRE`), desde la 0155: se vuelcan para poder
+#: abrir su ficha de cualquier año, pero NO son ventas.
+TIPO_PRESUPUESTO = "proforma"
+#: Los tipos que cuentan como venta (compradores, familias, parque…).
+TIPOS_VENTA = (TIPO_FACTURA, TIPO_ALBARAN)
 
 #: `historico_familias.clase` (la pone Bart). Recambio y accesorio, desde la
 #: 0154: un recambio avisa de servicio y un accesorio no es una máquina.
@@ -109,6 +115,11 @@ class HistoricoDocumento(Base):
     codcli: Mapped[str | None] = mapped_column(String(32), index=True)
     cliente_nombre: Mapped[str | None] = mapped_column(String(255))
     referencia: Mapped[str | None] = mapped_column(String(120))
+    #: Total del documento con impuestos (TOTFAC / TOTALB / TOTPRE) y su
+    #: estado tal cual (ESTFAC: cobro; ESTALB: facturado; ESTPRE: aceptado).
+    #: Desde la 0155; vacíos hasta que se vuelve a cargar el ejercicio.
+    total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    estado: Mapped[str | None] = mapped_column(String(8))
 
 
 class HistoricoLinea(Base):
