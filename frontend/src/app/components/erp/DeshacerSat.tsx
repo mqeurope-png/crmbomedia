@@ -26,7 +26,11 @@ export function DeshacerSat({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const prep = order.preparation_status;
-  if (!["in_queue", "preparing", "packed", "blocked"].includes(prep)) return null;
+  // Solo mientras el pedido está en el taller y sin envío: un pedido ya
+  // enviado o completado no enseña nada.
+  const enElTaller = ["in_queue", "preparing", "packed", "blocked"].includes(prep)
+    && order.transport_status === "not_shipped" && !order.completed;
+  if (!enElTaller) return null;
   const sePuede = prep === "in_queue";
 
   async function deshacer() {

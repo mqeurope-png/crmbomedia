@@ -57,7 +57,7 @@ from app.erp.sample_orders import (
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
 from app.erp.woo_status import is_refunded
-from app.erp.workflow import order_workflow
+from app.erp.workflow import order_workflow, se_manda_al_sat
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
@@ -2043,8 +2043,15 @@ def approve_order(
     current_user: User = Depends(require_erp_approve),
 ) -> dict[str, Any]:
     """Cola PEDIDOS: valida que no hay bloqueos, marca approved_at y pasa
-    preparation pending_review → in_queue (vía engine)."""
+    preparation pending_review → in_queue (vía engine). Los que van con
+    «Mandar a SAT» (desde un documento, web traídos a mano) no se aprueban a
+    secas: 409 `mandar_sat`."""
     order = _get_order(session, order_id, current_user)
+    if se_manda_al_sat(order) and _status_value(order.preparation_status) == "pending_review":
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "mandar_sat",
+            "detail": "Este pedido se manda al SAT desde su ficha, con «Mandar a SAT».",
+        })
     blockers = _blockers(session, order)
     if blockers:
         raise HTTPException(
@@ -2925,6 +2932,14 @@ def bulk_approve_orders(
             if _status_value(order.preparation_status) != "pending_review":
                 # Ya aprobado (o más allá): idempotente, se cuenta aparte.
                 already.append(order.id)
+                continue
+            if se_manda_al_sat(order):
+                # Desde un documento o web traído a mano: van al taller con
+                # «Mandar a SAT» y su ventana, no en bloque sin preguntar.
+                failed.append({
+                    "order_id": order_id, "code": "mandar_sat",
+                    "error": "Se manda al SAT desde su ficha («Mandar a SAT»).",
+                })
                 continue
             blockers = _blockers(session, order)
             if blockers:
@@ -4915,11 +4930,25 @@ def deshacer_mandar_a_sat(
     from app.erp import sat_correo  # noqa: PLC0415
     from app.erp.factusol_albaran import packing_of, save_packing  # noqa: PLC0415
     from app.erp.models import PreparationStatus  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
 
     if not payload.confirm:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "confirmation_required", "detail": "Deshacer requiere confirmación."})
-    order = _get_order(session, order_id, current_user)
+    _get_order(session, order_id, current_user)   # existe y se puede ver
+    # Bloqueado mientras se mira: el taller puede estar pulsando «Empezar».
+    order = session.scalars(select(Order).where(Order.id == order_id).with_for_update()
+                            .execution_options(populate_existing=True)).one()
+    if is_sample_order(order) or order.cancelled_at is not None or order.completed_at:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_deshacible",
+            "detail": "Una muestra, un pedido anulado o completado no vuelve a revisión."})
+    if (_status_value(order.transport_status) != "not_shipped"
+            or packing_of(order).get("shipment_code")):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_deshacible",
+            "detail": ("Ya tiene etiqueta o envío: no se puede deshacer el envío al SAT. "
+                       "Habla con el taller.")})
     prep = _status_value(order.preparation_status)
     if prep != PreparationStatus.IN_QUEUE.value:
         detalle = {

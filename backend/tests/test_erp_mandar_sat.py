@@ -468,3 +468,47 @@ def test_la_linea_de_vida_marca_el_paso_de_la_accion(http, session_factory) -> N
         wf = _mandar(http, pedido["id"]).json()["order"]["workflow"]
     ahora = [p["key"] for p in wf["steps"] if p["state"] == "now"]
     assert wf["next_action"] == "enviar_factura" and ahora == ["factura_enviada"]
+
+
+# --- lo que encontró la revisión (traídos y deshacer) --------------------------------------
+
+
+def test_aprobar_a_secas_no_vale_para_los_que_se_mandan_al_sat(http, session_factory) -> None:  # noqa: F811
+    oid = _traido(session_factory)
+    r = http.post(f"/api/erp/orders/{oid}/approve", headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "mandar_sat"
+    r = http.post("/api/erp/orders/bulk-approve", json={"order_ids": [oid]},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert [f["code"] for f in r.json()["failed"]] == ["mandar_sat"]
+    with session_factory() as s:
+        assert s.get(Order, oid).preparation_status == "pending_review"
+
+
+def test_un_traido_a_mano_no_entra_solo_al_cobrarse(session_factory) -> None:  # noqa: F811
+    from app.erp.sat_autoenqueue import enqueue_paid_order
+
+    oid = _traido(session_factory)
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        o.payment_status = "paid"
+        assert enqueue_paid_order(s, o) is False
+        assert o.preparation_status == "pending_review"
+
+
+def test_no_se_deshace_con_etiqueta_o_envio_ni_una_muestra(http, session_factory) -> None:  # noqa: F811
+    oid = _traido(session_factory, preparation_status="in_queue",
+                  transport_status="label_created")
+    r = http.post(f"/api/erp/orders/{oid}/deshacer-sat", json={"confirm": True},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 409 and "etiqueta" in r.json()["detail"]["detail"]
+    with session_factory() as s:
+        m = Order(external_source=OrderSource.MANUAL, order_number="MUESTRA-9",
+                  order_kind="sample", total_amount=0, currency="EUR",
+                  preparation_status="in_queue")
+        s.add(m)
+        s.commit()
+        mid = m.id
+    r = http.post(f"/api/erp/orders/{mid}/deshacer-sat", json={"confirm": True},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 409

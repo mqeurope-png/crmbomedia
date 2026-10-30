@@ -92,6 +92,10 @@ def enqueue_paid_order(
         return False
     if _value(order.preparation_status) != PreparationStatus.PENDING_REVIEW.value:
         return False
+    if getattr(order, "manual_web_import_at", None) is not None:
+        # Web traído a mano desde «en espera» (#566): va al taller cuando lo
+        # decide Bart, con «Mandar a SAT»; nunca solo, ni al cobrarse.
+        return False
     if _sacado_a_mano(order):
         # Alguien deshizo su envío al SAT (31/10/2026): vuelve cuando se
         # mande a mano, no solo al llegar un pago.
