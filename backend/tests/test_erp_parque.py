@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.erp import historico, parque
-from app.erp.models import HistoricoGama, ParqueBaja
+from app.erp.models import HistoricoEjercicio, HistoricoGama, ParqueBaja
 from app.models.crm import Company
 from tests._test_helpers import auth_headers
 from tests.test_erp_historico import (  # noqa: F401 — fixtures
@@ -35,9 +35,13 @@ def _datos() -> dict[str, Any]:
     hoy["F_FAM"].append({"CODFAM": "ACC", "DESFAM": "Accesorios figurante"})
     hoy["F_FAC"].append(_fac(260003, CLI_TALLER, "Talleres Figurante S.L.", "2026-09-01T00:00:00"))
     hoy["F_LFA"].append(_lfa(260003, 1, ACCESORIO, "Mesa de panal", 1, 300))
-    # El albarán 26001 (Rótulos) ya está facturado (ESTALB 1): no cuenta otra vez.
+    # El albarán 26001 (Rótulos) se facturó en la 260002: su línea lo apunta
+    # (DOCLFA «A»), como hace FACTUSOL al facturar un albarán.
     for a in hoy["F_ALB"]:
         a["ESTALB"] = "1" if a["CODALB"] == 26001 else "0"
+    for ln in hoy["F_LFA"]:
+        if (ln["CODLFA"], ln["ARTLFA"]) == (260002, MAQUINA):
+            ln.update({"DOCLFA": "A", "DTPLFA": "5", "DCOLFA": 26001})
     return d
 
 
@@ -347,3 +351,87 @@ def test_la_ficha_dice_de_donde_sale_cada_linea(session_factory) -> None:  # noq
                     en_curso="2026")
     assert [ln["viene_de"] for ln in fac["lineas"]] == ["Proforma 1-000500", None]
     assert [ln["viene_de"] for ln in alb["lineas"]] == ["Proforma 1-000500"]
+
+
+
+# --- lo que encontró la revisión (emparejado) -----------------------------------------
+
+
+def _empresa_hexa(s) -> Company:
+    from app.erp import historico_clasificacion as cl
+
+    cl.clasificar(s, "LAS", {"clase": "maquina"}, por="x")
+    empresa = Company(name="Grabados Figurante", factusol_company_id=CLI_HEXA)
+    s.add(empresa)
+    s.commit()
+    return empresa
+
+
+def test_un_albaran_con_estalb_1_heredado_y_sin_factura_si_cuenta(session_factory) -> None:  # noqa: F811
+    # Con el enlace manda el emparejado: el «Facturado» puede venir de la proforma.
+    d = _datos_hexa(enlace="proforma")
+    d["2022"]["F_LFA"][0]["ARTLFA"] = SENSOR      # la factura ya no es de la Hexa
+    d["2023"]["F_ALB"][0]["ESTALB"] = "1"
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026", "2023", "2022"], en_curso="2026")
+        hexas = _hexas(parque.parque(s, _empresa_hexa(s)))
+    assert [m["origen"] for m in hexas] == ["albaran"]
+
+
+def test_un_anio_sin_recargar_sigue_la_regla_de_antes(session_factory) -> None:  # noqa: F811
+    d = _datos_hexa(enlace="ninguno")
+    d["2023"]["F_ALB"][0]["ESTALB"] = "1"
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026", "2023", "2022"], en_curso="2026")
+        empresa = _empresa_hexa(s)
+        assert len(_hexas(parque.parque(s, empresa))) == 2   # recargado: sale, con aviso
+        s.get(HistoricoEjercicio, "2023").con_enlaces = False
+        s.commit()
+        assert [m["origen"] for m in _hexas(parque.parque(s, empresa))] == ["factura"]
+
+
+def test_una_proforma_de_dos_maquinas_con_dos_entregas_son_dos(session_factory) -> None:  # noqa: F811
+    d = _datos_hexa(enlace="proforma")
+    d["2022"]["F_PRE"] = [{"TIPPRE": "1", "CODPRE": 500, "FECPRE": "2022-11-01T00:00:00",
+                           "CLIPRE": CLI_HEXA, "CNOPRE": "Grabados Figurante"}]
+    d["2022"]["F_LPS"] = [{"TIPLPS": "1", "CODLPS": 500, "POSLPS": 1, "ARTLPS": HEXA,
+                           "DESLPS": "HEXA 60W", "CANLPS": 2, "PRELPS": 9000}]
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026", "2023", "2022"], en_curso="2026")
+        empresa = _empresa_hexa(s)
+        assert len(_hexas(parque.parque(s, empresa))) == 2
+    # Si la proforma era de una, son la misma venta.
+    d["2022"]["F_LPS"][0]["CANLPS"] = 1
+    with session_factory() as s:
+        historico.cargar_ejercicio(s, FactusolFalso(d), "2022")
+        assert len(_hexas(parque.parque(s, s.get(Company, empresa.id)))) == 1
+
+
+def test_avisa_aunque_el_albaran_venga_de_una_proforma(session_factory) -> None:  # noqa: F811
+    # Albarán desde la proforma; la factura, tecleada a mano días antes.
+    d = _datos_hexa(enlace="proforma")
+    for k in ("DOCLFA", "DTPLFA", "DCOLFA"):
+        d["2022"]["F_LFA"][0].pop(k)
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026", "2023", "2022"], en_curso="2026")
+        hexas = _hexas(parque.parque(s, _empresa_hexa(s)))
+    alb = next(m for m in hexas if m["origen"] == "albaran")
+    assert alb["posible_misma_venta"]["numero"] == "1-123021"
+
+
+def test_la_baja_del_albaran_pasa_a_su_factura_al_emparejarlos(session_factory) -> None:  # noqa: F811
+    with session_factory() as s:
+        # Antes de emparejar (año sin recargar), se dio de baja el albarán.
+        historico.cargar(s, FactusolFalso(_datos_hexa(enlace="ninguno")),
+                         ["2026", "2023", "2022"], en_curso="2026")
+        empresa = _empresa_hexa(s)
+        alb = next(m for m in _hexas(parque.parque(s, empresa)) if m["origen"] == "albaran")
+        parque.dar_baja(s, empresa, clave=alb["clave"], motivo="Retirada", por="x")
+        # Ya con el enlace: una sola máquina, la factura, y sigue de baja.
+        historico.cargar(s, FactusolFalso(_datos_hexa(enlace="proforma")),
+                         ["2023", "2022"], en_curso="2026")
+        hexas = _hexas(parque.parque(s, empresa))
+        assert [(m["origen"], m["baja"]["motivo"]) for m in hexas] == [("factura", "Retirada")]
+        # Y se deshace desde la fila de la factura.
+        parque.reactivar(s, empresa, clave=hexas[0]["clave"])
+        assert _hexas(parque.parque(s, empresa))[0]["baja"] is None

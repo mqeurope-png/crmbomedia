@@ -112,8 +112,9 @@ def _entero(valor: Any) -> int | None:
         return None
 
 
-def _serie_origen(valor: Any) -> str | None:
-    """La serie del documento origen como la de las cabeceras («5», no «5.0»)."""
+def _serie(valor: Any) -> str | None:
+    """Una serie («5», no «5.0»): igual en las cabeceras, las líneas y el
+    documento origen de una línea, para que casen."""
     t = _texto(valor, 8)
     if t and t.replace(".", "", 1).isdigit():
         return str(int(float(t)))
@@ -204,6 +205,7 @@ def cargar_ejercicio(session: Session, client: Any, ejercicio: str) -> dict[str,
         fila.facturas, fila.albaranes = cuentas["facturas"], cuentas["albaranes"]
         fila.lineas, fila.lineas_producto = cuentas["lineas"], cuentas["lineas_producto"]
         fila.articulos = cuentas["articulos"]
+        fila.con_enlaces = True
         fila.segundos = round(time.monotonic() - t0, 1)
         session.commit()
     except Exception as exc:  # noqa: BLE001 — se deshace entero; lo anterior sigue
@@ -246,7 +248,7 @@ def _sustituir(
         cabeceras, lineas = leido[t.tipo]
         docs: dict[tuple[str, int], HistoricoDocumento] = {}
         for c in cabeceras:
-            serie, codigo = _texto(c.get(f"TIP{t.cab}"), 8) or "", _entero(c.get(f"COD{t.cab}"))
+            serie, codigo = _serie(c.get(f"TIP{t.cab}")) or "", _entero(c.get(f"COD{t.cab}"))
             if codigo is None or (serie, codigo) in docs:
                 continue
             original = c.get(f"FEC{t.cab}")
@@ -263,7 +265,7 @@ def _sustituir(
         session.flush()   # los id, para las líneas
         filas = []
         for r in lineas:
-            doc = docs.get((_texto(r.get(f"TIP{t.lin}"), 8) or "", _entero(r.get(f"COD{t.lin}"))))
+            doc = docs.get((_serie(r.get(f"TIP{t.lin}")) or "", _entero(r.get(f"COD{t.lin}"))))
             if doc is None:
                 # El aviso de la pestaña Carga habla de ventas: las proformas
                 # huérfanas no cuentan ahí.
@@ -278,7 +280,7 @@ def _sustituir(
                 "cantidad": _numero(r.get(f"CAN{t.lin}")), "precio": _numero(r.get(f"PRE{t.lin}")),
                 "total": _numero(r.get(f"TOT{t.lin}")), "es_producto": bool(codart),
                 "origen_tipo": (_texto(r.get(f"DOC{t.lin}"), 1) or "").upper() or None,
-                "origen_serie": _serie_origen(r.get(f"DTP{t.lin}")),
+                "origen_serie": _serie(r.get(f"DTP{t.lin}")),
                 "origen_codigo": _entero(r.get(f"DCO{t.lin}")) or None,
             })
         if filas:

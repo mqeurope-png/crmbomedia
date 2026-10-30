@@ -94,6 +94,9 @@ class HistoricoEjercicio(Base):
     lineas_producto: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     articulos: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     segundos: Mapped[Decimal | None] = mapped_column(Numeric(8, 1))
+    #: Cargado ya con el origen de cada línea (0157). Hasta que se recarga, el
+    #: parque no puede emparejar albarán y factura por el enlace.
+    con_enlaces: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class HistoricoDocumento(Base):

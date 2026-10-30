@@ -150,7 +150,7 @@ export function CompanyParquePanel({
                       </Link>
                     ) : <span className="badge muted">{ORIGEN[m.origen]}</span>}
                     {m.albaranes?.map((a) => (
-                      <div key={a.numero} className="muted">
+                      <div key={`${a.ejercicio}-${a.numero}`} className="muted">
                         y su{" "}
                         <Link href={fichaDocumentoHref(a.tipo, a.ejercicio, a.serie, a.codigo)} prefetch={false}>
                           albarán <span className="mono">{a.numero}</span>
@@ -222,11 +222,19 @@ export function CompanyParquePanel({
                           </button>
                         </span>
                       ) : m.baja ? (
-                        <button type="button" className="button small secondary" disabled={ocupado}
-                                onClick={() => void hacer(() => deshacerBajaMaquina(companyId, ref(m)),
-                                  "No se ha podido deshacer la baja.")}>
-                          Volver a poner en servicio
-                        </button>
+                        <span className="erp-historico-acciones">
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  onClick={() => void hacer(() => deshacerBajaMaquina(companyId, ref(m)),
+                                    "No se ha podido deshacer la baja.")}>
+                            Volver a poner en servicio
+                          </button>
+                          {puedeClasificar && m.codart && m.origen !== "manual" ? (
+                            <button type="button" className="button small secondary" disabled={ocupado}
+                                    onClick={() => setNoMaquina({ codart: m.codart as string, clase: "accesorio" })}>
+                              No es una máquina
+                            </button>
+                          ) : null}
+                        </span>
                       ) : (
                         <span className="erp-historico-acciones">
                           <button type="button" className="button small secondary" disabled={ocupado}

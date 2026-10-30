@@ -3,7 +3,7 @@
 - `historico_lineas.origen_tipo/origen_serie/origen_codigo`: el documento del
   que sale la línea, como lo apunta FACTUSOL (`DOC*`/`DTP*`/`DCO*`). Con eso
   el parque empareja el albarán con su factura. Vacías hasta que se vuelve a
-  cargar el ejercicio.
+  cargar el ejercicio; `historico_ejercicios.con_enlaces` dice cuáles ya.
 - `historico_articulos_clase`: la clase de un artículo por encima de la de su
   familia («esto no es una máquina»). Tabla nueva y vacía.
 
@@ -28,6 +28,8 @@ def upgrade() -> None:
     op.add_column("historico_lineas", sa.Column("origen_tipo", sa.String(1), nullable=True))
     op.add_column("historico_lineas", sa.Column("origen_serie", sa.String(8), nullable=True))
     op.add_column("historico_lineas", sa.Column("origen_codigo", sa.Integer(), nullable=True))
+    op.add_column("historico_ejercicios", sa.Column(
+        "con_enlaces", sa.Boolean(), nullable=False, server_default=sa.false()))
     op.create_table(
         "historico_articulos_clase",
         sa.Column("codart", sa.String(64), primary_key=True),
@@ -39,6 +41,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("historico_articulos_clase")
+    op.drop_column("historico_ejercicios", "con_enlaces")
     op.drop_column("historico_lineas", "origen_codigo")
     op.drop_column("historico_lineas", "origen_serie")
     op.drop_column("historico_lineas", "origen_tipo")

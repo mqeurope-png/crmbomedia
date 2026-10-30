@@ -285,10 +285,10 @@ def articulos_clase(
     return {"items": clasificacion.clases_de_articulo(session), "clases": list(CLASES_FAMILIA)}
 
 
-@router.put("/articulos-clase/{codart}")
+@router.put("/articulos-clase/{codart:path}")
 def clasificar_articulo(
     body: ClaseArticuloIn,
-    codart: str = Path(..., max_length=64),
+    codart: str = Path(..., max_length=64),  # declarada `{codart:path}`: puede llevar «/»
     session: Session = Depends(get_session),
     user: User = Depends(require_config),
 ) -> dict[str, Any]:

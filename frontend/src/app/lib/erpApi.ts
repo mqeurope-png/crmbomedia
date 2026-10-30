@@ -7911,6 +7911,7 @@ export function fichaDocumentoHref(
 
 export type ParqueDocRef = {
   tipo: "factura" | "albaran"; serie: string; codigo: number; ejercicio: string; numero: string;
+  clave?: string;
 };
 
 export type ParqueMaquina = {

@@ -114,22 +114,28 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
     2. las dos apuntan al mismo presupuesto o pedido (`P`/`C`, serie, número).
 
     Mismo artículo y sin pasar de las unidades de la factura; si hay varias
-    candidatas, la de fecha más cercana. El auto-enlace de un albarán
-    autónomo (`A` a sí mismo) no cuenta. Un albarán que FACTUSOL da por
-    facturado (`ESTALB` 1) tampoco cuenta, aunque su factura no esté aquí.
-    Ya **no** se usa «albarán solo si no hay factura de ese artículo»: juntaba
-    dos compras reales del mismo modelo.
+    candidatas, la de fecha más cercana. En el 2, si la proforma común pedía
+    unidades para las dos, son **entregas distintas** y no se casan. El
+    auto-enlace de un albarán autónomo (`A` a sí mismo) no cuenta.
+    Ya **no** se usa «albarán solo si no hay factura de ese artículo» (juntaba
+    dos compras reales del mismo modelo) ni el `ESTALB` 1 (puede venir
+    heredado de la proforma sin que haya factura, §10.2 del discovery).
+  - Una **baja** dada a un albarán antes de emparejarlo pasa a su factura, y
+    se deshace desde ella.
   - **Limitación: sin enlace no se empareja.** Si el albarán y la factura se
     teclearon por separado, sin documento común, no hay dato que los una y
-    salen los dos. Cuando un albarán sin enlace tiene una factura del mismo
-    artículo, también sin enlace, a menos de 60 días (`DIAS_MISMA_VENTA`), la
-    fila avisa «¿Misma venta que la factura …?»; si lo es, se da de baja el
-    albarán (motivo «la misma venta»). El enlace no lleva el ejercicio: se
+    salen los dos. Cuando un albarán que queda solo tiene una factura del
+    mismo artículo a menos de 60 días (`DIAS_MISMA_VENTA`) que no cubre ni
+    apunta a ningún albarán, la fila avisa «¿Misma venta que la factura …?»;
+    si lo es, se da de baja el albarán. El enlace no lleva el ejercicio: se
     casa por serie y número dentro del cliente. Una factura a otro código de
-    cliente que el albarán tampoco se empareja.
-  - **Hay que volver a cargar los ejercicios** después de la 0157: hasta
-    entonces las líneas no tienen el enlace y no se empareja nada (solo el
-    `ESTALB` 1).
+    cliente que el albarán tampoco se empareja. Los pedidos de cliente no se
+    vuelcan: dos entregas del mismo pedido (un albarán y una factura directa)
+    se casan como si fueran una.
+  - **Hay que volver a cargar los ejercicios** después de la 0157. Hasta
+    entonces (`historico_ejercicios.con_enlaces` falso) las líneas no tienen
+    el enlace y ese año sigue la regla de antes (`ESTALB` 1, o sin estado y
+    con factura del artículo), para no duplicar mientras tanto.
   - **Abonos:** una línea en negativo anula la venta más reciente de ese
     artículo.
   - **A mano** (`parque_maquinas_manuales`): lo vendido antes de 2014, como

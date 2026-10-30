@@ -8,14 +8,18 @@ Un accesorio, un recambio o un consumible no son máquinas.
   cuenta la factura. Se emparejan por el enlace que FACTUSOL guarda en cada
   línea (`DOC*`/`DTP*`/`DCO*`, desde la 0157): la factura que apunta al
   albarán, o los dos que apuntan al mismo presupuesto o pedido; mismo
-  artículo y sin pasar de las unidades. Un albarán que FACTUSOL da como
-  facturado (`ESTALB` 1) tampoco cuenta. Un abono (línea en negativo) anula la
-  venta más reciente de ese artículo.
+  artículo y sin pasar de las unidades. Si la proforma común pedía unidades
+  para las dos, son entregas distintas. El `ESTALB` 1 no se usa (puede venir
+  heredado de la proforma sin factura), salvo en los años aún sin recargar
+  tras la 0157, que siguen la regla de antes. Un abono (línea en negativo)
+  anula la venta más reciente de ese artículo.
 - **Limitación: sin enlace no se empareja.** Si el albarán y la factura se
   teclearon a mano por separado, no hay nada que los una y saldrán las dos
-  (dos compras del mismo modelo también son dos). Se avisa en la fila cuando
-  hay una factura del mismo artículo sin enlace a menos de
-  `DIAS_MISMA_VENTA` días; se resuelve dando de baja la repetida. El enlace
+  (dos compras del mismo modelo también son dos). El albarán avisa cuando
+  hay una factura del mismo artículo a menos de `DIAS_MISMA_VENTA` días que
+  no cubre ni apunta a ningún albarán; se resuelve dando de baja el albarán.
+  Un pedido de cliente (`C`) no se vuelca: dos entregas del mismo pedido
+  (un albarán y una factura directa) se casan como si fueran una. El enlace
   tampoco lleva el ejercicio: se casa por serie y número dentro del cliente
   (si dos años repiten número, gana la fecha más cercana).
 - **Máquina** es la clase de la familia del artículo, salvo que el artículo
@@ -43,9 +47,11 @@ from sqlalchemy.orm import Session
 from app.erp.models.historico import (
     TIPO_ALBARAN,
     TIPO_FACTURA,
+    TIPO_PRESUPUESTO,
     HistoricoArticulo,
     HistoricoArticuloClase,
     HistoricoDocumento,
+    HistoricoEjercicio,
     HistoricoFamilia,
     HistoricoGama,
     HistoricoLinea,
@@ -107,7 +113,8 @@ def _dias(a: Any, b: Any) -> int:
     return abs((a.fecha - b.fecha).days)
 
 
-def _emparejar(filas: list[Any]) -> tuple[dict[int, float], dict[int, list[Any]]]:
+def _emparejar(filas: list[Any], proformas: dict[tuple[str, int, str], float],
+               ) -> tuple[dict[int, float], dict[int, list[Any]]]:
     """Qué parte de cada línea de albarán está ya en una factura, por el
     enlace que guarda FACTUSOL en las líneas:
 
@@ -117,8 +124,10 @@ def _emparejar(filas: list[Any]) -> tuple[dict[int, float], dict[int, list[Any]]
        salen de la misma venta.
 
     Mismo artículo siempre, y sin pasar de las unidades de la factura. Si hay
-    varias candidatas, la de fecha más cercana. Devuelve las unidades de cada
-    albarán que quedan sin factura y, por factura, los albaranes que cubre."""
+    varias candidatas, la de fecha más cercana. En el 2, si la proforma pedía
+    unidades para todo (`proformas`: lo pedido por proforma y artículo), son
+    entregas distintas y no se casan. Devuelve las unidades de cada albarán
+    que quedan sin factura y, por factura, los albaranes que cubre."""
     facturas = [f for f in filas if f.tipo == TIPO_FACTURA and (f.cantidad or 0) > 0]
     albaranes = [f for f in filas if f.tipo == TIPO_ALBARAN and (f.cantidad or 0) > 0]
     queda = {id(a): float(a.cantidad) for a in albaranes}
@@ -145,8 +154,38 @@ def _emparejar(filas: list[Any]) -> tuple[dict[int, float], dict[int, list[Any]]
                       and (a.serie, int(a.codigo)) == (o[1], o[2])])
     for f, o in con_origen:
         if o and o[0] in ("P", "C"):
-            casar(f, [a for a in albaranes if a.codart == f.codart and _origen(a) == o])
+            mismas = [a for a in albaranes if a.codart == f.codart and _origen(a) == o]
+            pedidas = proformas.get((o[1], o[2], f.codart or "")) if o[0] == "P" else None
+            if mismas and pedidas is not None:
+                servidas = sum(float(x.cantidad) for x in facturas + albaranes
+                               if x.codart == f.codart and _origen(x) == o)
+                if servidas <= pedidas:
+                    # Una proforma de dos máquinas: un albarán de una y la
+                    # factura de la otra son dos entregas, no la misma.
+                    continue
+            casar(f, mismas)
     return queda, cubre
+
+
+def _pedidas_en_proformas(session: Session, filas: list[Any]) -> dict[tuple[str, int, str], float]:
+    """Unidades de cada artículo en las proformas de las que salen las líneas
+    (`P`, serie, número). Si un número se repite en dos años, el mayor."""
+    refs = {(o[1], o[2]) for f in filas if (o := _origen(f)) and o[0] == "P"}
+    if not refs:
+        return {}
+    lin, doc = HistoricoLinea, HistoricoDocumento
+    out: dict[tuple[str, int, str], float] = {}
+    for serie, codigo, codart, total in session.execute(
+        select(doc.serie, doc.codigo, lin.codart, func.sum(lin.cantidad))
+        .join(doc, doc.id == lin.documento_id)
+        .where(doc.tipo == TIPO_PRESUPUESTO, doc.codigo.in_(sorted({c for _, c in refs})),
+               lin.es_producto.is_(True))
+        .group_by(doc.ejercicio, doc.serie, doc.codigo, lin.codart)
+    ):
+        if (serie, int(codigo)) in refs:
+            k = (serie, int(codigo), codart or "")
+            out[k] = max(out.get(k, 0.0), float(total or 0))
+    return out
 
 
 def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, Any]]:
@@ -171,13 +210,17 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
                # La clase propia del artículo, si la tiene, manda sobre la de su familia.
                func.coalesce(propia.clase, fam.clase) == CLASE_MAQUINA)
     ).all()
-    queda, cubre = _emparejar(filas)
+    proformas = _pedidas_en_proformas(session, filas)
+    queda, cubre = _emparejar(filas, proformas)
+    enlazados = set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
+        HistoricoEjercicio.con_enlaces.is_(True))))
     # Un abono (línea en negativo) anula la venta más reciente de ese artículo.
     abonado: dict[str, float] = {}
     for f in filas:
         if (f.cantidad or 0) < 0:
             abonado[f.codart] = abonado.get(f.codart, 0.0) - float(f.cantidad)
     facturas = [f for f in filas if f.tipo == TIPO_FACTURA and (f.cantidad or 0) > 0]
+    facturados = {f.codart for f in facturas}
     filas = sorted(filas, key=lambda f: (f.fecha is not None, f.fecha or date.min), reverse=True)
     out = []
     for f in filas:
@@ -187,20 +230,26 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
         sospecha = None
         if f.tipo == TIPO_ALBARAN:
             cantidad = queda[id(f)]
-            # Facturado según FACTUSOL y sin su factura aquí (otro cliente, un
-            # año sin volcar): ya está contado o no es de este parque.
-            if cantidad <= 0 or f.estado == ALBARAN_FACTURADO:
+            if cantidad <= 0:
                 continue
-            # Sin enlace en ninguno de los dos no se casan solos (dos compras
-            # del mismo modelo son dos máquinas), pero se avisa si hay una
-            # factura del mismo artículo cerca y sin enlace tampoco.
-            if _origen(f) is None:
-                cerca = [x for x in facturas if x.codart == f.codart and _origen(x) is None
-                         and _dias(x, f) <= DIAS_MISMA_VENTA]
-                if cerca:
-                    x = min(cerca, key=lambda x: _dias(x, f))
-                    sospecha = {"tipo": x.tipo, "serie": x.serie, "codigo": x.codigo,
-                                "ejercicio": x.ejercicio, "numero": _ref(x)}
+            if f.ejercicio not in enlazados:
+                # Año aún sin recargar (sin el enlace de las líneas): la regla
+                # de antes, para no duplicar mientras tanto.
+                if f.estado == ALBARAN_FACTURADO or (f.estado is None
+                                                     and f.codart in facturados):
+                    continue
+            # Con el enlace, manda el emparejado: un `ESTALB` 1 puede venir
+            # heredado de la proforma sin que haya factura. Lo que no se casa
+            # sale; si hay una factura del mismo artículo cerca que no cubre
+            # ningún albarán ni apunta a uno, se avisa (puede ser la misma
+            # venta tecleada a mano, o dos compras: no se decide solo).
+            cerca = [x for x in facturas if x.codart == f.codart and id(x) not in cubre
+                     and (_origen(x) or ("",))[0] != "A"
+                     and _dias(x, f) <= DIAS_MISMA_VENTA]
+            if cerca:
+                x = min(cerca, key=lambda x: _dias(x, f))
+                sospecha = {"tipo": x.tipo, "serie": x.serie, "codigo": x.codigo,
+                            "ejercicio": x.ejercicio, "numero": _ref(x)}
         if abonado.get(f.codart, 0) > 0:
             anula = min(cantidad, abonado[f.codart])
             abonado[f.codart] -= anula
@@ -218,7 +267,9 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
                           "numero": _ref(f)},
             # Los albaranes de esta misma venta (emparejados por el enlace).
             "albaranes": [{"tipo": a.tipo, "serie": a.serie, "codigo": a.codigo,
-                           "ejercicio": a.ejercicio, "numero": _ref(a)}
+                           "ejercicio": a.ejercicio, "numero": _ref(a),
+                           "clave": clave_linea(a.ejercicio, a.tipo, a.serie, a.codigo,
+                                                a.posicion, a.codart)}
                           for a in cubre.get(id(f), [])],
             "posible_misma_venta": sospecha,
         })
@@ -231,12 +282,14 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
     gamas = _gamas(session)
     codcli = (getattr(company, "factusol_company_id", None) or "").strip() or None
     volcadas = maquinas_volcadas(session, codcli)
+    claves = [c for m in volcadas for c in _claves_de(m)]
     bajas = {b.clave: b for b in session.scalars(
-        select(ParqueBaja).where(ParqueBaja.clave.in_([m["clave"] for m in volcadas])))
-    } if volcadas else {}
+        select(ParqueBaja).where(ParqueBaja.clave.in_(claves)))} if claves else {}
     rows: list[dict[str, Any]] = []
     for m in volcadas:
-        b = bajas.get(m["clave"])
+        # La baja de la fila o la de uno de sus albaranes (dada cuando el
+        # albarán aún salía solo, antes de emparejarlo con su factura).
+        b = next((bajas[c] for c in _claves_de(m) if c in bajas), None)
         rows.append({**m, "id": None, "gama_nombre": gamas.get(m["gama"] or "", m["gama"]),
                      "baja": _baja(b.at, b.motivo, b.por) if b else None})
     for m in session.scalars(select(ParqueMaquinaManual).where(
@@ -262,6 +315,10 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         "maquinas": rows,
         "activas": len(activas),
     }
+
+
+def _claves_de(m: dict[str, Any]) -> list[str]:
+    return [m["clave"], *(a["clave"] for a in m.get("albaranes") or [])]
 
 
 def _baja(at: datetime | None, motivo: str | None, por: str | None) -> dict[str, Any]:
@@ -329,9 +386,12 @@ def reactivar(session: Session, company: Any, *, clave: str | None = None,
     else:
         # Por su parque y no por quién la dio: tras una fusión o un cambio de
         # cliente vinculado, la empresa que la ve es la que puede deshacerla.
-        b = session.get(ParqueBaja, clave or "")
-        claves = {x["clave"] for x in maquinas_volcadas(session, company.factusol_company_id)}
-        if b is None or b.clave not in claves:
+        fila = next((x for x in maquinas_volcadas(session, company.factusol_company_id)
+                     if x["clave"] == clave), None)
+        borrar = [b for c in (_claves_de(fila) if fila else [])
+                  if (b := session.get(ParqueBaja, c)) is not None]
+        if not borrar:
             raise LookupError("maquina")
-        session.delete(b)
+        for b in borrar:
+            session.delete(b)
     session.commit()
