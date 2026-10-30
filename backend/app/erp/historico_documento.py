@@ -18,7 +18,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.erp.models.historico import (
@@ -26,6 +26,7 @@ from app.erp.models.historico import (
     TIPO_FACTURA,
     TIPO_PRESUPUESTO,
     HistoricoArticulo,
+    HistoricoArticuloClase,
     HistoricoDocumento,
     HistoricoEjercicio,
     HistoricoFamilia,
@@ -105,8 +106,12 @@ def _clasificacion(session: Session, ejercicio: str, codarts: set[str]) -> dict[
         return {}
     filas = session.execute(
         select(HistoricoArticulo.codart, HistoricoArticulo.descripcion,
-               HistoricoArticulo.familia, HistoricoFamilia.clase, HistoricoFamilia.gama)
+               HistoricoArticulo.familia,
+               func.coalesce(HistoricoArticuloClase.clase, HistoricoFamilia.clase),
+               HistoricoFamilia.gama)
         .outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == HistoricoArticulo.familia)
+        .outerjoin(HistoricoArticuloClase,
+                   HistoricoArticuloClase.codart == HistoricoArticulo.codart)
         .where(HistoricoArticulo.ejercicio == ejercicio,
                HistoricoArticulo.codart.in_(sorted(codarts)))
     ).all()
@@ -163,6 +168,23 @@ def _numero(serie: str, codigo: int) -> str:
     return f"{serie}-{int(codigo):06d}" if serie else f"{int(codigo):06d}"
 
 
+#: `DOC*` de una línea: de qué documento sale.
+ORIGEN_LINEA = {"P": "Proforma", "C": "Pedido de cliente", "A": "Albarán"}
+
+
+def _viene_de(doc: HistoricoDocumento, ln: HistoricoLinea) -> str | None:
+    """«Albarán 3-230001»: el documento del que sale la línea, como lo apunta
+    FACTUSOL (sin el auto-enlace de un albarán autónomo). Es lo que usa el
+    parque para no contar dos veces una venta."""
+    if not ln.origen_tipo or not ln.origen_codigo:
+        return None
+    if doc.tipo == "albaran" and (ln.origen_tipo, ln.origen_serie, ln.origen_codigo) == (
+            "A", doc.serie, doc.codigo):
+        return None
+    etiqueta = ORIGEN_LINEA.get(ln.origen_tipo, f"Documento {ln.origen_tipo}")
+    return f"{etiqueta} {ln.origen_serie or ''}-{int(ln.origen_codigo):06d}"
+
+
 def _ficha_volcada(
     session: Session, doc: HistoricoDocumento, user: Any, *, en_curso: str,
 ) -> dict[str, Any]:
@@ -180,6 +202,7 @@ def _ficha_volcada(
             "clase": c.get("clase"), "gama": c.get("gama"),
             "cantidad": _num(ln.cantidad), "precio": _num(ln.precio), "total": _num(ln.total),
             "es_nota": not ln.es_producto,
+            "viene_de": _viene_de(doc, ln),
         })
     carga = session.get(HistoricoEjercicio, doc.ejercicio)
     suma = sum((Decimal(str(ln["total"] or 0)) for ln in salida_lineas if not ln["es_nota"]),

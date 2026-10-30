@@ -146,6 +146,7 @@ export default function FichaDocumentoPage() {
                       <td data-label="Artículo">
                         <span className="mono">{l.codart}</span>
                         {l.articulo ? <div className="muted">{l.articulo}</div> : null}
+                        {l.viene_de ? <div className="muted">Viene de {l.viene_de}</div> : null}
                       </td>
                       <td data-label="Descripción">{l.descripcion ?? "—"}</td>
                       <td data-label="Cantidad" className="num">{l.cantidad == null ? "—" : NQ.format(l.cantidad)}</td>

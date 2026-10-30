@@ -52,6 +52,7 @@ from app.erp.models.historico import (
     TIPO_PRESUPUESTO,
     TIPOS_VENTA,
     HistoricoArticulo,
+    HistoricoArticuloClase,
     HistoricoDocumento,
     HistoricoEjercicio,
     HistoricoFamilia,
@@ -109,6 +110,15 @@ def _entero(valor: Any) -> int | None:
         return int(float(str(valor).strip()))
     except (TypeError, ValueError):
         return None
+
+
+def _serie(valor: Any) -> str | None:
+    """Una serie («5», no «5.0»): igual en las cabeceras, las líneas y el
+    documento origen de una línea, para que casen."""
+    t = _texto(valor, 8)
+    if t and t.replace(".", "", 1).isdigit():
+        return str(int(float(t)))
+    return t
 
 
 def _estado_crudo(valor: Any) -> str | None:
@@ -195,6 +205,7 @@ def cargar_ejercicio(session: Session, client: Any, ejercicio: str) -> dict[str,
         fila.facturas, fila.albaranes = cuentas["facturas"], cuentas["albaranes"]
         fila.lineas, fila.lineas_producto = cuentas["lineas"], cuentas["lineas_producto"]
         fila.articulos = cuentas["articulos"]
+        fila.con_enlaces = True
         fila.segundos = round(time.monotonic() - t0, 1)
         session.commit()
     except Exception as exc:  # noqa: BLE001 — se deshace entero; lo anterior sigue
@@ -237,7 +248,7 @@ def _sustituir(
         cabeceras, lineas = leido[t.tipo]
         docs: dict[tuple[str, int], HistoricoDocumento] = {}
         for c in cabeceras:
-            serie, codigo = _texto(c.get(f"TIP{t.cab}"), 8) or "", _entero(c.get(f"COD{t.cab}"))
+            serie, codigo = _serie(c.get(f"TIP{t.cab}")) or "", _entero(c.get(f"COD{t.cab}"))
             if codigo is None or (serie, codigo) in docs:
                 continue
             original = c.get(f"FEC{t.cab}")
@@ -254,7 +265,7 @@ def _sustituir(
         session.flush()   # los id, para las líneas
         filas = []
         for r in lineas:
-            doc = docs.get((_texto(r.get(f"TIP{t.lin}"), 8) or "", _entero(r.get(f"COD{t.lin}"))))
+            doc = docs.get((_serie(r.get(f"TIP{t.lin}")) or "", _entero(r.get(f"COD{t.lin}"))))
             if doc is None:
                 # El aviso de la pestaña Carga habla de ventas: las proformas
                 # huérfanas no cuentan ahí.
@@ -268,6 +279,9 @@ def _sustituir(
                 "descripcion": _texto(r.get(f"DES{t.lin}")),
                 "cantidad": _numero(r.get(f"CAN{t.lin}")), "precio": _numero(r.get(f"PRE{t.lin}")),
                 "total": _numero(r.get(f"TOT{t.lin}")), "es_producto": bool(codart),
+                "origen_tipo": (_texto(r.get(f"DOC{t.lin}"), 1) or "").upper() or None,
+                "origen_serie": _serie(r.get(f"DTP{t.lin}")),
+                "origen_codigo": _entero(r.get(f"DCO{t.lin}")) or None,
             })
         if filas:
             session.execute(HistoricoLinea.__table__.insert(), filas)
@@ -465,10 +479,12 @@ def compradores(
         stmt = stmt.where(art.familia == familia)
     if clase or gama:
         # La clase y la gama son de la familia del artículo en el catálogo de
-        # su año.
-        stmt = stmt.join(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
+        # su año; la clase propia del artículo, si la tiene, manda.
+        stmt = stmt.outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
         if clase:
-            stmt = stmt.where(HistoricoFamilia.clase == clase)
+            stmt = stmt.outerjoin(HistoricoArticuloClase,
+                                  HistoricoArticuloClase.codart == lin.codart).where(
+                func.coalesce(HistoricoArticuloClase.clase, HistoricoFamilia.clase) == clase)
         if gama:
             stmt = stmt.where(HistoricoFamilia.gama == gama)
     if desde:

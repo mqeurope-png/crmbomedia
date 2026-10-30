@@ -120,6 +120,7 @@ export default function CompanyDetailPage() {
 
   const [canSeeParque, setCanSeeParque] = useState(false);
   const [canEditParque, setCanEditParque] = useState(false);
+  const [canClasificarParque, setCanClasificarParque] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
@@ -134,6 +135,7 @@ export default function CompanyDetailPage() {
         // Parque: verlo con oficina; añadir y dar de baja, quien trabaja pedidos.
         setCanSeeParque(can(u, Cap.OFFICE_VIEW));
         setCanEditParque(can(u, Cap.ORDERS_CREATE));
+        setCanClasificarParque(can(u, Cap.CONFIG));
       })
       .catch(() => {
         setCanEdit(false);
@@ -630,7 +632,8 @@ export default function CompanyDetailPage() {
       {/* key: al vincular otro cliente de FACTUSOL o pasar a otra empresa, se lee de nuevo. */}
       {canSeeParque ? (
         <CompanyParquePanel key={`${company.id}|${company.factusol_company_id ?? ""}`}
-                            companyId={company.id} puedeEditar={canEditParque} />
+                            companyId={company.id} puedeEditar={canEditParque}
+                            puedeClasificar={canClasificarParque} />
       ) : null}
 
       <div className="tab-bar">

@@ -7656,6 +7656,37 @@ export type HistoricoEstadoCarga = {
 };
 
 export type HistoricoClase = "maquina" | "consumible" | "recambio" | "accesorio" | "otro";
+export const HISTORICO_CLASE_LABEL: Record<HistoricoClase, string> = {
+  maquina: "Máquina", consumible: "Consumible", recambio: "Recambio", accesorio: "Accesorio",
+  otro: "Otro",
+};
+
+/** Un artículo con clase propia, por encima de la de su familia. */
+export type ArticuloClase = {
+  codart: string;
+  clase: HistoricoClase;
+  por: string | null;
+  at: string | null;
+  nombre: string | null;
+  familia: string | null;
+  familia_nombre: string | null;
+  clase_familia: HistoricoClase | null;
+};
+
+export async function getArticulosClase(): Promise<{ items: ArticuloClase[] }> {
+  return apiFetch("/api/erp/historico/articulos-clase");
+}
+
+/** Pone la clase propia de un artículo (todos los años y clientes); null la
+ *  quita y vuelve a la de su familia. */
+export async function setClaseArticulo(
+  codart: string, clase: HistoricoClase | null,
+): Promise<{ items: ArticuloClase[] }> {
+  return apiFetch(`/api/erp/historico/articulos-clase/${encodeURIComponent(codart)}`, {
+    method: "PUT",
+    body: JSON.stringify({ clase }),
+  });
+}
 
 /** Una gama (UV LED, Láser…): en una máquina, qué es; en lo demás, para qué
  *  máquina sirve. La lista se amplía desde la pantalla. */
@@ -7829,6 +7860,8 @@ export type FichaDocumentoLinea = {
   total: number | null;
   /** Línea sin artículo: una nota (portes, condiciones…), no una venta. */
   es_nota: boolean;
+  /** «Proforma 1-000500»: de qué documento sale, como lo apunta FACTUSOL. */
+  viene_de?: string | null;
 };
 
 export type FichaDocumento = {
@@ -7876,6 +7909,11 @@ export function fichaDocumentoHref(
 
 // --- Parque instalado (ficha de empresa) ------------------------------------
 
+export type ParqueDocRef = {
+  tipo: "factura" | "albaran"; serie: string; codigo: number; ejercicio: string; numero: string;
+  clave?: string;
+};
+
 export type ParqueMaquina = {
   /** De dónde sale: una factura, un albarán o añadida a mano. */
   origen: "factura" | "albaran" | "manual";
@@ -7893,6 +7931,10 @@ export type ParqueMaquina = {
   ejercicio: string | null;
   cantidad: number;
   documento: { tipo: "factura" | "albaran"; serie: string; codigo: number; numero: string } | null;
+  /** Los albaranes de esta misma venta, emparejados por el enlace de FACTUSOL. */
+  albaranes?: ParqueDocRef[];
+  /** Albarán sin enlace con una factura del mismo artículo cerca: quizá la misma venta. */
+  posible_misma_venta?: ParqueDocRef | null;
   nota?: string | null;
   baja: { at: string | null; motivo: string | null; por: string | null } | null;
 };

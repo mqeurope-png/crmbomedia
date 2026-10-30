@@ -284,3 +284,68 @@ def aceptar_todas(session: Session, *, por: str) -> dict[str, int]:
         aplicadas += 1
     session.commit()
     return {"aplicadas": aplicadas, "revisar": revisar}
+
+
+# --- clase propia de un artículo ---------------------------------------------------------
+
+
+def clases_de_articulo(session: Session) -> list[dict[str, Any]]:
+    """Los artículos con clase propia (por encima de la de su familia), con su
+    nombre y su familia en el catálogo más reciente que lo tenga."""
+    from app.erp.models.historico import (  # noqa: PLC0415
+        HistoricoArticulo,
+        HistoricoArticuloClase,
+    )
+
+    propias = list(session.scalars(
+        select(HistoricoArticuloClase).order_by(HistoricoArticuloClase.at.desc())))
+    if not propias:
+        return []
+    catalogo: dict[str, HistoricoArticulo] = {}
+    for a in session.scalars(select(HistoricoArticulo).where(
+            HistoricoArticulo.codart.in_([p.codart for p in propias]))
+            .order_by(HistoricoArticulo.ejercicio)):
+        catalogo[a.codart] = a   # se queda el del año más reciente
+    familias = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
+    out = []
+    for p in propias:
+        a = catalogo.get(p.codart)
+        fam = familias.get(a.familia) if a and a.familia else None
+        out.append({
+            "codart": p.codart, "clase": p.clase, "por": p.por,
+            "at": f"{p.at.isoformat()}Z" if p.at else None,
+            "nombre": a.descripcion if a else None,
+            "familia": a.familia if a else None,
+            "familia_nombre": fam.descripcion if fam else None,
+            "clase_familia": fam.clase if fam else None,
+        })
+    return out
+
+
+def clasificar_articulo(session: Session, codart: str, clase: str | None, *,
+                        por: str) -> None:
+    """Pone la clase propia de un artículo (vale para todos los años y todos
+    los clientes) o la quita (`None`: vuelve a la de su familia). ValueError
+    si la clase no existe; LookupError si el artículo no está en ningún
+    catálogo volcado."""
+    from app.erp.models.historico import (  # noqa: PLC0415
+        HistoricoArticulo,
+        HistoricoArticuloClase,
+    )
+
+    codart = (codart or "").strip()
+    actual = session.get(HistoricoArticuloClase, codart)
+    if clase is None:
+        if actual is not None:
+            session.delete(actual)
+            session.commit()
+        return
+    _validar(session, clase, None)
+    if actual is None and session.scalar(
+            select(HistoricoArticulo.codart).where(HistoricoArticulo.codart == codart)
+            .limit(1)) is None:
+        raise LookupError("articulo")
+    p = actual or HistoricoArticuloClase(codart=codart)
+    p.clase, p.por, p.at = clase, por, _ahora()
+    session.add(p)
+    session.commit()
