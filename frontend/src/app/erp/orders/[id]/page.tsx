@@ -21,6 +21,7 @@ import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { MandarSatModal } from "../../../components/erp/MandarSatModal";
 import { VincularAlbaranPanel } from "../../../components/erp/VincularAlbaranPanel";
+import { DeshacerSat } from "../../../components/erp/DeshacerSat";
 import { CobroBancoBlock } from "../../../components/erp/CobroBancoBlock";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import {
@@ -123,6 +124,7 @@ const PANEL_LS_KEY: Record<FichaPanelId, string> = {
 function relevantPanel(action: WorkflowAction | undefined): FichaPanelId | null {
   switch (action) {
     case "aprobar":
+    case "mandar_sat":
     case "vincular_empresa":
     case "revalidar_vies":
     case "emitir_factura":
@@ -1125,7 +1127,18 @@ function ErpOrderDetailScreen() {
       />
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
-      {order.mandar_sat?.correo && order.mandar_sat.correo.estado !== "enviado" ? (
+      {canMandarSat && !order.cancelled ? (
+        <DeshacerSat
+          order={order}
+          onDone={(o, aviso) => {
+            setOrder(o);
+            setNotice(["Envío al SAT deshecho: el pedido vuelve a «Por revisar».", aviso]
+              .filter(Boolean).join(" "));
+          }}
+        />
+      ) : null}
+      {order.mandar_sat?.correo
+        && ["fallido", "enviando", "pendiente_albaran"].includes(order.mandar_sat.correo.estado) ? (
         <div className={order.mandar_sat.correo.estado === "fallido" ? "form-error" : "form-info"}
              role="status">
           {order.mandar_sat.correo.estado === "fallido"

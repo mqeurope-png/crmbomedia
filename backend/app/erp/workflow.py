@@ -162,6 +162,14 @@ def is_from_document(order: Order) -> bool:
     return _v(order.external_source) in _DESDE_DOCUMENTO
 
 
+def se_manda_al_sat(order: Order) -> bool:
+    """¿Va al taller con «Mandar a SAT» (modal con confirmación) en vez de con
+    «Aprobar» a secas? Los creados desde un documento de FACTUSOL (#587) y los
+    pedidos web traídos a mano desde «en espera» (31/10/2026: van al taller
+    cuando lo decide Bart, y nunca de un clic sin preguntar)."""
+    return is_from_document(order) or getattr(order, "manual_web_import_at", None) is not None
+
+
 # --- datos del cliente de un pedido web ----------------------------------------
 
 #: Lo que puede faltarle a un pedido web para saber a quién se factura.
@@ -496,13 +504,14 @@ def _next_step(order: Order, *, factura_enviada: bool = False) -> tuple[str, str
             )
         return (QUEUE_LISTO, "ninguna", "Muestra enviada.")
     if not is_approved(order):
-        if is_from_document(order):
-            # Creado desde una proforma, un albarán o una factura: ya está
-            # decidido; lo que falta es que el taller lo prepare y lo envíe.
+        if se_manda_al_sat(order):
+            # Creado desde una proforma, un albarán o una factura (ya está
+            # decidido), o web traído a mano: lo que falta es mandarlo al
+            # taller, con su modal.
             return (
                 QUEUE_POR_REVISAR, "mandar_sat",
-                "Sale de un documento de FACTUSOL: mándalo al SAT para su "
-                "preparación y envío.",
+                "Mándalo al SAT para su preparación y envío (se confirma en "
+                "una ventana con lo que se manda).",
             )
         return (
             QUEUE_POR_REVISAR, "aprobar",
@@ -888,6 +897,14 @@ def _factura_detail(order: Order) -> str:
     return label
 
 
+#: La acción del «siguiente paso» → el paso de la línea de vida que es.
+PASO_DE_LA_ACCION: dict[str, str] = {
+    "aprobar": "aprobado", "mandar_sat": "aprobado", "crear_albaran": "albaran",
+    "emitir_factura": "factura", "enviar_factura": "factura_enviada",
+    "registrar_cobro": "cobro",
+}
+
+
 def order_steps(
     order: Order, *, invoice_emailed_at: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -913,6 +930,12 @@ def order_steps(
         "factura_enviada": (bool(invoice_emailed_at), _fecha_iso(invoice_emailed_at)),
         "cobro": (is_cobrada(order), "cobrada" if is_cobrada(order) else ""),
     }
+    # El paso actual y la acción ofrecida no pueden ser pasos distintos: si la
+    # acción es la de un paso de la línea, ese es el actual.
+    _, accion, _ = _next_step(order, factura_enviada=bool(invoice_emailed_at))
+    paso_de_la_accion = PASO_DE_LA_ACCION.get(accion)
+    if paso_de_la_accion is not None and done.get(paso_de_la_accion, (False,))[0]:
+        paso_de_la_accion = None
     steps: list[dict[str, Any]] = []
     now_set = False
     for key in STEP_KEYS:
@@ -927,13 +950,23 @@ def order_steps(
             # facturar. Su ciclo es corto (creado → preparación → enviado).
             state = "skipped"
             detail = "no facturable"
+        elif key == "pagado":
+            # Desde el #587 el pago no frena nada: un pedido sin pagar recorre
+            # toda la línea. «Pagado» se enseña (pendiente) pero nunca es el
+            # paso actual. (Cómo encajarlo en la línea lo decide Bart.)
+            state = "pending"
+        elif paso_de_la_accion is not None and key != paso_de_la_accion:
+            # El paso actual es el de la acción que se ofrece; uno anterior sin
+            # hacer (p. ej. el albarán mientras toca emitir la factura) se ve
+            # pendiente, no como actual.
+            state = "pending"
         elif not now_set:
             state = "now"
             now_set = True
         else:
             state = "pending"
         label = STEP_LABELS[key]
-        if key == "aprobado" and is_from_document(order):
+        if key == "aprobado" and se_manda_al_sat(order):
             # Desde un documento no se «aprueba»: se manda al SAT.
             label = "Mandado al SAT"
         steps.append({

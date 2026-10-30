@@ -65,6 +65,7 @@ def enqueue_paid_order(
       - no completado (`completed_at is None`);
       - no quitado a mano (`seguimiento_excluded_at is None`);
       - no marcado «No requiere envío» (`shipping_not_required` False);
+      - no sacado a mano de la cola («Deshacer envío al SAT»);
       - preparación == `pending_review` — SOLO se promueve desde la pre-cola;
         nunca toca in_queue / preparing / packed / blocked / externalizado, con
         lo que es idempotente y respeta las salidas ya existentes.
@@ -91,6 +92,10 @@ def enqueue_paid_order(
         return False
     if _value(order.preparation_status) != PreparationStatus.PENDING_REVIEW.value:
         return False
+    if _sacado_a_mano(order):
+        # Alguien deshizo su envío al SAT (31/10/2026): vuelve cuando se
+        # mande a mano, no solo al llegar un pago.
+        return False
 
     # La fila de historial referencia `order.id` (FK NOT NULL). En el camino de
     # creación Woo el pedido puede no estar aún flush-eado → asegúralo.
@@ -111,6 +116,14 @@ def enqueue_paid_order(
     session.flush()
     _audit(session, order, actor)
     return True
+
+
+def _sacado_a_mano(order: Order) -> bool:
+    try:
+        data = json.loads(order.packing_json) if order.packing_json else {}
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get("sat_deshecho"))
 
 
 def _audit(session: Session, order: Order, actor: User | None) -> None:

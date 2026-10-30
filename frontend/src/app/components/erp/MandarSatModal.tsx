@@ -149,6 +149,8 @@ export function MandarSatModal({
                   Se vincula el de la factura de origen. Si la factura no lo apunta, el pedido
                   se queda sin albarán y lo vinculas a mano: <strong>no se crea ninguno</strong>.
                 </span>
+              ) : info?.es_web ? (
+                "Lo crea WooCommerce."
               ) : info?.albaran_lo_crea_bohub ? (
                 "Se crea en FACTUSOL al mandarlo, como hasta ahora."
               ) : "Sin albarán."}

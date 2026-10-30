@@ -368,3 +368,103 @@ def test_un_pedido_quitado_de_las_listas_no_se_manda(http, session_factory) -> N
     with _patched(FakeClient(_tablas(enlace=True))):
         r = _mandar(http, pedido["id"])
     assert r.status_code == 409 and r.json()["detail"]["code"] == "excluded"
+
+
+# --- traídos a mano, deshacer el envío al SAT y la línea de vida (31/10/2026) --------------
+
+
+def _traido(session_factory, **over) -> str:  # noqa: F811
+    from datetime import UTC, datetime
+
+    with session_factory() as s:
+        o = Order(external_source=OrderSource.WOOCOMMERCE, external_id="w-17",
+                  order_number="WEB-FIG-17", company_id="acme", total_amount=50,
+                  currency="EUR", payment_status="pending",
+                  manual_web_import_at=datetime.now(UTC), **over)
+        s.add(o)
+        s.commit()
+        return o.id
+
+
+def test_un_web_traido_a_mano_se_manda_al_sat_con_su_modal(http, session_factory) -> None:  # noqa: F811
+    oid = _traido(session_factory)
+    d = http.get(f"/api/erp/orders/{oid}", headers=auth_headers(http, "pedidos")).json()
+    assert d["workflow"]["next_action"] == "mandar_sat"
+    assert next(p for p in d["workflow"]["steps"] if p["key"] == "aprobado")["label"] == \
+        "Mandado al SAT"
+    with _patched(FakeClient(_tables())), _enqueue() as enq:
+        r = _mandar(http, oid)
+    assert r.status_code == 200, r.text
+    assert r.json()["order"]["preparation_status"] == "in_queue"
+    assert r.json()["albaran"]["crear"] is False      # web: lo crea WooCommerce
+    enq.assert_not_called()
+
+
+def test_deshacer_el_envio_al_sat_vuelve_a_por_revisar(http, session_factory) -> None:  # noqa: F811
+    oid = _traido(session_factory)
+    with _patched(FakeClient(_tables())):
+        _mandar(http, oid)
+    r = http.post(f"/api/erp/orders/{oid}/deshacer-sat",
+                  json={"confirm": True, "motivo": "Aprobado sin querer"},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    o = r.json()["order"]
+    assert o["preparation_status"] == "pending_review"
+    assert o["approved_at"] is None
+    assert o["workflow"]["next_action"] == "mandar_sat"
+    assert any("Deshecho el envío al SAT" in (h["reason"] or "") for h in o["status_history"])
+    # Y se puede volver a mandar.
+    with _patched(FakeClient(_tables())):
+        assert _mandar(http, oid).json()["cola"] == "entrado"
+
+
+def test_no_se_deshace_si_el_taller_ya_empezo(http, session_factory) -> None:  # noqa: F811
+    for estado, palabra in (("preparing", "preparándolo"), ("packed", "embalado")):
+        oid = _traido(session_factory, preparation_status=estado)
+        r = http.post(f"/api/erp/orders/{oid}/deshacer-sat", json={"confirm": True},
+                      headers=auth_headers(http, "pedidos"))
+        assert r.status_code == 409
+        assert palabra in r.json()["detail"]["detail"]
+
+
+def test_deshacer_vale_para_un_pedido_desde_factura(http, session_factory) -> None:  # noqa: F811
+    pedido = _crear_desde(http, FakeClient(_tablas(enlace=True)), "facturas")
+    with _patched(FakeClient(_tablas(enlace=True))):
+        _mandar(http, pedido["id"])
+    r = http.post(f"/api/erp/orders/{pedido['id']}/deshacer-sat", json={"confirm": True},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert r.json()["order"]["preparation_status"] == "pending_review"
+    # El albarán de la factura sigue vinculado: deshacer no toca FACTUSOL.
+    assert r.json()["order"]["factusol_albaran_number"] == "5-000008"
+
+
+def test_tras_deshacerlo_no_vuelve_a_entrar_solo_al_pagar(http, session_factory) -> None:  # noqa: F811
+    from app.erp.sat_autoenqueue import enqueue_paid_order
+
+    oid = _traido(session_factory)
+    with _patched(FakeClient(_tables())):
+        _mandar(http, oid)
+    http.post(f"/api/erp/orders/{oid}/deshacer-sat", json={"confirm": True},
+              headers=auth_headers(http, "pedidos"))
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        o.payment_status = "paid"
+        assert enqueue_paid_order(s, o) is False
+        assert o.preparation_status == "pending_review"
+
+
+def test_la_linea_de_vida_marca_el_paso_de_la_accion(http, session_factory) -> None:  # noqa: F811
+    # Sin pagar: «Pagado» nunca es el paso actual; el actual es el de la acción.
+    oid = _traido(session_factory)
+    wf = http.get(f"/api/erp/orders/{oid}", headers=auth_headers(http, "pedidos")).json()[
+        "workflow"]
+    ahora = [p["key"] for p in wf["steps"] if p["state"] == "now"]
+    assert ahora == ["aprobado"]
+    assert next(p for p in wf["steps"] if p["key"] == "pagado")["state"] == "pending"
+    # Desde factura, sin albarán: toca enviar la factura y ese es el paso actual.
+    pedido = _crear_desde(http, FakeClient(_tablas(enlace=False)), "facturas")
+    with _patched(FakeClient(_tablas(enlace=False))):
+        wf = _mandar(http, pedido["id"]).json()["order"]["workflow"]
+    ahora = [p["key"] for p in wf["steps"] if p["state"] == "now"]
+    assert wf["next_action"] == "enviar_factura" and ahora == ["factura_enviada"]

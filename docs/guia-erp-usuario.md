@@ -630,6 +630,20 @@ después.
     correo sale **en cuanto el albarán esté** (si cierras la ficha antes, queda
     *«El correo al taller espera al albarán»* con **«Enviar ahora»**).
   - En la línea de vida el paso se llama **«Mandado al SAT»**.
+  - Los **pedidos web traídos a mano** desde «en espera» (31/10/2026) también
+    van con «Mandar a SAT» y su ventana, no con «Aprobar» a secas.
+- **«Deshacer envío al SAT»** (cualquier pedido, 31/10/2026) — si se mandó al
+  taller por error, lo **saca de la Cola SAT** y lo devuelve a **«Por
+  revisar»**, mientras el taller **no haya empezado**. Si ya lo está
+  preparando o lo ha embalado, la ficha lo dice y no se puede: habla con el
+  taller. No toca FACTUSOL ni el cobro (el albarán, si lo tiene, sigue
+  vinculado). Si el correo al taller ya había salido, te avisa para que les
+  digas que vuelve a revisión. Un pedido devuelto así no vuelve a entrar solo
+  en la cola al pagarse: se manda otra vez a mano.
+- **La línea de vida** marca como paso actual el de la acción que se ofrece.
+  «Pagado» se ve (hecho o pendiente) pero ya no es una etapa en la que se
+  espera: desde que el cobro no frena el envío, un pedido sin pagar recorre
+  toda la línea.
 - **El albarán de un pedido creado desde una factura** — **nunca se crea uno
   nuevo**: la factura salió de un albarán que ya existe. BoHub lo busca en las
   líneas de la factura (cada línea apunta al albarán que se facturó) y lo
