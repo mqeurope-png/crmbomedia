@@ -13,7 +13,7 @@ import csv
 import io
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -331,3 +331,47 @@ def compradores_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="quien_compro.csv"'},
     )
+
+
+# --- ficha de un documento (factura, albarán, proforma) de cualquier año --------------
+
+
+def _lector_vivo(session: Session):
+    """Lee un documento del ejercicio en curso en vivo (lo creado después de la
+    última carga). Si FACTUSOL no responde, None: la ficha dirá que no está."""
+    def leer(doc_type: str, serie: str, codigo: int) -> dict[str, Any] | None:
+        from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+        from app.integrations.factusol.documents import get_document  # noqa: PLC0415
+
+        try:
+            client, ejercicio = _client_and_ejercicio(session)
+            return get_document(client, doc_type, serie=int(serie), codigo=codigo,
+                                ejercicio=ejercicio)
+        except Exception:  # noqa: BLE001 — sin FACTUSOL, la ficha no inventa
+            return None
+    return leer
+
+
+@router.get("/documentos/{tipo}/{ejercicio}/{serie}/{codigo}")
+def ficha_documento(
+    tipo: str,
+    ejercicio: str = Path(pattern=r"^\d{4}$"),
+    serie: str = Path(max_length=8),
+    codigo: int = Path(ge=0),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Cabecera, líneas (las de nota marcadas), estado, pedido de BoHub y lo
+    necesario para el PDF. Solo lectura."""
+    from app.erp.historico_documento import DocumentoNoEncontrado, ficha  # noqa: PLC0415
+
+    try:
+        return ficha(session, tipo=tipo, ejercicio=ejercicio, serie=serie, codigo=codigo,
+                     user=user, en_curso=_en_curso(session),
+                     lector_vivo=_lector_vivo(session))
+    except DocumentoNoEncontrado as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "documento_no_encontrado",
+            "detail": ("Ese documento no está en lo volcado. Si es de un año antiguo, "
+                       "cárgalo desde Quién compró qué → Carga."),
+        }) from exc

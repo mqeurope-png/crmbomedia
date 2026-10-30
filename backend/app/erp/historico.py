@@ -49,6 +49,8 @@ from app.erp.models.historico import (
     ESTADO_NO_DISPONIBLE,
     TIPO_ALBARAN,
     TIPO_FACTURA,
+    TIPO_PRESUPUESTO,
+    TIPOS_VENTA,
     HistoricoArticulo,
     HistoricoDocumento,
     HistoricoEjercicio,
@@ -72,6 +74,8 @@ class _Tablas:
 TABLAS = (
     _Tablas(TIPO_FACTURA, "F_FAC", "F_LFA", "FAC", "LFA"),
     _Tablas(TIPO_ALBARAN, "F_ALB", "F_LAL", "ALB", "LAL"),
+    # Proformas: para abrir su ficha de cualquier año; no son ventas.
+    _Tablas(TIPO_PRESUPUESTO, "F_PRE", "F_LPS", "PRE", "LPS"),
 )
 
 
@@ -105,6 +109,20 @@ def _entero(valor: Any) -> int | None:
         return int(float(str(valor).strip()))
     except (TypeError, ValueError):
         return None
+
+
+def _estado_crudo(valor: Any) -> str | None:
+    """«2.0» → «2»: la API devuelve los estados con tipos variables."""
+    t = _texto(valor, 8)
+    if t and t.endswith(".0") and t[:-2].isdigit():
+        return t[:-2]
+    return t
+
+
+#: Líneas que son de una VENTA (factura o albarán), no de una proforma.
+def _de_venta() -> Any:
+    return HistoricoLinea.documento_id.in_(
+        select(HistoricoDocumento.id).where(HistoricoDocumento.tipo.in_(TIPOS_VENTA)))
 
 
 def fecha_razonable(valor: Any) -> date | None:
@@ -212,7 +230,8 @@ def _sustituir(
     if catalogo:
         session.execute(HistoricoArticulo.__table__.insert(), catalogo)
 
-    cuentas = {"facturas": 0, "albaranes": 0, "lineas": 0, "lineas_producto": 0,
+    cuentas = {"facturas": 0, "albaranes": 0, "presupuestos": 0, "lineas": 0,
+               "lineas_producto": 0,
                "huerfanas": 0, "articulos": len(catalogo)}
     for t in TABLAS:
         cabeceras, lineas = leido[t.tipo]
@@ -228,6 +247,8 @@ def _sustituir(
                 codcli=_texto(c.get(f"CLI{t.cab}"), 32),
                 cliente_nombre=_texto(c.get(f"CNO{t.cab}"), 255),
                 referencia=_texto(c.get(f"REF{t.cab}"), 120),
+                total=_numero(c.get(f"TOT{t.cab}")),
+                estado=_estado_crudo(c.get(f"EST{t.cab}")),
             )
         session.add_all(docs.values())
         session.flush()   # los id, para las líneas
@@ -247,6 +268,9 @@ def _sustituir(
             })
         if filas:
             session.execute(HistoricoLinea.__table__.insert(), filas)
+        if t.tipo not in TIPOS_VENTA:
+            cuentas["presupuestos"] = len(docs)
+            continue
         cuentas["facturas" if t.tipo == TIPO_FACTURA else "albaranes"] = len(docs)
         cuentas["lineas"] += len(filas)
         cuentas["lineas_producto"] += sum(1 for f in filas if f["es_producto"])
@@ -357,7 +381,7 @@ def familias(session: Session) -> list[dict[str, Any]]:
             HistoricoArticulo.ejercicio == HistoricoLinea.ejercicio,
             HistoricoArticulo.codart == HistoricoLinea.codart,
         ))
-        .where(HistoricoLinea.es_producto.is_(True))
+        .where(HistoricoLinea.es_producto.is_(True), _de_venta())
         .group_by(HistoricoArticulo.familia)
     ).all())
     props = propuestas(session)
@@ -397,7 +421,8 @@ def buscar_articulos(session: Session, q: str, limit: int = 20) -> list[dict[str
         return []
     ventas = dict(session.execute(
         select(HistoricoLinea.codart, func.count(HistoricoLinea.id))
-        .where(HistoricoLinea.codart.in_(list(por_codigo)), HistoricoLinea.es_producto.is_(True))
+        .where(HistoricoLinea.codart.in_(list(por_codigo)),
+               HistoricoLinea.es_producto.is_(True), _de_venta())
         .group_by(HistoricoLinea.codart)
     ).all())
     out = [{**a, "ventas": int(ventas.get(c, 0))} for c, a in por_codigo.items()]
@@ -426,7 +451,7 @@ def compradores(
                art.descripcion, art.familia, lin.descripcion)
         .join(doc, doc.id == lin.documento_id)
         .outerjoin(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
-        .where(lin.es_producto.is_(True))
+        .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA))
     )
     if codart:
         stmt = stmt.where(lin.codart == codart)
@@ -506,7 +531,8 @@ def compradores(
 
 def resumen_notas(session: Session) -> dict[str, int]:
     """Cuántas líneas son de producto y cuántas son notas, en todo el histórico."""
-    total = session.scalar(select(func.count(HistoricoLinea.id))) or 0
+    total = session.scalar(select(func.count(HistoricoLinea.id)).where(_de_venta())) or 0
     producto = session.scalar(
-        select(func.count(HistoricoLinea.id)).where(HistoricoLinea.es_producto.is_(True))) or 0
+        select(func.count(HistoricoLinea.id)).where(
+            HistoricoLinea.es_producto.is_(True), _de_venta())) or 0
     return {"lineas": int(total), "producto": int(producto), "notas": int(total - producto)}

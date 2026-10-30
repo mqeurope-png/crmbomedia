@@ -556,12 +556,12 @@ export function CompanyCreateForm({
         <div className="company-create-row">
           <label className="field">
             <span>Web</span>
-            <input type="text" value={website} maxLength={500} placeholder="https://bomedia.net"
+            <input type="text" value={website} maxLength={500} placeholder="https://www.empresa.com"
                    onChange={(e) => setWebsite(e.target.value)} />
           </label>
           <label className="field">
             <span>Dominio</span>
-            <input type="text" value={domain} maxLength={255} placeholder="bomedia.net"
+            <input type="text" value={domain} maxLength={255} placeholder="empresa.com"
                    onChange={(e) => setDomain(e.target.value)} />
           </label>
         </div>
