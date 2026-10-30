@@ -1131,7 +1131,10 @@ function ErpOrderDetailScreen() {
           {order.mandar_sat.correo.estado === "fallido"
             ? <>El pedido está en la Cola SAT, pero <strong>el correo al taller no salió</strong>
                 {order.mandar_sat.correo.detalle ? `: ${order.mandar_sat.correo.detalle}` : ""}.</>
-            : <>El correo al taller espera al albarán.</>}
+            : order.mandar_sat.correo.estado === "enviando"
+              ? <>El correo al taller se está enviando. Si se queda así, se cortó:
+                  comprueba en Gmail si salió antes de reintentar.</>
+              : <>El correo al taller espera al albarán: sale solo en cuanto se cree o se vincule.</>}
           {canEmailSat ? (
             <>
               {" "}

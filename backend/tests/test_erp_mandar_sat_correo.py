@@ -204,3 +204,49 @@ def test_el_correo_pendiente_sale_solo_al_crearse_el_albaran(http, session_facto
         assert '"enviado"' in s.get(Order, oid).packing_json
     sent.assert_called_once()
     assert sent.call_args.kwargs["to"] == [SAT]
+
+
+# --- lo que encontró la segunda revisión ---------------------------------------------------
+
+
+def test_un_segundo_clic_no_manda_el_correo_otra_vez(http, session_factory) -> None:  # noqa: F811
+    oid = _preparar(session_factory, http)
+    send, _msg = _patch_send()
+    with _patched_factusol(), send as sent:
+        assert _mandar(http, oid, _correo()).json()["correo"]["estado"] == "enviado"
+        r = _mandar(http, oid, _correo())
+    assert r.status_code == 200, r.text
+    assert r.json()["cola"] == "ya_estaba"
+    sent.assert_called_once()
+
+
+def test_dos_caminos_no_mandan_el_mismo_correo_pendiente(http, session_factory) -> None:  # noqa: F811
+    from app.erp import sat_correo
+    from tests.test_erp_order_email import FakeClient, _tables
+
+    oid = _preparar(session_factory, http, albaran=None)
+    with _patched_factusol():
+        _mandar(http, oid, _correo())
+    send, _msg = _patch_send()
+    with session_factory() as s, send as sent:
+        o = s.get(Order, oid)
+        o.factusol_albaran_number = "5-500004"
+        s.commit()
+        # Otro camino ya lo reclamó (se está mandando): este no lo manda.
+        assert sat_correo.reclamar(s, o, {"pendiente_albaran"}) is not None
+        # Y no se puede reclamar dos veces.
+        assert sat_correo.reclamar(s, s.get(Order, oid), {"pendiente_albaran"}) is None
+        sat_correo.enviar_si_pendiente(s, s.get(Order, oid), client=FakeClient(_tables()),
+                                       ejercicio="2026")
+    sent.assert_not_called()
+
+
+def test_un_remitente_no_permitido_se_rechaza_al_mandar_y_no_mueve_nada(
+    http, session_factory,  # noqa: F811
+) -> None:
+    oid = _preparar(session_factory, http)
+    with _patched_factusol():
+        r = _mandar(http, oid, _correo(from_alias="ajeno@otra-empresa.example"))
+    assert r.status_code in (400, 403, 422), r.text
+    with session_factory() as s:
+        assert s.get(Order, oid).preparation_status == "pending_review"

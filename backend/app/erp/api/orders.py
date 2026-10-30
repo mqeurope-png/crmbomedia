@@ -4604,6 +4604,43 @@ def _enviar_correo_pedido(
             "detail": "El envío requiere confirmación explícita.",
         })
 
+    to, cc, bcc = _validar_correo_pedido(session, payload, current_user)
+
+    order, client, ejercicio = _order_email_context(session, order_id, current_user)
+    try:
+        return send_order_email(
+            session, client, order, ejercicio=ejercicio,
+            current_user=current_user, to=to, cc=cc, bcc=bcc,
+            subject=payload.subject, body_text=payload.body_text,
+            lang=payload.lang, from_alias=payload.from_alias,
+            include_albaran=payload.include_albaran,
+            include_pedido=payload.include_pedido,
+            include_factura=payload.include_factura,
+        )
+    except OrderEmailError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": exc.code, "detail": exc.detail,
+        }) from exc
+    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
+        # Gmail no conectado / sin permiso: no se ha enviado nada.
+        logger.warning("order email KO (gmail) order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "gmail_not_ready", "detail": str(exc)[:300],
+        }) from exc
+    except FactusolError as exc:
+        logger.warning("order email KO (factusol) order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+
+
+def _validar_correo_pedido(
+    session: Session, payload: OrderEmailPayload, current_user: User,
+) -> tuple[list[str], list[str], list[str]]:
+    """Destinatarios limpios + las comprobaciones de quién puede mandar qué y
+    desde qué remitente. HTTPException si no vale. (También antes de guardar un
+    correo para mandarlo después.)"""
+
     def _clean(values: list[str]) -> list[str]:
         return [v.strip() for v in values if v and v.strip()]
 
@@ -4632,33 +4669,7 @@ def _enviar_correo_pedido(
     from app.erp.api.factusol import _require_sender_alias  # noqa: PLC0415
 
     _require_sender_alias(session, current_user, payload.from_alias)
-
-    order, client, ejercicio = _order_email_context(session, order_id, current_user)
-    try:
-        return send_order_email(
-            session, client, order, ejercicio=ejercicio,
-            current_user=current_user, to=to, cc=cc, bcc=bcc,
-            subject=payload.subject, body_text=payload.body_text,
-            lang=payload.lang, from_alias=payload.from_alias,
-            include_albaran=payload.include_albaran,
-            include_pedido=payload.include_pedido,
-            include_factura=payload.include_factura,
-        )
-    except OrderEmailError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
-            "code": exc.code, "detail": exc.detail,
-        }) from exc
-    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
-        # Gmail no conectado / sin permiso: no se ha enviado nada.
-        logger.warning("order email KO (gmail) order=%s: %s", order_id, exc)
-        raise HTTPException(status.HTTP_409_CONFLICT, {
-            "code": "gmail_not_ready", "detail": str(exc)[:300],
-        }) from exc
-    except FactusolError as exc:
-        logger.warning("order email KO (factusol) order=%s: %s", order_id, exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
-            "code": "factusol_unavailable", "detail": str(exc)[:200],
-        }) from exc
+    return to, cc, bcc
 
 
 # --- «Mandar a SAT» (30/10/2026) ---------------------------------------------------------
@@ -4766,6 +4777,8 @@ def mandar_a_sat(
                 "code": "sin_factura",
                 "detail": "El correo al taller va sin factura.",
             })
+        # Las comprobaciones del correo, YA (no al mandarlo más tarde).
+        _validar_correo_pedido(session, correo, current_user)
     order = _get_order(session, order_id, current_user)
     if order.cancelled_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, {
@@ -4798,13 +4811,20 @@ def mandar_a_sat(
     session.commit()
     order = _get_order(session, order_id, current_user)
 
-    crear = albaran_blocker(order, session) is None and not order.factusol_albaran_number
+    bloqueo = albaran_blocker(order, session)
+    crear = bloqueo is None and not order.factusol_albaran_number
+    solo_vincular = bloqueo is not None and bloqueo[0] == "factura_source_no_albaran"
     albaran["crear"] = crear
     estado_correo = None
-    if correo is not None:
+    previo = sat_correo.bloque(order) or {}
+    if correo is not None and previo.get("estado") in ("enviado", "enviando",
+                                                       "pendiente_albaran"):
+        # Ya pedido (p. ej. un segundo clic tras un corte): no se manda otra vez.
+        estado_correo = sat_correo.publico(order)
+    elif correo is not None:
         datos = correo.model_dump(exclude={"confirm"})
         if correo.include_albaran and not order.factusol_albaran_number and (
-                crear or is_factura_source(order)):
+                crear or solo_vincular):
             # El albarán está por crear (proforma) o por vincular (factura sin
             # enlace): el correo sale en cuanto exista.
             estado_correo = sat_correo.guardar(
@@ -4854,6 +4874,10 @@ def reenviar_correo_sat(
                 "detail": ("El correo lleva el albarán y el pedido aún no lo tiene: "
                            "créalo o vincúlalo y saldrá solo.")})
         correo = correo.model_copy(update={"include_albaran": False})
+    if sat_correo.reclamar(session, order, {"fallido", "pendiente_albaran", "enviando"}) is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "en_curso",
+            "detail": "El correo al taller se está enviando ahora mismo: espera un momento."})
     estado = _intentar_correo_sat(session, order_id, correo, current_user)
     return {"correo": estado,
             "order": _serialise_detail(session, _get_order(session, order_id, current_user),

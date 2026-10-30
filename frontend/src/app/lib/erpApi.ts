@@ -3885,7 +3885,7 @@ export type OrderEmailSendPayload = {
 /** El correo al taller pedido en «Mandar a SAT»: enviado, fallido (se
  *  reintenta) o esperando a que exista el albarán. */
 export type SatCorreoEstado = {
-  estado: "enviado" | "fallido" | "pendiente_albaran";
+  estado: "enviado" | "fallido" | "pendiente_albaran" | "enviando";
   detalle: string | null;
   at: string | null;
 };

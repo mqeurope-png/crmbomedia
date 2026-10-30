@@ -103,7 +103,9 @@ export function MandarSatModal({
       } : null);
       onDone(r);
     } catch (e) {
-      setError(extractErrorMessage(e, "No se ha podido mandar al SAT. No se ha movido nada."));
+      setError(extractErrorMessage(
+        e, "No se ha podido completar. Cierra y mira la ficha antes de volver a intentarlo.",
+      ));
     } finally {
       setBusy(false);
     }

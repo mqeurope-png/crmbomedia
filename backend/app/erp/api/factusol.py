@@ -634,6 +634,7 @@ def link_document_to_order(
             "detail": "Marca la confirmación para vincular el documento al pedido.",
         })
     doc = _link_doc_or_404(session, doc_type, serie, codigo)
+    enviar_correo_pendiente = False
     order = session.get(Order, payload.order_id)
     if order is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
@@ -706,6 +707,7 @@ def link_document_to_order(
                    "referencia": referencia or None,
                    "antes": current},
         )
+        enviar_correo_pendiente = True
     _audit_quote(
         session, current_user, "erp.factusol_document_link",
         f"{doc_type}:{serie}-{codigo}",
@@ -714,6 +716,14 @@ def link_document_to_order(
          "antes": current, "force": payload.force},
     )
     session.commit()
+    if enviar_correo_pendiente:
+        # «Mandar a SAT»: el correo al taller esperaba a este albarán.
+        from app.erp.api.orders import _factusol_lectura  # noqa: PLC0415
+        from app.erp.sat_correo import enviar_si_pendiente  # noqa: PLC0415
+
+        lector, ejercicio = _factusol_lectura(session)
+        if lector is not None and ejercicio:
+            enviar_si_pendiente(session, order, client=lector, ejercicio=ejercicio)
     return {
         "status": "linked",
         "doc": {"doc_type": doc_type, "serie": serie, "codigo": codigo, "numero": numero},

@@ -47,6 +47,42 @@ def guardar(order: Any, estado: str, *, detalle: str | None = None,
     return {"estado": estado, "detalle": detalle, "at": packing[KEY]["at"]}
 
 
+#: Un «enviando» más viejo que esto se dio por cortado: se puede reintentar.
+ENVIANDO_CADUCA_SEGUNDOS = 600
+
+
+def reclamar(session: Session, order: Any, desde: set[str]) -> Any | None:
+    """Pasa el correo a «enviando» SOLO si está en uno de los estados `desde`
+    (con el pedido bloqueado mientras se mira): así dos caminos (el job del
+    albarán, vincular a mano, «Enviar ahora») no mandan el mismo correo dos
+    veces. Un «enviando» viejo (se cortó) cuenta como reintentable si está en
+    `desde`. Devuelve el pedido recién leído si lo reclama; `None` si no."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import Order  # noqa: PLC0415
+
+    fila = session.scalars(select(Order).where(Order.id == order.id).with_for_update()
+                           .execution_options(populate_existing=True)).one()
+    b = bloque(fila) or {}
+    estado = b.get("estado")
+    if estado == "enviando":
+        try:
+            desde_at = datetime.fromisoformat(str(b.get("at")))
+            viejo = (datetime.now(UTC) - desde_at).total_seconds() > ENVIANDO_CADUCA_SEGUNDOS
+        except (TypeError, ValueError):
+            viejo = True
+        if not viejo:
+            session.rollback()
+            return None
+    if estado not in desde:
+        session.rollback()
+        return None
+    guardar(fila, "enviando", detalle="Enviándose: si se queda así, comprueba en Gmail "
+                                      "si salió antes de reintentar.")
+    session.commit()
+    return fila
+
+
 def detalle_de_error(exc: Exception) -> str:
     """Lo que se le dice a quien manda, sin datos del cliente."""
     from fastapi import HTTPException  # noqa: PLC0415
@@ -71,7 +107,10 @@ def enviar_si_pendiente(session: Session, order: Any, *, client: Any, ejercicio:
     b = bloque(order)
     if not b or b.get("estado") != "pendiente_albaran" or not order.factusol_albaran_number:
         return
-    datos = b.get("payload") or {}
+    order = reclamar(session, order, {"pendiente_albaran"})
+    if order is None:
+        return   # otro camino ya lo está mandando
+    datos = (bloque(order) or {}).get("payload") or {}
     user = session.get(User, b.get("por")) if b.get("por") else None
     if user is None or not datos.get("to"):
         guardar(order, "fallido", detalle="No se sabe quién lo pidió: mándalo desde la ficha.")

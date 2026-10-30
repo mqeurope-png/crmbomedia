@@ -594,6 +594,14 @@ def create_albaran_for_order(
         client, doc_type, "albaranes", tip=tip, cod=cod, ejercicio=ejercicio,
     )
     if existing:
+        # Lo que se leyó al empezar el job puede ser viejo (p. ej. el correo
+        # al taller que dejó «Mandar a SAT» mientras tanto): no pisarlo.
+        session.refresh(order)
+        if order.factusol_albaran_number:
+            return {
+                "status": "already", "numero": order.factusol_albaran_number,
+                "order_id": order.id, "order_number": order.order_number,
+            }
         _attach_albaran(
             session, order, existing[0], how="localizado en FACTUSOL (ya existía)",
             actor_user_id=actor_user_id,
