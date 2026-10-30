@@ -90,6 +90,7 @@ export function RegistrarCobroModal({
   orderNumber,
   factura,
   movimientoId,
+  ejercicio,
   onClose,
   onDone,
 }: {
@@ -99,6 +100,9 @@ export function RegistrarCobroModal({
   factura?: { serie: number; codigo: number | string; numero: string };
   /** El movimiento del banco con el que se cobra (ficha, Conciliación). */
   movimientoId?: string;
+  /** Otro ejercicio de FACTUSOL: SOLO CONSULTA (contra qué se cobró); aquí
+   *  no se registra nada. */
+  ejercicio?: string;
   onClose: () => void;
   /** Se llama con el estado re-comprobado tras registrar (o si ya estaba cobrada). */
   onDone?: (info: OrderCobroInfo) => void;
@@ -110,9 +114,9 @@ export function RegistrarCobroModal({
   const reload = useCallback(
     (): Promise<OrderCobroInfo> =>
       facSerie !== undefined && facCodigo !== undefined
-        ? getFactusolFacturaCobro(facSerie, facCodigo, movimientoId)
+        ? getFactusolFacturaCobro(facSerie, facCodigo, movimientoId, ejercicio)
         : getOrderFactusolCobro(orderId as string, movimientoId),
-    [facSerie, facCodigo, orderId, movimientoId],
+    [facSerie, facCodigo, orderId, movimientoId, ejercicio],
   );
   const [info, setInfo] = useState<OrderCobroInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -181,7 +185,8 @@ export function RegistrarCobroModal({
     return () => { alive = false; };
   }, [reload]);
 
-  const pendiente = info?.status === "pendiente";
+  // Otro ejercicio: solo se consulta, nunca se ofrece registrar.
+  const pendiente = info?.status === "pendiente" && !ejercicio;
   const cobrada = info?.status === "cobrada";
   const invoice = info?.invoice ?? null;
   const mov = !sinMovimiento ? info?.movimiento ?? null : null;
@@ -347,6 +352,12 @@ export function RegistrarCobroModal({
               ) : null}
               {info.status === "unresolved" || info.status === "not_found" ? (
                 <p className="form-info" role="status">{info.detail}</p>
+              ) : null}
+              {ejercicio ? (
+                <p className="form-warning small" role="note">
+                  Ejercicio {ejercicio}: solo consulta. Los cobros se registran en el ejercicio en
+                  curso.
+                </p>
               ) : null}
               {info.externa ? (
                 <p className="form-info small erp-cobro-externa" role="note">

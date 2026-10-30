@@ -3040,6 +3040,8 @@ export type FactusolPdfOptions = {
   currency?: string;
   /** Índice del almacén de recogida (albarán de devolución). */
   warehouse?: number;
+  /** Otro ejercicio de FACTUSOL (consulta desde un ejercicio anterior). */
+  ejercicio?: string;
 };
 
 /** PDF del documento, generado por BoHub (la API de DELSOL no imprime). */
@@ -3053,6 +3055,7 @@ export async function downloadFactusolDocumentPdf(
     bank: opts.bank,
     currency: opts.currency,
     warehouse: opts.warehouse,
+    ejercicio: opts.ejercicio,
   });
   return apiDownloadBlob(
     `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/pdf${query}`,
@@ -3450,9 +3453,9 @@ export async function cobrarFacturaConMovimiento(
  *  explorador de documentos. Mismo contrato que `getOrderFactusolCobro` (saldo,
  *  cuenta sugerida, avisos), sin `order_id`/`order_number`. Solo lectura. */
 export async function getFactusolFacturaCobro(
-  serie: number, codigo: number | string, movimientoId?: string,
+  serie: number, codigo: number | string, movimientoId?: string, ejercicio?: string,
 ): Promise<OrderCobroInfo> {
-  const q = movimientoId ? `?movimiento=${encodeURIComponent(movimientoId)}` : "";
+  const q = qs({ movimiento: movimientoId, ejercicio });
   return apiFetch(
     `/api/erp/factusol/documents/facturas/${serie}/${encodeURIComponent(String(codigo))}/cobro${q}`,
   );
@@ -5419,6 +5422,20 @@ export type BankMovementFilters = {
   limit?: number;
   offset?: number;
 };
+
+/** Los años que tienen movimientos en el banco (Conciliación), con su recuento:
+ *  el extracto va más atrás que los ejercicios de FACTUSOL. */
+export type BankAnio = {
+  anio: string; movimientos: number; pending: number; reconciled: number; discarded: number;
+  pending_amount: number;
+};
+export type BankEjercicios = {
+  en_curso: string; anios: BankAnio[]; total: Omit<BankAnio, "anio">;
+};
+
+export async function getBankEjercicios(accountId?: string): Promise<BankEjercicios> {
+  return apiFetch(`/api/erp/bank/ejercicios${qs({ account_id: accountId })}`);
+}
 
 export async function listBankMovements(filters: BankMovementFilters = {}): Promise<BankMovementsPage> {
   const { externas, solo_externas, ...rest } = filters;

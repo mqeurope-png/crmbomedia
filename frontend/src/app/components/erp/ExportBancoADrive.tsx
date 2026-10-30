@@ -63,7 +63,8 @@ export function ExportBancoADrive({
   return (
     <div>
       <label className="field">
-        <span>Export del banco → hoja de Drive (.xls / .xlsx / .csv)</span>
+        <span>Escribir en la hoja de Drive lo que falte · .xls / .xlsx / .csv</span>
+        <small className="muted">El fichero del banco tal cual: añade a la hoja de {accountName} las filas que le falten.</small>
         <input
           type="file"
           accept=".xls,.xlsx,.csv"

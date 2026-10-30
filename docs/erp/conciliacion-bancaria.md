@@ -317,6 +317,31 @@ texto. Los tests y las capturas usan figurantes.
 - Las propuestas se siguen calculando igual (contra todas las facturas
   pendientes): lo que cambia es qué se enseña y qué se ofrece.
 
+### El año en Conciliación (30/10/2026)
+
+El selector de Conciliación no se ciñe a los ejercicios de FACTUSOL: ofrece
+**todos los años que tienen movimientos** (`GET /api/erp/bank/ejercicios`,
+`service.ejercicios_de_movimientos`), cada uno con su recuento, el ejercicio
+en curso aunque aún no tenga movimientos, y **«Todos los años»**. El extracto
+es un hecho: ningún movimiento queda fuera de alcance, y «Todos los años» suma
+lo mismo que hay en la base de datos. Un año que no es el en curso es solo
+consulta. «Registrar cobro» solo se ofrece en movimientos del ejercicio en
+curso, se elija el año que se elija: FACTUSOL se escribe en ese ejercicio.
+
+### El prepago: la factura, después del cobro
+
+En esta casa lo normal es que el cliente pague y la factura se emita
+después. El casador acepta una factura emitida hasta **15 días después** del
+cobro (`matching.VENTANA_FACTURA_POSTERIOR`). Es una pista, no un filtro:
+
+- el motivo lo dice: «factura emitida 1 día después del cobro»;
+- sola, no sube a confianza alta: se queda en media;
+- si el pedido de BoHub de la factura consta pagado (prepago), no penaliza, y
+  el motivo añade «(pedido pagado por adelantado)».
+
+Más allá de los 15 días no se propone. La búsqueda a mano de «Elegir /
+repartir» nunca ha mirado fechas.
+
 ## Duplicados
 
 La clave sale de cuenta, fecha, importe, concepto y saldo.

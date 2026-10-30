@@ -17,7 +17,7 @@ from collections.abc import Generator
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -144,3 +144,97 @@ def test_el_contador_pulsado_no_lo_vacian_los_otros_filtros(s, datos) -> None:
     r = service.list_movements(s, account_id=datos, ejercicio="2026", externas=False,
                                solo_externas=True, confidence="alta", status="reconciled")
     assert sorted(_por_concepto(r)) == [2]
+
+
+# --- 30/10/2026: el extracto va más atrás que FACTUSOL ----------------------------
+
+
+def test_ningun_movimiento_queda_fuera_del_selector(s, datos) -> None:
+    acc = datos
+    # Un año que FACTUSOL no tiene como ejercicio, con uno ya conciliado.
+    _mov(s, acc, 7, date(2015, 3, 2), 410.00)
+    _mov(s, acc, 8, date(2015, 6, 9), 99.00, status="reconciled",
+         props=[(5, 150010, "alta", "confirmed")])
+    s.commit()
+    anios = service.ejercicios_de_movimientos(s, account_id=acc)
+    assert [a["anio"] for a in anios] == ["2026", "2025", "2015"]
+    en_bd = s.scalar(select(func.count(BankMovement.id)).where(BankMovement.importe > 0))
+    assert sum(a["movimientos"] for a in anios) == en_bd == 7
+    a2015 = next(a for a in anios if a["anio"] == "2015")
+    assert (a2015["pending"], a2015["reconciled"]) == (1, 1)
+    # El año suelto se ve y cuenta, y con «todos los años» sale todo.
+    r15 = service.list_movements(s, account_id=acc, ejercicio="2015")
+    assert sorted(_por_concepto(r15)) == [7, 8] and r15["counters"]["reconciled"] == 1
+    todos = service.list_movements(s, account_id=acc)
+    assert todos["total"] == 7
+    assert (todos["counters"]["pending"], todos["counters"]["reconciled"]) == (5, 2)
+
+
+# --- 30/10/2026: el prepago (la factura, después del cobro) -----------------------
+
+from app.erp.bank.matching import VENTANA_FACTURA_POSTERIOR, propose  # noqa: E402
+
+FIGURANTE = "TALLER EJEMPLO SL"
+
+
+def _factura(fecha: str, *, prepago: bool = False) -> dict:
+    return {"serie": 5, "codigo": 260156, "numero": "5-260156", "fecha": fecha,
+            "saldo_pendiente": 2952.0, "cliente_nombre": FIGURANTE, "cliente_codigo": "77",
+            "prepago": prepago}
+
+
+def _cobro(fecha: date) -> dict:
+    return {"importe": 2952.0, "fecha_oper": fecha, "concepto": f"TRANSFERENCIA DE {FIGURANTE}",
+            "payer": FIGURANTE}
+
+
+def test_una_factura_emitida_despues_del_cobro_se_propone_diciendolo() -> None:
+    [p] = propose(_cobro(date(2026, 10, 27)), [_factura("2026-10-28")])
+    assert p["numero"] == "5-260156"
+    assert p["reason"] == ("importe exacto + nombre del cliente · factura emitida 1 día "
+                           "después del cobro")
+    assert p["confidence"] == "media"                  # el indicio, solo, no sube a alta
+
+
+def test_con_el_pedido_pagado_por_adelantado_no_penaliza() -> None:
+    [p] = propose(_cobro(date(2026, 10, 27)), [_factura("2026-10-30", prepago=True)])
+    assert p["confidence"] == "alta"
+    assert p["reason"].endswith("factura emitida 3 días después del cobro "
+                                "(pedido pagado por adelantado)")
+
+
+def test_fuera_de_la_ventana_no_se_propone() -> None:
+    lejos = date(2026, 10, 27).toordinal() + VENTANA_FACTURA_POSTERIOR + 1
+    fecha = date.fromordinal(lejos).isoformat()
+    assert propose(_cobro(date(2026, 10, 27)), [_factura(fecha)]) == []
+    # Justo en el límite, sí.
+    limite = date.fromordinal(lejos - 1).isoformat()
+    assert propose(_cobro(date(2026, 10, 27)), [_factura(limite)])
+
+
+def test_conciliacion_propone_la_factura_posterior_con_su_pedido_pagado(s, datos) -> None:
+    """El caso del 30/10: cobro el 27, factura el 28 y pedido pagado."""
+    s.add(Order(id="o-pre", order_number="FIGURA-5886", external_source=OrderSource.WOOCOMMERCE,
+                factusol_invoice_number="260156", factusol_invoice_serie=5,
+                payment_status="paid"))
+    m = _mov(s, datos, 9, date(2026, 10, 27), 2952.0)
+    m.payer_name = FIGURANTE
+    s.commit()
+    factura = {**_factura("2026-10-28"), "total": 2952.0}
+    factura.pop("prepago")
+    service.run_matching(s, [factura], account_id=datos)
+    [prop] = s.scalars(select(BankReconciliation).where(
+        BankReconciliation.movement_id == m.id)).all()
+    assert (prop.numero, prop.confidence) == ("5-260156", "alta")
+    assert "factura emitida 1 día después del cobro (pedido pagado por adelantado)" in prop.reason
+
+
+def test_la_suma_de_facturas_posteriores_tampoco_sube_sola_a_alta() -> None:
+    f1 = {**_factura("2026-10-30"), "codigo": 260157, "numero": "5-260157",
+          "saldo_pendiente": 1000.0}
+    f2 = {**_factura("2026-10-31"), "codigo": 260158, "numero": "5-260158",
+          "saldo_pendiente": 1952.0}
+    props = propose(_cobro(date(2026, 10, 27)), [f1, f2])
+    assert {p["numero"] for p in props} == {"5-260157", "5-260158"}
+    assert all(p["confidence"] == "media" for p in props)
+    assert "factura emitida 4 días después del cobro" in props[0]["reason"]

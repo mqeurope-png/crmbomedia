@@ -149,6 +149,11 @@ function pdfLangFor(d: FactusolDocument) {
 
 /** Una factura está cobrada cuando ESTFAC=2 (mismo criterio que el workflow):
  *  entonces no se ofrece «Registrar cobro». */
+/** «1.472» (en castellano el navegador no agrupa los de cuatro cifras). */
+function miles(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
 function facturaCobrada(d: FactusolDocument): boolean {
   return String(d.estado ?? "").replace(/\.0$/, "") === "2";
 }
@@ -348,8 +353,9 @@ export default function FactusolDocumentosPage() {
     setDlError(null);
     setDownloading(true);
     try {
+      // En un ejercicio anterior, el PDF de ESE ejercicio (no el homónimo de este).
       const blob = await downloadFactusolDocumentPdf(
-        tab, d.serie, d.codigo, pdfLangFor(d),
+        tab, d.serie, d.codigo, pdfLangFor(d), anterior && ejercicio ? { ejercicio } : {},
       );
       saveBlob(blob, `${TABS.find((t) => t.key === tab)?.label ?? "Documento"}_${d.numero}.pdf`);
     } catch (e) {
@@ -544,11 +550,11 @@ export default function FactusolDocumentosPage() {
 
   /** Acción principal por documento (la que toca según el tipo/estado). */
   function primaryAction(d: FactusolDocument) {
-    if (anterior) return null;   // otro ejercicio: solo consulta
     if (isFacturas && canEdit && d.serie !== null && d.codigo !== null) {
       // Cobrada: no se ofrece registrar; el mismo diálogo enseña contra qué
-      // se cobró.
+      // se cobró. En otro ejercicio solo eso (consultar), nunca cobrar.
       const cobrada = facturaCobrada(d);
+      if (anterior && !cobrada) return null;
       return (
         <button
           type="button" className={cobrada ? "button small secondary" : "button small"}
@@ -765,6 +771,20 @@ export default function FactusolDocumentosPage() {
 
       {loading ? (
         <p className="muted">Consultando FACTUSOL…</p>
+      ) : items.length === 0 && isLinkable && !incluirExternas && (unlinkedTotal ?? 0) > 0 ? (
+        // No decir «no hay nada» cuando lo que hay está escondido por la casilla.
+        <p className="form-info" role="status">
+          Hay {miles(unlinkedTotal!)}{" "}
+          {tab === "facturas" ? "facturas" : "albaranes"}
+          {ejercicio ? ` en ${ejercicio}` : ""},{" "}
+          {unlinkedTotal === 1 ? "sin" : tab === "facturas" ? "todas sin" : "todos sin"} pedido de
+          BoHub.{" "}
+          <button type="button" className="button small secondary"
+            onClick={() => setIncluirExternas(true)}>
+            Encender «Incluir {tab === "facturas" ? "facturas externas" : "albaranes externos"}»
+            {" "}para {tab === "facturas" ? "verlas" : "verlos"}
+          </button>
+        </p>
       ) : items.length === 0 ? (
         <p className="muted">Sin documentos que casen los filtros.</p>
       ) : (
@@ -883,19 +903,23 @@ export default function FactusolDocumentosPage() {
                         {primaryAction(d)}
                         <button
                           type="button" className="button small secondary"
-                          disabled={downloading || anterior || d.serie === null || d.codigo === null}
+                          disabled={downloading || d.serie === null || d.codigo === null}
                           onClick={() => void downloadOne(d)}
                         >
                           PDF
                         </button>
-                        {anterior ? null : <ActionsMenu label={`Más acciones ${d.numero}`}>
-                          <button type="button" onClick={() => setDetail(d)}>
-                            Ver detalle
-                          </button>
+                        <ActionsMenu label={`Más acciones ${d.numero}`}>
+                          {/* En otro ejercicio, solo lo que es consultar sin leer el
+                              documento de este: la empresa y el pedido. */}
+                          {anterior ? null : (
+                            <button type="button" onClick={() => setDetail(d)}>
+                              Ver detalle
+                            </button>
+                          )}
                           {d.company ? (
                             <Link href={`/companies/${d.company.id}`}>Ver empresa</Link>
                           ) : null}
-                          {d.doc_type === "presupuestos" && canDuplicate
+                          {!anterior && d.doc_type === "presupuestos" && canDuplicate
                             && d.codigo !== null && d.serie !== null ? (
                             <button type="button" onClick={() => setDuplicating(quoteFromDocument(d))}>
                               Duplicar
@@ -906,13 +930,13 @@ export default function FactusolDocumentosPage() {
                               Abrir pedido {d.order.order_number}
                             </Link>
                           ) : null}
-                          {canPlantillas && (d.doc_type === "presupuestos" || d.doc_type === "albaranes")
+                          {!anterior && canPlantillas && (d.doc_type === "presupuestos" || d.doc_type === "albaranes")
                             && d.codigo !== null && d.serie !== null ? (
                             <button type="button" onClick={() => setPlantillaDe(d)}>
                               Guardar como plantilla
                             </button>
                           ) : null}
-                        </ActionsMenu>}
+                        </ActionsMenu>
                       </div>
                     </td>
                   </tr>
@@ -959,6 +983,7 @@ export default function FactusolDocumentosPage() {
             codigo: cobrando.codigo,
             numero: cobrando.numero,
           }}
+          ejercicio={anterior && ejercicio ? ejercicio : undefined}
           onClose={() => setCobrando(null)}
           onDone={(fresh) => {
             setCobrando(null);
