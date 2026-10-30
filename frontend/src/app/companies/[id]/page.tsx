@@ -627,8 +627,10 @@ export default function CompanyDetailPage() {
         />
       </div>
 
+      {/* key: al vincular otro cliente de FACTUSOL o pasar a otra empresa, se lee de nuevo. */}
       {canSeeParque ? (
-        <CompanyParquePanel companyId={company.id} puedeEditar={canEditParque} />
+        <CompanyParquePanel key={`${company.id}|${company.factusol_company_id ?? ""}`}
+                            companyId={company.id} puedeEditar={canEditParque} />
       ) : null}
 
       <div className="tab-bar">

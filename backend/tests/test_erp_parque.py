@@ -166,3 +166,37 @@ def test_api_anadir_y_dar_de_baja_es_de_quien_trabaja_pedidos(http, session_fact
     # Una clave que no es de su parque no se acepta.
     assert http.post(f"{url}/bajas", json={"clave": "2017|factura|1|1|1|x"},
                      headers=auth_headers(http, "pedidos")).status_code == 404
+
+
+# --- lo que encontró la revisión -------------------------------------------------------
+
+
+def test_un_abono_anula_la_maquina_mas_reciente(session_factory) -> None:  # noqa: F811
+    datos = _datos()
+    hoy = datos["2026"]
+    hoy["F_FAC"].append(_fac(260009, CLI_ROTULOS, "Rótulos Figurante", "2026-10-01T00:00:00"))
+    hoy["F_LFA"].append(_lfa(260009, 1, MAQUINA, "Abono láser", -1, 1000))
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(datos), ["2026", "2017"], en_curso="2026")
+        from app.erp import historico_clasificacion as cl
+
+        cl.clasificar(s, "LAS", {"clase": "maquina"}, por="x")
+        rotulos = Company(name="Rótulos Figurante", factusol_company_id=CLI_ROTULOS)
+        s.add(rotulos)
+        s.commit()
+        p = parque.parque(s, rotulos)
+    # Queda la de 2017 (2 uds); la de 2026 está abonada.
+    assert [(m["ejercicio"], m["cantidad"]) for m in p["maquinas"]] == [("2017", 2.0)]
+
+
+def test_la_baja_la_deshace_la_empresa_que_la_ve(session_factory) -> None:  # noqa: F811
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        taller = s.get(Company, ids["taller"])
+        clave = parque.parque(s, taller)["maquinas"][0]["clave"]
+        parque.dar_baja(s, taller, clave=clave, motivo=None, por="x")
+        # Como si la hubiera dado otra empresa antes de fusionarse con esta.
+        s.get(ParqueBaja, clave).company_id = ids["rotulos"]
+        s.commit()
+        parque.reactivar(s, taller, clave=clave)
+        assert s.get(ParqueBaja, clave) is None

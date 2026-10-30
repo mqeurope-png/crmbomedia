@@ -45,6 +45,7 @@ export function CompanyParquePanel({
   const [anio, setAnio] = useState<string | undefined>(undefined);
   const [gamas, setGamas] = useState<HistoricoGama[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [errorCompras, setErrorCompras] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [bajaDe, setBajaDe] = useState<string | null>(null);
   const [motivo, setMotivo] = useState("");
@@ -66,12 +67,18 @@ export function CompanyParquePanel({
   useEffect(() => {
     let vivo = true;
     getComprasEmpresa(companyId, anio)
-      .then((r) => { if (vivo) setCompras(r); })
-      .catch((err) => { if (vivo) setError(extractErrorMessage(err, "No se han podido leer las compras.")); });
+      .then((r) => { if (vivo) { setCompras(r); setErrorCompras(null); } })
+      .catch((err) => {
+        if (!vivo) return;
+        // Sin dejar a la vista las compras del año anterior como si fueran de este.
+        setCompras(null);
+        setErrorCompras(extractErrorMessage(err, "No se han podido leer las compras."));
+      });
     return () => { vivo = false; };
   }, [companyId, anio]);
 
-  async function hacer(accion: () => Promise<unknown>, fallo: string) {
+  /** true si ha ido bien (el formulario de alta solo se cierra entonces). */
+  async function hacer(accion: () => Promise<unknown>, fallo: string): Promise<boolean> {
     setError(null);
     setOcupado(true);
     try {
@@ -80,8 +87,10 @@ export function CompanyParquePanel({
       else await leerParque();
       setBajaDe(null);
       setMotivo("");
+      return true;
     } catch (err) {
       setError(extractErrorMessage(err, fallo));
+      return false;
     } finally {
       setOcupado(false);
     }
@@ -195,7 +204,7 @@ export function CompanyParquePanel({
             void hacer(() => anadirMaquinaParque(companyId, {
               descripcion: nueva.descripcion.trim(), gama: nueva.gama || undefined,
               fecha: nueva.fecha || undefined, nota: nueva.nota.trim() || undefined,
-            }), "No se ha podido añadir la máquina.").then(() => setNueva(null));
+            }), "No se ha podido añadir la máquina.").then((ok) => { if (ok) setNueva(null); });
           }}>
             <label className="field"><span>Máquina</span>
               <input value={nueva.descripcion} maxLength={255} required
@@ -231,7 +240,16 @@ export function CompanyParquePanel({
 
       <section className="erp-card" aria-label="Qué ha comprado">
         <h3>Qué ha comprado</h3>
-        {compras?.sin_cliente_factusol ? (
+        {errorCompras ? (
+          <p className="form-error" role="alert">
+            {errorCompras}{" "}
+            {anio !== undefined ? (
+              <button type="button" className="button small secondary" onClick={() => setAnio(undefined)}>
+                Volver al ejercicio en curso
+              </button>
+            ) : null}
+          </p>
+        ) : compras?.sin_cliente_factusol ? (
           <p className="muted">Sin cliente de FACTUSOL vinculado.</p>
         ) : compras ? (
           <>

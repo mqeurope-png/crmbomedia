@@ -112,3 +112,28 @@ test("una empresa sin cliente de FACTUSOL lo dice", async () => {
   render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
   expect(await screen.findByText(/no tiene cliente de FACTUSOL vinculado/)).toBeInTheDocument();
 });
+
+test("si no se puede añadir, el formulario sigue abierto con lo escrito", async () => {
+  const user = userEvent.setup();
+  api().anadirMaquinaParque.mockRejectedValueOnce(new Error("Esa gama no existe."));
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  await screen.findByText(/2 en servicio/);
+  await user.click(screen.getByRole("button", { name: "Añadir una máquina a mano" }));
+  await user.type(screen.getByLabelText("Máquina"), "Láser de otro proveedor");
+  await user.click(screen.getByRole("button", { name: "Añadir" }));
+  expect(await screen.findByRole("alert")).toBeInTheDocument();
+  expect(screen.getByLabelText("Máquina")).toHaveValue("Láser de otro proveedor");
+});
+
+test("si fallan las compras de un año no se quedan las del anterior a la vista", async () => {
+  const user = userEvent.setup();
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
+  const compras = await screen.findByRole("region", { name: "Qué ha comprado" });
+  await within(compras).findByText("5-260001");
+  api().getComprasEmpresa.mockRejectedValueOnce(new Error("Caído"));
+  await user.selectOptions(within(compras).getByLabelText("Ejercicio"), "2017");
+  expect(await within(compras).findByRole("alert")).toBeInTheDocument();
+  expect(within(compras).queryByText("5-260001")).not.toBeInTheDocument();
+  await user.click(within(compras).getByRole("button", { name: "Volver al ejercicio en curso" }));
+  await waitFor(() => expect(within(compras).getByText("5-260001")).toBeInTheDocument());
+});

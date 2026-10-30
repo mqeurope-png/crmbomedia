@@ -7,7 +7,8 @@ Un accesorio, un recambio o un consumible no son máquinas.
 - **Una venta, una vez.** Un albarán facturado y su factura son la misma
   venta: cuenta la factura. Un albarán se cuenta solo si FACTUSOL lo da como
   pendiente de facturar (`ESTALB` 0) o, sin ese dato (volcado antes de la
-  0155), si de ese artículo no hay factura del cliente.
+  0155), si de ese artículo no hay factura del cliente. Un abono (línea en
+  negativo) anula la venta más reciente de ese artículo.
 - **Incompleto a sabiendas.** Lo vendido antes de 2014, como línea de nota o
   en otro sitio no sale: se **añade a mano** (`ParqueMaquinaManual`). Lo que
   ya no está en servicio se **da de baja** y deja de contar en el parque
@@ -88,12 +89,27 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
                lin.es_producto.is_(True), fam.clase == CLASE_MAQUINA)
     ).all()
     facturados = {f.codart for f in filas if f.tipo == TIPO_FACTURA}
+    # Un abono (línea en negativo) anula la venta más reciente de ese artículo.
+    abonado: dict[str, float] = {}
+    for f in filas:
+        if (f.cantidad or 0) < 0:
+            abonado[f.codart] = abonado.get(f.codart, 0.0) - float(f.cantidad)
+    filas = sorted(filas, key=lambda f: (f.fecha is not None, f.fecha or date.min), reverse=True)
     out = []
     for f in filas:
+        if (f.cantidad or 0) <= 0:
+            continue
         if f.tipo == TIPO_ALBARAN:
             if f.estado == ALBARAN_FACTURADO:
                 continue
             if f.estado is None and f.codart in facturados:
+                continue
+        cantidad = float(f.cantidad)
+        if abonado.get(f.codart, 0) > 0:
+            anula = min(cantidad, abonado[f.codart])
+            abonado[f.codart] -= anula
+            cantidad -= anula
+            if cantidad <= 0:
                 continue
         out.append({
             "origen": f.tipo, "clave": clave_linea(f.ejercicio, f.tipo, f.serie, f.codigo,
@@ -101,7 +117,7 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
             "codart": f.codart, "articulo": f[11] or f[9], "familia": f.familia,
             "gama": f.gama, "fecha": f.fecha.isoformat() if f.fecha else None,
             "fecha_original": None if f.fecha else f.fecha_original,
-            "ejercicio": f.ejercicio, "cantidad": float(f.cantidad or 0),
+            "ejercicio": f.ejercicio, "cantidad": cantidad,
             "documento": {"tipo": f.tipo, "serie": f.serie, "codigo": f.codigo,
                           "numero": f"{f.serie}-{int(f.codigo):06d}"},
         })
@@ -210,8 +226,11 @@ def reactivar(session: Session, company: Any, *, clave: str | None = None,
             raise LookupError("maquina")
         m.baja_at = m.baja_motivo = m.baja_por = None
     else:
+        # Por su parque y no por quién la dio: tras una fusión o un cambio de
+        # cliente vinculado, la empresa que la ve es la que puede deshacerla.
         b = session.get(ParqueBaja, clave or "")
-        if b is None or b.company_id != company.id:
+        claves = {x["clave"] for x in maquinas_volcadas(session, company.factusol_company_id)}
+        if b is None or b.clave not in claves:
             raise LookupError("maquina")
         session.delete(b)
     session.commit()
