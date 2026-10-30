@@ -122,6 +122,7 @@ services:
       # y la factura/pedido conciliados escritos en celdas vacías). No toca
       # FACTUSOL.
       - bank:drive
+      - erp:historico
     volumes:
       # Sprint-Backfill-Gmail. El worker baja los adjuntos a este volume;
       # api los sirve via FileResponse desde el mismo volume.

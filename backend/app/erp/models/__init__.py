@@ -15,6 +15,13 @@ from app.erp.models.exceptions import (
     ExceptionStatus,
     ExceptionType,
 )
+from app.erp.models.historico import (
+    HistoricoArticulo,
+    HistoricoDocumento,
+    HistoricoEjercicio,
+    HistoricoFamilia,
+    HistoricoLinea,
+)
 from app.erp.models.integration_events import (
     MAX_RETRIES,
     RETRY_BACKOFF_SECONDS,
@@ -80,6 +87,11 @@ from app.erp.models.shipping import (
 from app.erp.models.sku_mapping import ProductSkuMapping, SkuMatchedBy
 
 __all__ = [
+    "HistoricoArticulo",
+    "HistoricoDocumento",
+    "HistoricoEjercicio",
+    "HistoricoFamilia",
+    "HistoricoLinea",
     "BankAccount",
     "BankLearnedRule",
     "BankMovement",

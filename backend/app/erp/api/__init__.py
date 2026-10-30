@@ -6,6 +6,7 @@ from app.erp.api.cuadre import router as cuadre_router
 from app.erp.api.exceptions import router as exceptions_router
 from app.erp.api.factusol import router as factusol_router
 from app.erp.api.genei import router as genei_router
+from app.erp.api.historico import router as historico_router
 from app.erp.api.ia import router as ia_router
 from app.erp.api.leads import router as leads_router
 from app.erp.api.ofertas import router as ofertas_router
@@ -30,6 +31,7 @@ __all__ = [
     "exceptions_router",
     "factusol_router",
     "genei_router",
+    "historico_router",
     "ia_router",
     "leads_router",
     "ofertas_router",

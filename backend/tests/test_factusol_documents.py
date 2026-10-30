@@ -822,7 +822,7 @@ def test_documentos_leen_el_ejercicio_en_curso_y_el_que_se_pida(client, session_
     assert r.status_code == 404 and r.json()["detail"]["code"] == "ejercicio_sin_datos"
     assert "2019" in r.json()["detail"]["detail"]
     assert ej.json() == {"en_curso": "2026",
-                         "ejercicios": ["2026", "2025", "2024", "2023", "2022", "2021"]}
+                         "ejercicios": [str(a) for a in range(2026, 2013, -1)]}
 
 
 def test_ver_el_cobro_en_un_ejercicio_anterior_lee_ese_ejercicio(client, session_factory) -> None:

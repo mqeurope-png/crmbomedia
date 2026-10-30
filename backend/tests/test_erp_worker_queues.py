@@ -31,6 +31,8 @@ ERP_INTEGRATION_QUEUES = (
     "cuadre:run",
     # Conciliación: las hojas del banco en Drive (tic diario y escrituras).
     "bank:drive",
+    # Histórico de ventas: tic diario y cargas desde la pantalla.
+    "erp:historico",
 )
 
 
@@ -103,3 +105,10 @@ def test_bank_drive_queue_constant_matches_compose_names() -> None:
 
     assert BANK_DRIVE_QUEUE == "bank:drive"
     assert BANK_DRIVE_QUEUE in ERP_INTEGRATION_QUEUES
+
+
+def test_historico_queue_constant_matches_compose_names() -> None:
+    from app.erp.historico_job import HISTORICO_QUEUE
+
+    assert HISTORICO_QUEUE == "erp:historico"
+    assert HISTORICO_QUEUE in ERP_INTEGRATION_QUEUES

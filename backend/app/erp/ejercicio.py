@@ -13,8 +13,10 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-#: Cuántos ejercicios anteriores ofrece el selector.
-EJERCICIOS_ATRAS = 5
+#: El primer ejercicio de FACTUSOL: el selector ofrece del en curso hasta este.
+#: Los antiguos (2014-2022) solo responden mientras estén reabiertos en el
+#: escritorio; si no, la pantalla dice que no hay base de datos.
+PRIMER_EJERCICIO = 2014
 
 
 def ejercicio_en_curso(session: Session) -> str:
@@ -28,7 +30,8 @@ def ejercicios(session: Session) -> dict[str, object]:
     atrás). Que FACTUSOL tenga de verdad cada uno se sabe al leerlo."""
     actual = ejercicio_en_curso(session)
     anio = int(actual)
-    return {"en_curso": actual, "ejercicios": [str(anio - i) for i in range(EJERCICIOS_ATRAS + 1)]}
+    return {"en_curso": actual,
+            "ejercicios": [str(a) for a in range(anio, min(anio, PRIMER_EJERCICIO) - 1, -1)]}
 
 
 def limites(ejercicio: str) -> tuple[date, date]:

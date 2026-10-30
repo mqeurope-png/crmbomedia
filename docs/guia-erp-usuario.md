@@ -24,6 +24,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
   - [Proformas](#proformas)
   - [Plantillas](#plantillas)
   - [Documentos de FACTUSOL](#documentos-de-factusol)
+  - [Quién compró qué (histórico de ventas)](#quién-compró-qué-histórico-de-ventas)
   - [Cola SAT (el taller)](#cola-sat-el-taller)
   - [Seguimiento](#seguimiento)
   - [Excepciones](#excepciones)
@@ -191,6 +192,8 @@ comillas):
 - **«ERP · Plantillas»** → [Plantillas](#plantillas) (líneas listas para una
   oferta, una proforma o un pedido).
 - **«ERP · Documentos»** → [Documentos de FACTUSOL](#documentos-de-factusol).
+- **«ERP · Quién compró qué»** → [el histórico de ventas](#quién-compró-qué-histórico-de-ventas)
+  (qué clientes compraron un artículo o una familia; el taller no lo ve).
 - **«ERP · Seguimiento»** → [Seguimiento](#seguimiento).
 - **«ERP · Cuadre»** → [Cuadre (descuadres)](#cuadre-descuadres).
 - **«ERP · Leads»** → [Respuesta a leads](#respuesta-a-leads) (solo admin).
@@ -923,7 +926,9 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 
 - **«Ejercicio»** — la pantalla arranca en el **ejercicio en curso** (el de
   FACTUSOL, el que está en Configuración ERP). Puedes elegir uno anterior para
-  consultarlo. Mientras estás en otro ejercicio, el selector se pone en ámbar,
+  consultarlo: el selector ofrece todos, del en curso a **2014**. Los antiguos
+  solo responden si están abiertos en el escritorio de FACTUSOL; si no, la
+  pantalla dice que ese ejercicio no tiene datos. Mientras estás en otro ejercicio, el selector se pone en ámbar,
   sale un aviso arriba con **«Volver a …»**, y la lista es **solo consulta**:
   no se ofrece cobrar, crear pedido ni vincular, y no se abre el detalle ni el
   PDF.
@@ -966,6 +971,55 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 - **«Ver detalle»** — abre una ventana con las líneas, los cobros y opciones de
   PDF; desde ahí también puedes **crear el albarán/la factura** o **vincular** el
   documento a un pedido existente (**«Vincular a pedido»**, sin tocar FACTUSOL).
+
+### Quién compró qué (histórico de ventas)
+
+**Menú: «ERP · Quién compró qué».** Contesta a «¿quién nos compró una FLUX
+1390?» con todas las ventas de FACTUSOL de **2014 a hoy**. BoHub guarda una
+copia de las facturas y albaranes de cada ejercicio (con sus líneas y el
+catálogo de ese año): la pantalla consulta esa copia, no FACTUSOL en vivo, y
+**no cambia nada en FACTUSOL**. Lo ven oficina y comerciales; el taller no
+(lleva datos de clientes).
+
+**Pestaña «Compradores».**
+
+- Escribe el **código o el nombre del artículo** y elige uno de la lista, o
+  escribe un texto y pulsa **«Buscar»** (busca en los nombres de todos los
+  años: un artículo descatalogado sale con el nombre que tenía cuando se
+  vendió). También puedes buscar por **familia** y acotar **«Desde» / «Hasta»**
+  por años.
+- Por cada cliente: **última compra** (fecha y documento: factura o albarán,
+  serie-número y ejercicio), **unidades**, cuántas compras y qué artículos.
+- **Empresa en BoHub:** enlace a su ficha si el cliente de FACTUSOL está
+  vinculado a una empresa; si no, **«Sin empresa vinculada»** en ámbar. Arriba
+  dice cuántos hay sin vincular.
+- **«Exportar CSV»** descarga la misma lista (se abre en Excel).
+- **Las unidades salen de las facturas.** Si un cliente solo tiene albaranes
+  sin facturar, salen de los albaranes. Un albarán facturado y su factura son
+  la misma venta: no se suman dos veces.
+- **Las líneas sin artículo** (portes, condiciones, garantías, referencias de
+  pedido) se guardan pero **no cuentan como venta**.
+- Si FACTUSOL tiene una fecha imposible (hay una de 1900), sale el ejercicio
+  con «(fecha no válida)».
+
+**Pestaña «Familias».** Las familias de FACTUSOL con cuántos artículos y
+cuántas líneas vendidas tienen. Quien tiene acceso a Configuración ERP
+elige la **clase** de cada una (**Máquina**, **Consumible** u **Otro**) en el
+desplegable; se guarda al momento y se conserva aunque se vuelva a cargar.
+
+**Pestaña «Carga».** El estado de cada ejercicio, de 2014 al en curso:
+**Cargado** (con fecha y recuentos), **Cargando…**, **Sin cargar**, **Error** o
+**«No disponible en FACTUSOL»**. Esto último quiere decir que la API de
+FACTUSOL no tiene ese ejercicio abierto: **ábrelo en el escritorio de
+FACTUSOL** y pulsa **«Volver a cargar»**. Lo que ya estaba guardado de ese
+ejercicio no se borra.
+
+- **«Cargar los 13 ejercicios»** — la primera carga, o rehacerlo todo (un par
+  de minutos). **«Volver a cargar»** en una fila — solo ese ejercicio. Una carga
+  a la vez; la pantalla se actualiza sola mientras dura.
+- **El ejercicio en curso se recarga solo cada día a las 05:20.** Los
+  anteriores solo cuando se pulsa aquí.
+- Arriba dice cuántas líneas son de producto y cuántas son **notas**.
 
 ### Cola SAT (el taller)
 

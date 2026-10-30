@@ -7627,3 +7627,114 @@ export async function setPlantillaCarpetaDefecto(
     body: JSON.stringify({ carpeta_id: carpetaId }),
   });
 }
+
+// --- Histórico de ventas: «¿quién compró qué?» (30/10/2026) ------------------
+// Lo que BoHub ha volcado de FACTUSOL (solo lectura de FACTUSOL). La carga de
+// un ejercicio se encola y la pantalla consulta su estado.
+
+export type HistoricoEstado = "cargado" | "cargando" | "no_disponible" | "error" | "sin_cargar";
+
+export type HistoricoEjercicio = {
+  ejercicio: string;
+  estado: HistoricoEstado;
+  cargado_at: string | null;
+  intento_at: string | null;
+  detalle: string | null;
+  facturas: number;
+  albaranes: number;
+  lineas: number;
+  lineas_producto: number;
+  lineas_nota: number;
+  articulos: number;
+  segundos: number | null;
+};
+
+export type HistoricoEstadoCarga = {
+  en_curso: string;
+  ejercicios: HistoricoEjercicio[];
+  notas: { lineas: number; producto: number; notas: number };
+};
+
+export type HistoricoClase = "maquina" | "consumible" | "otro";
+
+export type HistoricoFamilia = {
+  codigo: string;
+  descripcion: string | null;
+  clase: HistoricoClase | null;
+  articulos: number;
+  ventas: number;
+};
+
+export type HistoricoArticulo = {
+  codart: string;
+  descripcion: string | null;
+  familia: string | null;
+  ultimo_ejercicio: string;
+  ventas: number;
+};
+
+export type HistoricoComprador = {
+  codcli: string | null;
+  nombre: string | null;
+  empresa: { id: string; nombre: string } | null;
+  ultima_compra: {
+    fecha: string | null;
+    /** Solo si la fecha de FACTUSOL es imposible (p. ej. 1900). */
+    fecha_original: string | null;
+    ejercicio: string;
+    tipo: "factura" | "albaran";
+    documento: string;
+  } | null;
+  unidades: number;
+  compras: number;
+  articulos: { codart: string; descripcion: string | null }[];
+};
+
+export type HistoricoFiltro = {
+  codart?: string;
+  q?: string;
+  familia?: string;
+  desde?: number;
+  hasta?: number;
+};
+
+export async function getHistoricoEstado(): Promise<HistoricoEstadoCarga> {
+  return apiFetch("/api/erp/historico/ejercicios");
+}
+
+/** Encola la carga de esos ejercicios (vacío = los trece). */
+export async function cargarHistorico(ejercicios: string[] = []): Promise<{ encolada: string[] }> {
+  return apiFetch("/api/erp/historico/cargar", {
+    method: "POST",
+    body: JSON.stringify({ ejercicios }),
+  });
+}
+
+export async function getHistoricoFamilias(): Promise<{
+  items: HistoricoFamilia[]; clases: HistoricoClase[];
+}> {
+  return apiFetch("/api/erp/historico/familias");
+}
+
+export async function clasificarHistoricoFamilia(
+  codigo: string, clase: HistoricoClase | null,
+): Promise<{ codigo: string; clase: HistoricoClase | null }> {
+  return apiFetch(`/api/erp/historico/familias/${encodeURIComponent(codigo)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ clase }),
+  });
+}
+
+export async function buscarHistoricoArticulos(q: string): Promise<{ items: HistoricoArticulo[] }> {
+  return apiFetch(`/api/erp/historico/articulos${qs({ q })}`);
+}
+
+export async function getHistoricoCompradores(f: HistoricoFiltro): Promise<{
+  items: HistoricoComprador[]; total: number; sin_empresa: number;
+}> {
+  return apiFetch(`/api/erp/historico/compradores${qs({ ...f })}`);
+}
+
+export async function downloadHistoricoCompradoresCsv(f: HistoricoFiltro): Promise<Blob> {
+  return apiDownloadBlob(`/api/erp/historico/compradores.csv${qs({ ...f })}`);
+}
