@@ -109,6 +109,14 @@ class WebOrderNoAlbaran(AlbaranNotApplicable):
     code = "web_order_no_albaran"
 
 
+class FacturaSourceNoAlbaran(AlbaranNotApplicable):
+    """Un pedido creado desde una FACTURA no crea albarán (30/10/2026): la
+    factura salió de un albarán que ya existe; se vincula ese
+    (`pedido_albaran.vincular_albaran_de_factura`) o uno a mano."""
+
+    code = "factura_source_no_albaran"
+
+
 def _status_value(v: Any) -> str:
     return getattr(v, "value", v)
 
@@ -129,6 +137,20 @@ def save_packing(order: Order, data: dict[str, Any]) -> None:
 
 def is_web_order(order: Order) -> bool:
     return _status_value(order.external_source) == OrderSource.WOOCOMMERCE.value
+
+
+def is_albaran_source(order: Order) -> bool:
+    """¿El pedido se creó desde un albarán de FACTUSOL? (Su albarán es ese:
+    si se desvincula, se vincula otro; nunca se crea uno nuevo.)"""
+    return _status_value(order.external_source) == OrderSource.FACTUSOL_ALBARAN.value
+
+
+def is_factura_source(order: Order) -> bool:
+    """¿El pedido se creó desde una factura de FACTUSOL?"""
+    src = packing_of(order).get("factusol_source")
+    if isinstance(src, dict) and src.get("doc_type") == "facturas":
+        return True
+    return _status_value(order.external_source) == OrderSource.FACTUSOL_FACTURA.value
 
 
 def order_source(order: Order) -> dict[str, Any] | None:
@@ -245,6 +267,20 @@ def albaran_blocker(
         return (
             WebOrderNoAlbaran.code,
             "Los pedidos web no generan albarán en BoHub: lo crea WooCommerce.",
+        )
+    if is_factura_source(order):
+        # Crear uno dejaría dos albaranes para la misma entrega (el segundo,
+        # a anular a mano en FACTUSOL).
+        return (
+            FacturaSourceNoAlbaran.code,
+            "El pedido sale de una factura, y la factura de un albarán que ya "
+            "existe: no se crea otro. Se vincula el de la factura o uno a mano.",
+        )
+    if is_albaran_source(order):
+        return (
+            FacturaSourceNoAlbaran.code,
+            "El pedido sale de un albarán que ya existe: no se crea otro. "
+            "Vincúlalo de nuevo (o el que corresponda).",
         )
     if order_source(order) is not None:
         return None
@@ -539,7 +575,9 @@ def create_albaran_for_order(
     blocker = albaran_blocker(order, session)
     if blocker is not None:
         code, detail = blocker
-        exc_cls = WebOrderNoAlbaran if code == WebOrderNoAlbaran.code else AlbaranNotApplicable
+        exc_cls = {WebOrderNoAlbaran.code: WebOrderNoAlbaran,
+                   FacturaSourceNoAlbaran.code: FacturaSourceNoAlbaran}.get(
+            code, AlbaranNotApplicable)
         raise exc_cls(detail)
     if order.factusol_albaran_number:
         return {
@@ -556,6 +594,14 @@ def create_albaran_for_order(
         client, doc_type, "albaranes", tip=tip, cod=cod, ejercicio=ejercicio,
     )
     if existing:
+        # Lo que se leyó al empezar el job puede ser viejo (p. ej. el correo
+        # al taller que dejó «Mandar a SAT» mientras tanto): no pisarlo.
+        session.refresh(order)
+        if order.factusol_albaran_number:
+            return {
+                "status": "already", "numero": order.factusol_albaran_number,
+                "order_id": order.id, "order_number": order.order_number,
+            }
         _attach_albaran(
             session, order, existing[0], how="localizado en FACTUSOL (ya existía)",
             actor_user_id=actor_user_id,

@@ -32,9 +32,7 @@ from app.erp.state_machine.definitions import (
     GUARD_INVOICEABLE,
     GUARD_PACKAGES_MEASURED,
     GUARD_PACKED,
-    GUARD_PAYMENT_OK,
     GUARD_TRACKING,
-    PAYMENT_OK_FOR_PREPARATION,
     SYSTEM,
     TransitionDef,
     find_transition,
@@ -59,24 +57,6 @@ class TransitionError(ValueError):
 # Cada guard recibe (order, evidence) y devuelve None (ok) o el motivo del
 # fallo. Los tests de mutación adversarial cubren que quitar cualquiera de
 # estas comprobaciones rompe la suite.
-
-
-def _guard_payment_ok(order: Order, _evidence: dict[str, Any]) -> str | None:
-    from app.erp.sample_orders import payment_not_required  # noqa: PLC0415
-
-    if payment_not_required(order):
-        # Una muestra no se cobra: su preparación no espera ningún pago
-        # (14/10/2026; hasta entonces TODAS se quedaban en «Por embalar»).
-        # Un pedido web traído a mano tampoco la espera: traerlo fue la
-        # autorización (28/10/2026); su pago sigue «pendiente» hasta que la
-        # tienda lo cobre.
-        return None
-    status = getattr(order.payment_status, "value", order.payment_status)
-    if status not in PAYMENT_OK_FOR_PREPARATION:
-        return (
-            f"la preparación exige pago cobrado/aprobado; actual: {status!r}"
-        )
-    return None
 
 
 def _guard_packed(order: Order, _evidence: dict[str, Any]) -> str | None:
@@ -136,7 +116,6 @@ def _guard_packages_measured(order: Order, _evidence: dict[str, Any]) -> str | N
 
 
 _GUARDS = {
-    GUARD_PAYMENT_OK: _guard_payment_ok,
     GUARD_PACKED: _guard_packed,
     GUARD_TRACKING: _guard_tracking,
     GUARD_INVOICEABLE: _guard_invoiceable,

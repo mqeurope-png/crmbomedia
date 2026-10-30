@@ -19,6 +19,8 @@ import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
+import { MandarSatModal } from "../../../components/erp/MandarSatModal";
+import { VincularAlbaranPanel } from "../../../components/erp/VincularAlbaranPanel";
 import { CobroBancoBlock } from "../../../components/erp/CobroBancoBlock";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import {
@@ -57,6 +59,8 @@ import type { TraidoAMano } from "../../../lib/pedidosWebApi";
 import { usePersistentState } from "../../../lib/usePersistentState";
 import {
   approveOrder,
+  enviarCorreoSatPendiente,
+  type MandarSatResult,
   bulkNoShipping,
   completeOrder,
   customerHeadline,
@@ -275,6 +279,9 @@ function ErpOrderDetailScreen() {
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
+  // «Mandar a SAT» (30/10/2026): pedidos creados desde un documento.
+  const [mandarSatOpen, setMandarSatOpen] = useState(false);
+  const [correoSatBusy, setCorreoSatBusy] = useState(false);
   // «Ya enviada» (factura mandada por fuera), mención legal en la factura
   // emitida y «Cambiar cliente» (30/10/2026).
   const [marcarEnviadaOpen, setMarcarEnviadaOpen] = useState(false);
@@ -352,6 +359,7 @@ function ErpOrderDetailScreen() {
   const canOffice = can(user, Cap.OFFICE_VIEW);
   const canEmailClient = can(user, Cap.EMAIL_CLIENT);
   const canEmailSat = can(user, Cap.EMAIL_SAT);
+  const canMandarSat = can(user, Cap.ORDERS_APPROVE) && !esMuestra;
   const canManage = canEditOrder || (esMuestra && can(user, Cap.SAMPLES_CREATE));
   // «Marcar completado»: la oficina en un pedido normal; en una muestra,
   // quien la lleva (también el taller).
@@ -478,13 +486,54 @@ function ErpOrderDetailScreen() {
       // el acto —como al convertir una proforma— presentando ahí mismo la
       // decisión de pago (el diálogo del gate C1). Idempotente: si ya tiene
       // albarán, no se dispara. Las muestras y los web no llevan albarán aquí.
-      const puedeAlbaran = updated.external_source !== "woocommerce"
-        && !isSampleOrder(updated) && !updated.factusol_albaran_number;
+      // Un pedido creado desde una factura NUNCA crea albarán (30/10/2026):
+      // lo dice el backend (`albaran_lo_crea_bohub`).
+      const puedeAlbaran = updated.mandar_sat
+        ? updated.mandar_sat.albaran_lo_crea_bohub
+        : updated.external_source !== "woocommerce"
+          && !isSampleOrder(updated) && !updated.factusol_albaran_number;
       if (puedeAlbaran) setAlbaranSignal((n) => n + 1);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo aprobar el pedido."));
     } finally {
       setApproveBusy(false);
+    }
+  }
+
+  /** Tras «Mandar a SAT»: la ficha se pone al día, el albarán se crea como
+   *  siempre si toca (proforma / pedido) y se dice lo que haya pasado con el
+   *  albarán de la factura y con el correo al taller. */
+  function onMandadoASat(r: MandarSatResult) {
+    setMandarSatOpen(false);
+    setOrder(r.order);
+    setError(null);
+    if (r.albaran.crear) setAlbaranSignal((n) => n + 1);
+    const partes: string[] = [r.cola === "entrado"
+      ? "Mandado al SAT: el pedido está en la Cola SAT."
+      : r.cola === "ya_estaba" ? "El pedido ya estaba en la Cola SAT."
+        : "El pedido ya pasó por la Cola SAT."];
+    if (r.albaran.estado === "vinculado" && r.albaran.numero) {
+      partes.push(`Vinculado el albarán ${r.albaran.numero} de la factura (no se ha creado ninguno).`);
+    }
+    if (r.correo?.estado === "enviado") partes.push("Correo enviado al taller.");
+    if (r.correo?.estado === "pendiente_albaran") {
+      partes.push("El correo al taller sale en cuanto el albarán esté creado.");
+    }
+    setNotice(partes.join(" "));
+  }
+
+  /** El correo al taller que quedó pendiente (del albarán) o fallido. */
+  async function onEnviarCorreoSat() {
+    if (!order) return;
+    setCorreoSatBusy(true);
+    try {
+      const r = await enviarCorreoSatPendiente(order.id);
+      setOrder(r.order);
+      if (r.correo.estado === "enviado") setNotice("Correo enviado al taller.");
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se ha podido enviar el correo al taller."));
+    } finally {
+      setCorreoSatBusy(false);
     }
   }
 
@@ -624,6 +673,13 @@ function ErpOrderDetailScreen() {
         return canEmailSat ? (
           <button type="button" className="button small" onClick={() => setOrderEmailOpen(true)}>
             Enviar a SAT
+          </button>
+        ) : null;
+      case "mandar_sat":
+        // Creado desde un documento: no se «aprueba», se manda al taller.
+        return canMandarSat ? (
+          <button type="button" className="button small" onClick={() => setMandarSatOpen(true)}>
+            {label}
           </button>
         ) : null;
       case "aprobar":
@@ -890,7 +946,11 @@ function ErpOrderDetailScreen() {
                 al taller por email», 14/10/2026), pero solo a la dirección del
                 taller y sin factura. Una muestra no tiene albarán ni PDF que
                 mandar. */}
-            {canEmailSat && !esMuestra && wf?.next_action !== "enviar_sat" ? (
+            {/* Con «Mandar a SAT» a mano, este se esconde; quien no puede
+                mandarlo (el taller) sigue teniendo el correo, que también lo
+                mete en la cola. */}
+            {canEmailSat && !esMuestra && wf?.next_action !== "enviar_sat"
+              && (wf?.next_action !== "mandar_sat" || !canMandarSat) ? (
               <button
                 type="button"
                 className="button small secondary"
@@ -1065,6 +1125,28 @@ function ErpOrderDetailScreen() {
       />
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
+      {order.mandar_sat?.correo && order.mandar_sat.correo.estado !== "enviado" ? (
+        <div className={order.mandar_sat.correo.estado === "fallido" ? "form-error" : "form-info"}
+             role="status">
+          {order.mandar_sat.correo.estado === "fallido"
+            ? <>El pedido está en la Cola SAT, pero <strong>el correo al taller no salió</strong>
+                {order.mandar_sat.correo.detalle ? `: ${order.mandar_sat.correo.detalle}` : ""}.</>
+            : order.mandar_sat.correo.estado === "enviando"
+              ? <>El correo al taller se está enviando. Si se queda así, se cortó:
+                  comprueba en Gmail si salió antes de reintentar.</>
+              : <>El correo al taller espera al albarán: sale solo en cuanto se cree o se vincule.</>}
+          {canEmailSat ? (
+            <>
+              {" "}
+              <button type="button" className="button small" disabled={correoSatBusy}
+                      onClick={() => void onEnviarCorreoSat()}>
+                {correoSatBusy ? "Enviando…"
+                  : order.mandar_sat.correo.estado === "fallido" ? "Reintentar" : "Enviar ahora"}
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {/* C3: sugerencias tras aprobar (no bloquean; se cierran con ×). */}
       {justApproved ? (
         <div className="form-info erp-approve-suggest" role="status">
@@ -1401,8 +1483,10 @@ function ErpOrderDetailScreen() {
             orderSource={order.external_source}
             factusolAlbaranNumber={order.factusol_albaran_number ?? null}
             pdfLang={pdfLang}
-            canCreateAlbaran={canEmit}
+            canCreateAlbaran={canEmit && !order.mandar_sat?.albaran_solo_vincular}
             createSignal={albaranSignal}
+            // El correo al taller que esperaba al albarán lo manda el backend
+            // al crearlo; aquí solo se recarga.
             onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
             openEtiquetaSignal={etiquetaSignal}
             onUploaded={() => load()}
@@ -1463,6 +1547,21 @@ function ErpOrderDetailScreen() {
         </section>
         <section className="erp-flow-panel" aria-label="FACTUSOL">
           <h3>FACTUSOL</h3>
+          {!order.factusol_albaran_number && !isWeb && !esMuestra && canEditOrder
+            && !order.cancelled ? (
+              <VincularAlbaranPanel
+                orderId={order.id}
+                aviso={order.mandar_sat?.factura_sin_albaran
+                  ? "Viene de una factura y no tiene albarán: no se crea ninguno. Vincula el que originó la factura."
+                  : null}
+                onLinked={(o) => {
+                  setOrder(o);
+                  // Si el correo al taller esperaba a este albarán, ya salió (backend).
+                  setNotice(o.mandar_sat?.correo?.estado === "enviado"
+                    ? "Albarán vinculado y correo enviado al taller." : "Albarán vinculado.");
+                }}
+              />
+            ) : null}
           {(order.linked_documents ?? []).length > 0 && canEditOrder && !order.cancelled ? (
             <div className="erp-flow-kv">
               <span className="k">Vinculado</span>
@@ -1833,9 +1932,17 @@ function ErpOrderDetailScreen() {
           orderNumber={order.order_number}
           onClose={() => setOrderEmailOpen(false)}
           onSent={() => load()}
-          onCreateAlbaran={canEmit
+          onCreateAlbaran={canEmit && !order.mandar_sat?.albaran_solo_vincular
             ? () => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }
             : undefined}
+        />
+      ) : null}
+      {mandarSatOpen ? (
+        <MandarSatModal
+          order={order}
+          puedeEscribirAlTaller={canEmailSat}
+          onClose={() => setMandarSatOpen(false)}
+          onDone={onMandadoASat}
         />
       ) : null}
       {embalarOpen ? (

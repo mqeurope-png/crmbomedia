@@ -382,6 +382,35 @@ def _serialise_summary(
     }
 
 
+def _mandar_sat_info(session: Session, o: Order) -> dict[str, Any]:
+    """Lo que la ficha necesita para «Mandar a SAT» y el albarán:
+
+    - `desde_documento`: creado desde un documento de FACTUSOL;
+    - `albaran_lo_crea_bohub`: no tiene albarán y BoHub se lo crearía
+      (proforma / pedido / manual), que es lo que dispara la ficha;
+    - `factura_sin_albaran`: viene de una factura y aún no tiene albarán: se
+      vincula a mano (nunca se crea);
+    - `correo`: el estado del correo al taller (pendiente / fallido / enviado)."""
+    from app.erp import sat_correo  # noqa: PLC0415
+    from app.erp.factusol_albaran import (  # noqa: PLC0415
+        albaran_blocker,
+        is_factura_source,
+    )
+    from app.erp.workflow import is_from_document  # noqa: PLC0415
+
+    correo = sat_correo.publico(o)
+    return {
+        "desde_documento": is_from_document(o),
+        "albaran_lo_crea_bohub": (not o.factusol_albaran_number
+                                  and albaran_blocker(o, session) is None),
+        "factura_sin_albaran": is_factura_source(o) and not o.factusol_albaran_number,
+        # Desde factura o albarán: su albarán ya existe; nunca se crea otro.
+        "albaran_solo_vincular": (not o.factusol_albaran_number and (
+            albaran_blocker(o, session) or ("",))[0] == "factura_source_no_albaran"),
+        "correo": correo,
+    }
+
+
 def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]:
     exceptions = list(session.scalars(
         select(ErpException).where(ErpException.order_id == o.id)
@@ -413,6 +442,8 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         # cargar sus datos), el documento para «Reprocesar vínculo».
         "linked_documents": linked_documents(o),
         "sample_pending_link": sample_pending_link(o),
+        # 30/10/2026: «Mandar a SAT» y el albarán sin duplicar.
+        "mandar_sat": _mandar_sat_info(session, o),
         "lines": [
             {
                 "id": line.id, "position": line.position,
@@ -1544,6 +1575,23 @@ def create_order_from_factusol(
         create_albaran=create_albaran, actor=current_user,
     )
     session.commit()
+    # El ejercicio del documento: los números se repiten cada año.
+    from app.erp.factusol_albaran import packing_of, save_packing  # noqa: PLC0415
+
+    creado = _get_order(session, order.id)
+    packing = packing_of(creado)
+    if isinstance(packing.get("factusol_source"), dict):
+        packing["factusol_source"]["ejercicio"] = str(ejercicio)
+        save_packing(creado, packing)
+        session.commit()
+    if payload.doc_type == "facturas":
+        # 30/10/2026: el albarán que originó la factura (por el enlace de sus
+        # líneas), vinculado. Nunca uno nuevo; si no lo apunta, se dice.
+        from app.erp.pedido_albaran import vincular_albaran_de_factura  # noqa: PLC0415
+
+        extra["albaran_de_factura"] = vincular_albaran_de_factura(
+            session, _get_order(session, order.id), client=client, ejercicio=ejercicio,
+            actor_user_id=current_user.id)
     return {
         **_serialise_detail(session, _get_order(session, order.id), current_user),
         **extra,
@@ -4535,6 +4583,14 @@ def send_order_email_endpoint(
     """Envía el pedido por email con la cuenta de Gmail integrada: albarán
     adjunto por defecto, PDF del pedido y de la factura opcionales. Registra
     el envío en el timeline del pedido; si falla, no registra nada."""
+    return _enviar_correo_pedido(session, order_id, payload, current_user)
+
+
+def _enviar_correo_pedido(
+    session: Session, order_id: str, payload: OrderEmailPayload, current_user: User,
+) -> dict[str, Any]:
+    """El envío del correo del pedido, con todas sus comprobaciones. Lo usan
+    «Enviar por email» y «Mandar a SAT». HTTPException si no sale."""
     from app.erp.order_email import OrderEmailError, send_order_email  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.gmail.service import (  # noqa: PLC0415
@@ -4547,6 +4603,43 @@ def send_order_email_endpoint(
             "code": "confirmation_required",
             "detail": "El envío requiere confirmación explícita.",
         })
+
+    to, cc, bcc = _validar_correo_pedido(session, payload, current_user)
+
+    order, client, ejercicio = _order_email_context(session, order_id, current_user)
+    try:
+        return send_order_email(
+            session, client, order, ejercicio=ejercicio,
+            current_user=current_user, to=to, cc=cc, bcc=bcc,
+            subject=payload.subject, body_text=payload.body_text,
+            lang=payload.lang, from_alias=payload.from_alias,
+            include_albaran=payload.include_albaran,
+            include_pedido=payload.include_pedido,
+            include_factura=payload.include_factura,
+        )
+    except OrderEmailError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": exc.code, "detail": exc.detail,
+        }) from exc
+    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
+        # Gmail no conectado / sin permiso: no se ha enviado nada.
+        logger.warning("order email KO (gmail) order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "gmail_not_ready", "detail": str(exc)[:300],
+        }) from exc
+    except FactusolError as exc:
+        logger.warning("order email KO (factusol) order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+
+
+def _validar_correo_pedido(
+    session: Session, payload: OrderEmailPayload, current_user: User,
+) -> tuple[list[str], list[str], list[str]]:
+    """Destinatarios limpios + las comprobaciones de quién puede mandar qué y
+    desde qué remitente. HTTPException si no vale. (También antes de guardar un
+    correo para mandarlo después.)"""
 
     def _clean(values: list[str]) -> list[str]:
         return [v.strip() for v in values if v and v.strip()]
@@ -4576,33 +4669,274 @@ def send_order_email_endpoint(
     from app.erp.api.factusol import _require_sender_alias  # noqa: PLC0415
 
     _require_sender_alias(session, current_user, payload.from_alias)
+    return to, cc, bcc
 
-    order, client, ejercicio = _order_email_context(session, order_id, current_user)
+
+# --- «Mandar a SAT» (30/10/2026) ---------------------------------------------------------
+#
+# Un pedido creado desde un documento de FACTUSOL ya está decidido: lo que
+# falta es que el taller lo prepare y lo envíe. «Mandar a SAT» lo mete en la
+# Cola SAT y, si se marca, manda el MISMO correo de «Enviar a SAT» (a la
+# dirección del taller, sin factura), en una sola confirmación. Si el correo
+# falla, el pedido sigue en la cola: se apunta y se reintenta.
+
+class MandarSatIn(BaseModel):
+    confirm: bool = False
+    #: El correo al taller, si se marca la casilla; `None` = no se manda nada.
+    correo: OrderEmailPayload | None = None
+
+
+class SatCorreoIn(BaseModel):
+    confirm: bool = False
+
+
+def _factusol_lectura(session: Session) -> tuple[Any, str | None]:
+    """Cliente y ejercicio para LEER FACTUSOL; `(None, None)` si no se puede
+    (sin configurar): se trabaja con lo volcado."""
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
     try:
-        return send_order_email(
-            session, client, order, ejercicio=ejercicio,
-            current_user=current_user, to=to, cc=cc, bcc=bcc,
-            subject=payload.subject, body_text=payload.body_text,
-            lang=payload.lang, from_alias=payload.from_alias,
-            include_albaran=payload.include_albaran,
-            include_pedido=payload.include_pedido,
-            include_factura=payload.include_factura,
-        )
-    except OrderEmailError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
-            "code": exc.code, "detail": exc.detail,
-        }) from exc
-    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
-        # Gmail no conectado / sin permiso: no se ha enviado nada.
-        logger.warning("order email KO (gmail) order=%s: %s", order_id, exc)
+        ejercicio = ejercicio_for(session)
+    except Exception:  # noqa: BLE001
+        ejercicio = None
+    try:
+        from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+
+        return FactusolClient.from_settings(), ejercicio
+    except Exception:  # noqa: BLE001
+        return None, ejercicio
+
+
+def _intentar_correo_sat(
+    session: Session, order_id: str, payload: OrderEmailPayload, user: User,
+) -> dict[str, Any]:
+    """Manda el correo al taller (con las comprobaciones de siempre). Si no
+    sale, por lo que sea, no deshace nada: lo apunta en el pedido (para avisar
+    y reintentar) y lo devuelve. Los datos guardados no se tocan."""
+    from app.erp import sat_correo  # noqa: PLC0415
+
+    envio = payload.model_copy(update={"confirm": True})
+    try:
+        _enviar_correo_pedido(session, order_id, envio, user)
+    except Exception as exc:  # noqa: BLE001 — el pedido sigue en la cola
+        logger.warning("mandar a SAT: el correo del pedido %s no salió (%s)",
+                       order_id, type(exc).__name__)
+        session.rollback()
+        order = _get_order(session, order_id, user)
+        estado = sat_correo.guardar(order, "fallido", detalle=sat_correo.detalle_de_error(exc))
+        session.commit()
+        return estado
+    order = _get_order(session, order_id, user)
+    estado = sat_correo.guardar(order, "enviado")
+    session.commit()
+    return estado
+
+
+#: Estados de preparación en los que el pedido está EN la Cola SAT.
+_EN_COLA = {"in_queue", "blocked"}
+
+
+@router.post("/{order_id}/mandar-sat")
+def mandar_a_sat(
+    order_id: str,
+    payload: MandarSatIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_approve),
+) -> dict[str, Any]:
+    """Mete el pedido en la Cola SAT para su preparación y envío y, con la
+    casilla marcada, avisa al taller por correo, todo en una acción.
+
+    - Un pedido creado desde una FACTURA no crea albarán: se vincula el que
+      originó la factura (por el enlace de sus líneas, en el ejercicio de la
+      factura); si no lo apunta, se queda sin albarán y se dice.
+    - El cobro no condiciona nada aquí (30/10/2026).
+    - Si hay que crear el albarán (proforma / pedido sin él), la ficha lo
+      encola como siempre (`albaran.crear`); el correo, si lleva el albarán,
+      espera a que exista (`pendiente_albaran`) y lo manda el backend al
+      crearlo o vincularlo.
+    - Si el correo falla, el pedido NO sale de la cola (`fallido`) y se
+      reintenta con `/sat-correo/enviar`."""
+    from app.core.errors import forbidden  # noqa: PLC0415
+    from app.erp import sat_correo  # noqa: PLC0415
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+    from app.erp.factusol_albaran import albaran_blocker, is_factura_source  # noqa: PLC0415
+    from app.erp.models import PreparationStatus  # noqa: PLC0415
+    from app.erp.pedido_albaran import vincular_albaran_de_factura  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Mandar a SAT requiere confirmación explícita.",
+        })
+    correo = payload.correo
+    if correo is not None:
+        if not has_capability(current_user, Cap.EMAIL_SAT):
+            raise forbidden()
+        if correo.include_factura:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+                "code": "sin_factura",
+                "detail": "El correo al taller va sin factura.",
+            })
+        # Las comprobaciones del correo, YA (no al mandarlo más tarde).
+        _validar_correo_pedido(session, correo, current_user)
+    order = _get_order(session, order_id, current_user)
+    if order.cancelled_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, {
-            "code": "gmail_not_ready", "detail": str(exc)[:300],
-        }) from exc
-    except FactusolError as exc:
-        logger.warning("order email KO (factusol) order=%s: %s", order_id, exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
-            "code": "factusol_unavailable", "detail": str(exc)[:200],
-        }) from exc
+            "code": "cancelled", "detail": "El pedido está anulado: no se manda al SAT."})
+    if order.seguimiento_excluded_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "excluded",
+            "detail": "El pedido está quitado de las listas: vuelve a ponerlo antes."})
+    prep = _status_value(order.preparation_status)
+    if prep == PreparationStatus.PENDING_REVIEW.value:
+        blockers = _blockers(session, order)
+        if blockers:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                {"code": "blocked", "blockers": blockers})
+        try:
+            approve_inline(session, order, current_user, reason="mandado a SAT")
+        except TransitionError as exc:
+            raise HTTPException(409, {"code": exc.code, "detail": exc.detail}) from exc
+        cola = "entrado"
+    else:
+        cola = "ya_estaba" if prep in _EN_COLA else "mas_adelante"
+
+    albaran: dict[str, Any] = {"estado": "ya_tiene" if order.factusol_albaran_number
+                               else None, "numero": order.factusol_albaran_number}
+    if is_factura_source(order) and not order.factusol_albaran_number:
+        # Hace commit (con la entrada en la cola, en la misma transacción).
+        client, ejercicio = _factusol_lectura(session)
+        albaran = vincular_albaran_de_factura(
+            session, order, client=client, ejercicio=ejercicio, actor_user_id=current_user.id)
+    session.commit()
+    order = _get_order(session, order_id, current_user)
+
+    bloqueo = albaran_blocker(order, session)
+    crear = bloqueo is None and not order.factusol_albaran_number
+    solo_vincular = bloqueo is not None and bloqueo[0] == "factura_source_no_albaran"
+    albaran["crear"] = crear
+    estado_correo = None
+    previo = sat_correo.bloque(order) or {}
+    if correo is not None and previo.get("estado") in ("enviado", "enviando",
+                                                       "pendiente_albaran"):
+        # Ya pedido (p. ej. un segundo clic tras un corte): no se manda otra vez.
+        estado_correo = sat_correo.publico(order)
+    elif correo is not None:
+        datos = correo.model_dump(exclude={"confirm"})
+        if correo.include_albaran and not order.factusol_albaran_number and (
+                crear or solo_vincular):
+            # El albarán está por crear (proforma) o por vincular (factura sin
+            # enlace): el correo sale en cuanto exista.
+            estado_correo = sat_correo.guardar(
+                order, "pendiente_albaran", payload=datos, por=current_user.id,
+                detalle=("Sale en cuanto el albarán esté creado." if crear else
+                         "Sale en cuanto se vincule el albarán."))
+            session.commit()
+        else:
+            sat_correo.guardar(order, "enviando", payload=datos, por=current_user.id)
+            session.commit()
+            estado_correo = _intentar_correo_sat(session, order_id, correo, current_user)
+
+    return {
+        "cola": cola, "albaran": albaran, "correo": estado_correo,
+        "order": _serialise_detail(session, _get_order(session, order_id, current_user),
+                                   current_user),
+    }
+
+
+@router.post("/{order_id}/sat-correo/enviar")
+def reenviar_correo_sat(
+    order_id: str,
+    payload: SatCorreoIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_email_sat),
+) -> dict[str, Any]:
+    """Manda (o reintenta) el correo al taller que se pidió en «Mandar a SAT»
+    y no salió: fallido, o pendiente del albarán («Enviar ahora»). Mismo
+    correo, mismos datos. Si lleva el albarán y el pedido aún no lo tiene, sale
+    sin él solo si lleva otro adjunto; si no, se dice."""
+    from app.erp import sat_correo  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required", "detail": "El envío requiere confirmación.",
+        })
+    order = _get_order(session, order_id, current_user)
+    b = sat_correo.bloque(order)
+    if not b or not b.get("payload") or b.get("estado") == "enviado":
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "nada_pendiente", "detail": "No hay ningún correo al taller pendiente."})
+    correo = OrderEmailPayload(**b["payload"])
+    if correo.include_albaran and not order.factusol_albaran_number:
+        if not correo.include_pedido:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "code": "falta_albaran",
+                "detail": ("El correo lleva el albarán y el pedido aún no lo tiene: "
+                           "créalo o vincúlalo y saldrá solo.")})
+        correo = correo.model_copy(update={"include_albaran": False})
+    if sat_correo.reclamar(session, order, {"fallido", "pendiente_albaran", "enviando"}) is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "en_curso",
+            "detail": "El correo al taller se está enviando ahora mismo: espera un momento."})
+    estado = _intentar_correo_sat(session, order_id, correo, current_user)
+    return {"correo": estado,
+            "order": _serialise_detail(session, _get_order(session, order_id, current_user),
+                                       current_user)}
+
+
+@router.get("/{order_id}/albaranes-candidatos")
+def albaranes_candidatos(
+    order_id: str,
+    q: str | None = Query(default=None, max_length=40),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Los albaranes que se proponen para vincular al pedido: los del cliente
+    que no están en otro pedido (los de su factura delante), los más
+    recientes primero; con `q`, por número. Solo lee."""
+    from app.erp.pedido_albaran import candidatos  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    client, ejercicio = _factusol_lectura(session)
+    return candidatos(session, order, q=q, client=client, ejercicio=ejercicio)
+
+
+class VincularAlbaranIn(BaseModel):
+    confirm: bool = False
+    serie: str = Field(min_length=1, max_length=8)
+    codigo: int = Field(ge=1)
+
+
+@router.post("/{order_id}/albaran/vincular")
+def vincular_albaran(
+    order_id: str,
+    payload: VincularAlbaranIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Vincula al pedido un albarán que ya existe en FACTUSOL. No escribe en
+    FACTUSOL. Se deshace con «Desvincular» (`/unlink-document`)."""
+    from app.erp.pedido_albaran import AlbaranNoVinculable, vincular_a_mano  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required", "detail": "Vincular requiere confirmación.",
+        })
+    from app.erp import sat_correo  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    client, ejercicio = _factusol_lectura(session)
+    try:
+        vincular_a_mano(session, order, serie=payload.serie, codigo=payload.codigo,
+                        actor_user_id=current_user.id, client=client, ejercicio=ejercicio)
+    except AlbaranNoVinculable as exc:
+        code = status.HTTP_404_NOT_FOUND if exc.code == "no_existe" else status.HTTP_409_CONFLICT
+        raise HTTPException(code, {"code": exc.code, "detail": exc.detail}) from exc
+    # El correo al taller de «Mandar a SAT» esperaba a este albarán.
+    if client is not None and ejercicio:
+        sat_correo.enviar_si_pendiente(session, _get_order(session, order_id, current_user),
+                                       client=client, ejercicio=ejercicio)
+    return _serialise_detail(session, _get_order(session, order_id, current_user), current_user)
 
 
 @router.get("/{order_id}/factusol-invoice-status")

@@ -512,10 +512,15 @@ def create_order_albaran_job(
             if order is None:
                 raise FactusolError(f"Order {order_id!r} no existe")
             client = FactusolClient.from_settings()
+            ejercicio = ejercicio_for(session)
             result = create_albaran_for_order(
-                session, client, order, ejercicio=ejercicio_for(session),
+                session, client, order, ejercicio=ejercicio,
                 actor_user_id=actor_user_id,
             )
+            # «Mandar a SAT»: el correo al taller esperaba a este albarán.
+            from app.erp.sat_correo import enviar_si_pendiente  # noqa: PLC0415
+
+            enviar_si_pendiente(session, order, client=client, ejercicio=ejercicio)
     except Exception as exc:  # noqa: BLE001 — se re-lanza tras registrarlo
         logger.warning("factusol: albarán fallido order=%s", order_id, exc_info=True)
         try:

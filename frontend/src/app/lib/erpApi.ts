@@ -31,7 +31,7 @@ export type WorkflowAction =
   | "aprobar" | "emitir_factura" | "registrar_cobro" | "crear_envio"
   | "enviar_sat" | "marcar_completado" | "vincular_empresa" | "vincular_cliente"
   | "revisar_incidencia" | "crear_albaran" | "revalidar_vies" | "enviar_factura"
-  | "ninguna";
+  | "mandar_sat" | "ninguna";
 
 export type WorkflowAlert = {
   code: string;
@@ -341,6 +341,8 @@ export type OrderDetail = OrderSummary & {
   /** Documentos FACTUSOL vinculados (origen / albarán / factura): la ficha
    *  ofrece «Desvincular» en cada uno. */
   linked_documents?: LinkedOrderDocument[];
+  /** «Mandar a SAT» y el albarán sin duplicar (30/10/2026). */
+  mandar_sat?: MandarSatInfo;
   /** Muestra SIN convertir que ya apunta a un documento (vinculado desde
    *  ERP · Documentos sin cargar sus datos): «Reprocesar vínculo». */
   sample_pending_link?: LinkedOrderDocument | null;
@@ -3879,6 +3881,89 @@ export type OrderEmailSendPayload = {
   include_pedido: boolean;
   include_factura: boolean;
 };
+
+/** El correo al taller pedido en «Mandar a SAT»: enviado, fallido (se
+ *  reintenta) o esperando a que exista el albarán. */
+export type SatCorreoEstado = {
+  estado: "enviado" | "fallido" | "pendiente_albaran" | "enviando";
+  detalle: string | null;
+  at: string | null;
+};
+
+export type MandarSatInfo = {
+  /** Creado desde una proforma, un albarán o una factura de FACTUSOL. */
+  desde_documento: boolean;
+  /** Sin albarán y BoHub se lo crearía (proforma, pedido, manual). */
+  albaran_lo_crea_bohub: boolean;
+  /** Viene de una factura y aún no tiene albarán: se vincula, nunca se crea. */
+  factura_sin_albaran: boolean;
+  /** Desde una factura o un albarán y sin albarán: solo se vincula. */
+  albaran_solo_vincular?: boolean;
+  correo: SatCorreoEstado | null;
+};
+
+export type MandarSatResult = {
+  cola: "entrado" | "ya_estaba" | "mas_adelante";
+  albaran: {
+    estado: string | null; numero?: string | null; detalle?: string;
+    candidatos?: string[]; crear: boolean;
+  };
+  correo: SatCorreoEstado | null;
+  order: OrderDetail;
+};
+
+/** «Mandar a SAT»: el pedido entra en la Cola SAT y, con `correo`, sale el
+ *  aviso al taller en la misma acción. Si el correo falla, el pedido sigue en
+ *  la cola (`correo.estado = fallido`). */
+export async function mandarASat(
+  orderId: string, correo: Omit<OrderEmailSendPayload, "confirm"> | null,
+): Promise<MandarSatResult> {
+  return apiFetch(`/api/erp/orders/${orderId}/mandar-sat`, {
+    method: "POST", body: JSON.stringify({ confirm: true, correo }),
+  });
+}
+
+/** Manda (o reintenta) el correo al taller pendiente de «Mandar a SAT». */
+export async function enviarCorreoSatPendiente(
+  orderId: string,
+): Promise<{ correo: SatCorreoEstado; order: OrderDetail }> {
+  return apiFetch(`/api/erp/orders/${orderId}/sat-correo/enviar`, {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  });
+}
+
+export type AlbaranCandidato = {
+  serie: string;
+  codigo: number;
+  numero: string;
+  ejercicio: string;
+  fecha: string | null;
+  cliente_nombre: string | null;
+  codcli: string | null;
+  total: number | null;
+  /** «Proforma 1-000500»: de qué documento sale. */
+  viene_de: string | null;
+  /** El que apunta la factura de origen del pedido. */
+  de_la_factura: boolean;
+};
+
+/** Albaranes para vincular al pedido: los del cliente sin otro pedido, los
+ *  más recientes primero; con `q`, por número. */
+export async function getAlbaranesCandidatos(
+  orderId: string, q?: string,
+): Promise<{ codcli: string | null; items: AlbaranCandidato[]; de_la_factura: string[] }> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+  return apiFetch(`/api/erp/orders/${orderId}/albaranes-candidatos${qs}`);
+}
+
+/** Vincula un albarán que ya existe en FACTUSOL (no escribe en FACTUSOL). */
+export async function vincularAlbaranPedido(
+  orderId: string, serie: string, codigo: number,
+): Promise<OrderDetail> {
+  return apiFetch(`/api/erp/orders/${orderId}/albaran/vincular`, {
+    method: "POST", body: JSON.stringify({ confirm: true, serie, codigo }),
+  });
+}
 
 export type OrderEmailSendResult = {
   sent: boolean;

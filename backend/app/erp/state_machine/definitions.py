@@ -65,8 +65,6 @@ class TransitionDef:
 
 # --- guards (claves; la implementación vive en engine.py) --------------------
 
-#: preparation → preparing exige pago cobrado/aprobado.
-GUARD_PAYMENT_OK = "payment_ok_for_preparation"
 #: transport → label_created exige preparación embalada.
 GUARD_PACKED = "packed_before_label"
 #: transport → in_transit exige tracking_number en el pedido o evidencia.
@@ -76,7 +74,8 @@ GUARD_INVOICEABLE = "invoice_requires_paid_and_mapped"
 #: preparation → packed exige ≥1 bulto medido (Fase D, multi-bulto obligatorio).
 GUARD_PACKAGES_MEASURED = "packages_measured_before_packed"
 
-#: Estados de pago que desbloquean la preparación (GUARD_PAYMENT_OK).
+#: Estados de pago con los que un pedido entra SOLO en la Cola SAT
+#: (`sat_autoenqueue`). Ya no frenan la preparación (30/10/2026).
 PAYMENT_OK_FOR_PREPARATION = {
     PaymentStatus.PAID.value,
     PaymentStatus.CREDIT_APPROVED.value,
@@ -129,8 +128,10 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.IN_QUEUE.value,
         PreparationStatus.PREPARING.value,
+        # Sin guard de pago (30/10/2026, decisión expresa de Bart): el cobro
+        # no condiciona el envío, tampoco en los pedidos web. La red que queda
+        # para que una venta no se quede sin cobrar es la cola «Por cobrar».
         "Empezar preparación", frozenset({_ADMIN, _SAT}),
-        guards=(GUARD_PAYMENT_OK,),
     ),
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.PREPARING.value,

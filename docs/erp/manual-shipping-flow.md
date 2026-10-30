@@ -14,7 +14,8 @@ in_queue → preparing → packed
            blocked (excepción)   packed → in_queue (reabrir)
 ```
 
-- `in_queue → preparing` («Empezar preparación»): exige pago cobrado/aprobado.
+- `in_queue → preparing` («Empezar preparación»): sin guard de pago desde el
+  30/10/2026 (el cobro no condiciona el envío; la red es la cola «Por cobrar»).
 - **`preparing → packed` («Embalado»)**: exige **≥1 bulto medido** (guard
   `packages_measured_before_packed`). Se dispara desde el modal multi-bulto, no
   como transición directa.

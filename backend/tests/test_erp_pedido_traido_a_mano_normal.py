@@ -255,19 +255,19 @@ def test_traido_sin_cobrar_se_aprueba_prepara_embala_y_envia(factory, http):
         assert not is_sample_order(o) and is_billable(o)
 
 
-def test_el_mismo_pedido_sin_traer_sigue_parado_en_la_puerta_de_pago(factory, http):
+def test_el_mismo_pedido_sin_traer_tambien_se_prepara(factory, http):
+    """30/10/2026: el cobro ya no condiciona el envío; un pedido web sin
+    pagar y SIN traer a mano también se prepara (decisión expresa de Bart)."""
     with factory() as s:
         oid = _pedido(s, _store(s), traido=False).id
         assert not payment_not_required(s.get(Order, oid))
 
     r = http.post(f"/api/erp/orders/{oid}/approve", headers=auth_headers(http, "pedidos"))
-    assert r.status_code == 200, r.text          # aprobar nunca miró el pago
+    assert r.status_code == 200, r.text
     r = _transicion(http, oid, "sat", "preparation", "preparing")
-    assert r.status_code == 409
-    detail = r.json()["detail"]
-    assert detail["code"] == "guard_failed" and "pago" in detail["detail"]
+    assert r.status_code == 200, r.text
     with factory() as s:
-        assert s.get(Order, oid).preparation_status == PreparationStatus.IN_QUEUE
+        assert s.get(Order, oid).preparation_status == PreparationStatus.PREPARING
 
 
 def test_emitir_la_factura_no_espera_el_cobro(factory, http):

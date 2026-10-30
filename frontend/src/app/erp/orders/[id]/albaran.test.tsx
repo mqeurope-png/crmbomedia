@@ -110,6 +110,32 @@ beforeEach(() => {
 });
 
 describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de envío» y pago apuntado", () => {
+  it("desde una factura sin albarán: nunca ofrece crearlo, sí vincular el que existe", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      order_number: "FAC-5-000008", external_source: "factusol_factura",
+      factusol_invoice_number: "8", invoice_status: "invoiced_by_erp",
+      mandar_sat: { desde_documento: true, albaran_lo_crea_bohub: false,
+                    factura_sin_albaran: true, albaran_solo_vincular: true, correo: null },
+    }));
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByText(/no se crea ninguno/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Vincular un albarán que ya existe" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
+    expect(createOrderAlbaran).not.toHaveBeenCalled();
+  });
+
+  it("el correo al taller que no salió se avisa y se reintenta", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      preparation_status: "in_queue", factusol_albaran_number: "5-500008",
+      mandar_sat: { desde_documento: true, albaran_lo_crea_bohub: false,
+                    factura_sin_albaran: false,
+                    correo: { estado: "fallido", detalle: "Gmail no conectado", at: null } },
+    }));
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByText(/el correo al taller no salió/)).toBeInTheDocument();
+    expect(screen.getByText(/Gmail no conectado/)).toBeInTheDocument();
+  });
+
   it("test_ficha_no_duplica_albaran_ni_acciones: el albarán sale UNA vez (con su PDF) y el pago apuntado en el resumen", async () => {
     (getOrder as jest.Mock).mockResolvedValue(detail({
       factusol_albaran_number: "5-500008", factusol_payment: PAGADO, payment_status: "paid",

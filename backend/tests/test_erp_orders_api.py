@@ -367,10 +367,12 @@ def test_approve_forbidden_for_sat_manager_and_user(client):
 
 def test_transition_endpoint_maps_engine_errors_to_http(client):
     oid = _create(client)["id"]
-    # guard_failed → 409 (empezar preparación sin pago, tras aprobar).
+    # guard_failed → 409 (embalar sin ningún bulto medido). Empezar la
+    # preparación sin cobrar ya no es un guard (30/10/2026).
     client.post(f"/api/erp/orders/{oid}/approve",
                 headers=auth_headers(client, "pedidos"))
-    r_guard = _fire(client, oid, "preparation", "preparing", role="sat")
+    assert _fire(client, oid, "preparation", "preparing", role="sat").status_code == 200
+    r_guard = _fire(client, oid, "preparation", "packed", role="sat")
     assert r_guard.status_code == 409
     assert r_guard.json()["detail"]["code"] == "guard_failed"
     # role_forbidden → 403 (user intenta cobrar... user no está en el arco).
