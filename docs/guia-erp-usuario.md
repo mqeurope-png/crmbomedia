@@ -983,6 +983,7 @@ catálogo de ese año): la pantalla consulta esa copia, no FACTUSOL en vivo, y
 
 **Pestaña «Compradores».**
 
+- Busca por **artículo**, **familia**, **clase** o **gama** (o combinándolos).
 - Escribe el **código o el nombre del artículo** y elige uno de la lista, o
   escribe un texto y pulsa **«Buscar»** (busca en los nombres de todos los
   años: un artículo descatalogado sale con el nombre que tenía cuando se
@@ -1004,8 +1005,33 @@ catálogo de ese año): la pantalla consulta esa copia, no FACTUSOL en vivo, y
 
 **Pestaña «Familias».** Las familias de FACTUSOL con cuántos artículos y
 cuántas líneas vendidas tienen. Quien tiene acceso a Configuración ERP
-elige la **clase** de cada una (**Máquina**, **Consumible** u **Otro**) en el
-desplegable; se guarda al momento y se conserva aunque se vuelva a cargar.
+elige en cada una:
+
+- **Clase** — **Máquina**, **Consumible** (se repone: tintas, discos…),
+  **Recambio** (se compra cuando algo se rompe), **Accesorio** (add-ons,
+  mesas, utillaje: no cuenta como máquina) u **Otro**.
+- **Gama** — UV LED, Láser, DTF, CD-DVD, Packaging, Textil, CNC, Otros… En una
+  máquina dice qué es; en lo demás, para qué máquina sirve. **«Añadir gama»**,
+  al pie, amplía la lista.
+
+Se guarda al momento y se conserva aunque se vuelva a cargar.
+
+**Propuestas.** BoHub propone clase y gama a partir del código y el nombre de
+cada familia (columna **«Propuesta»**):
+
+- **Propuesta** (verde): falta algo y no choca con lo que hay. **«Aceptar las
+  N propuestas»** las aplica todas de golpe; luego corrige las pocas que fallen.
+- **Revisar** (ámbar): ya tenía clase o gama y la propuesta dice otra cosa
+  (p. ej. unos add-ons marcados como máquina). **No se cambia sola**, ni con
+  «Aceptar todas»: pulsa **«Aceptar»** en su fila o **«Mantener la mía»**. La
+  casilla **«Solo las de revisar»** deja solo esas.
+- **Reglas que proponen clase y gama** (desplegable al pie): las reglas son
+  datos, no código. «El código es 601 → Accesorio · UV LED», o «El nombre
+  contiene *spare parts* → Recambio». Se añaden y se quitan ahí.
+
+En **«Compradores»**, los filtros **«Clase»** y **«Gama»** buscan sin
+necesidad de artículo ni familia: *Máquina + UV LED* son los clientes con
+impresora UV LED.
 
 **Pestaña «Carga».** El estado de cada ejercicio, de 2014 al en curso:
 **Cargado** (con fecha y recuentos), **Cargando…**, **Sin cargar**, **Error** o

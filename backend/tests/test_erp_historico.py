@@ -370,7 +370,7 @@ def test_api_clasificar_familia(http, cargado) -> None:
     assert r.status_code == 200 and r.json()["clase"] == "maquina"
     fams = http.get("/api/erp/historico/familias", headers=auth_headers(http, "admin")).json()
     assert {f["codigo"]: f["clase"] for f in fams["items"]}["LAS"] == "maquina"
-    assert fams["clases"] == ["maquina", "consumible", "otro"]
+    assert fams["clases"] == ["maquina", "consumible", "recambio", "accesorio", "otro"]
 
 
 # --- el trabajo --------------------------------------------------------------------------

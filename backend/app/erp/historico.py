@@ -43,7 +43,6 @@ from sqlalchemy.orm import Session
 
 from app.erp.ejercicio import PRIMER_EJERCICIO
 from app.erp.models.historico import (
-    CLASES_FAMILIA,
     ESTADO_CARGADO,
     ESTADO_CARGANDO,
     ESTADO_ERROR,
@@ -274,6 +273,13 @@ def cargar_familias(session: Session, client: Any, ejercicio: str) -> int:
                 session.add(fam)
                 actuales[codigo] = fam
             fam.descripcion = _texto(r.get("DESFAM"), 255)
+        # Las familias que solo salen en catálogos de años anteriores (borradas
+        # de F_FAM): también se listan, para poder clasificarlas; si no, sus
+        # ventas no saldrían al filtrar por clase o gama.
+        usadas = set(session.scalars(select(HistoricoArticulo.familia).distinct()
+                                     .where(HistoricoArticulo.familia.is_not(None))))
+        for codigo in usadas - set(actuales):
+            session.add(HistoricoFamilia(codigo=codigo, descripcion=None))
         session.commit()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
@@ -337,7 +343,10 @@ def estado_ejercicios(session: Session, en_curso: str) -> list[dict[str, Any]]:
 
 def familias(session: Session) -> list[dict[str, Any]]:
     """Las familias, con cuántos artículos (de cualquier año, distintos) y
-    cuántas líneas de venta de producto tienen, para que Bart las clasifique."""
+    cuántas líneas de venta de producto tienen, su clase y gama, y lo que
+    proponen las reglas, para que Bart las clasifique."""
+    from app.erp.historico_clasificacion import propuestas  # noqa: PLC0415
+
     n_art = dict(session.execute(
         select(HistoricoArticulo.familia, func.count(func.distinct(HistoricoArticulo.codart)))
         .group_by(HistoricoArticulo.familia)
@@ -351,22 +360,20 @@ def familias(session: Session) -> list[dict[str, Any]]:
         .where(HistoricoLinea.es_producto.is_(True))
         .group_by(HistoricoArticulo.familia)
     ).all())
+    props = propuestas(session)
     out = [{
-        "codigo": f.codigo, "descripcion": f.descripcion, "clase": f.clase,
+        "codigo": f.codigo, "descripcion": f.descripcion, "clase": f.clase, "gama": f.gama,
         "articulos": int(n_art.get(f.codigo, 0)), "ventas": int(n_ventas.get(f.codigo, 0)),
+        "propuesta": props.get(f.codigo),
     } for f in session.scalars(select(HistoricoFamilia))]
     return sorted(out, key=lambda x: (-x["ventas"], x["codigo"]))
 
 
 def clasificar_familia(session: Session, codigo: str, clase: str | None, por: str) -> dict:
-    if clase is not None and clase not in CLASES_FAMILIA:
-        raise ValueError(f"clase no válida: {clase}")
-    fam = session.get(HistoricoFamilia, codigo)
-    if fam is None:
-        raise LookupError("familia")
-    fam.clase, fam.clase_at, fam.clase_por = clase, _ahora(), por
-    session.commit()
-    return {"codigo": fam.codigo, "descripcion": fam.descripcion, "clase": fam.clase}
+    """Solo la clase (lo que hacía el #580). ValueError / LookupError."""
+    from app.erp.historico_clasificacion import clasificar  # noqa: PLC0415
+
+    return clasificar(session, codigo, {"clase": clase}, por=por)
 
 
 def buscar_articulos(session: Session, q: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -400,6 +407,7 @@ def buscar_articulos(session: Session, q: str, limit: int = 20) -> list[dict[str
 def compradores(
     session: Session, *, codart: str | None = None, q: str | None = None,
     familia: str | None = None, desde: int | None = None, hasta: int | None = None,
+    clase: str | None = None, gama: str | None = None,
 ) -> list[dict[str, Any]]:
     """Los clientes que compraron un artículo (por código), lo que case con un
     texto (código o nombre del artículo en el catálogo de su año) o una
@@ -427,11 +435,19 @@ def compradores(
                               art.descripcion.ilike(_like(q.strip()), escape="/")))
     if familia:
         stmt = stmt.where(art.familia == familia)
+    if clase or gama:
+        # La clase y la gama son de la familia del artículo en el catálogo de
+        # su año.
+        stmt = stmt.join(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
+        if clase:
+            stmt = stmt.where(HistoricoFamilia.clase == clase)
+        if gama:
+            stmt = stmt.where(HistoricoFamilia.gama == gama)
     if desde:
         stmt = stmt.where(lin.ejercicio >= str(desde))
     if hasta:
         stmt = stmt.where(lin.ejercicio <= str(hasta))
-    if not (codart or q or familia):
+    if not (codart or q or familia or clase or gama):
         return []
 
     clientes: dict[str, dict[str, Any]] = {}

@@ -49,3 +49,29 @@ def test_subir_crea_las_cinco_tablas_y_bajar_las_quita(alembic_setup):
 
     command.downgrade(cfg, "20261030_0152")
     assert not set(TABLAS) & set(inspect(engine).get_table_names())
+
+
+def test_0154_suma_gama_reglas_y_gamas_sin_tocar_la_clase(alembic_setup):
+    from sqlalchemy import text
+
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261030_0153")
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO historico_familias (codigo, descripcion, clase) "
+                       "VALUES ('601', 'Accesorios figurante', 'maquina')"))
+    command.upgrade(cfg, "20261030_0154")
+    with engine.connect() as c:
+        assert c.execute(text("SELECT clase, gama FROM historico_familias")).one() == (
+            "maquina", None)
+        gamas = [r[0] for r in c.execute(text("SELECT nombre FROM historico_gamas ORDER BY orden"))]
+        assert gamas == ["UV LED", "Láser", "DTF", "CD-DVD", "Packaging", "Textil", "CNC", "Otros"]
+        regla = c.execute(text("SELECT clase, gama FROM historico_reglas_familia "
+                               "WHERE campo='codigo' AND patron='601'")).one()
+        assert regla == ("accesorio", "uv-led")
+        assert c.execute(text("SELECT COUNT(*) FROM historico_reglas_familia "
+                              "WHERE patron IN ('118', '251', '071', '004')")).scalar() == 0
+    command.downgrade(cfg, "20261030_0153")
+    cols = {col["name"] for col in inspect(engine).get_columns("historico_familias")}
+    assert "gama" not in cols

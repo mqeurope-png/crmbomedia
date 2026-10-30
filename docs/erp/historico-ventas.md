@@ -24,7 +24,9 @@ incremental fino.
 | `historico_documentos` | Cabeceras de `F_FAC` y `F_ALB`: tipo, serie (tal cual, sin interpretar), número, fecha (solo si es razonable) y la original, `codcli`, nombre del cliente. Único por (ejercicio, tipo, serie, número). |
 | `historico_lineas` | `F_LFA` / `F_LAL`: `codart`, descripción, cantidad, precio, total, `es_producto` (False = línea de nota, sin artículo). |
 | `historico_articulos` | El `F_ART` de **cada** ejercicio (clave ejercicio + `codart`): un artículo descatalogado sale con el nombre de su año. |
-| `historico_familias` | `F_FAM` y la `clase` (`maquina` / `consumible` / `otro`) que pone oficina en la pantalla; se conserva al recargar. |
+| `historico_familias` | `F_FAM`, su `clase` (`maquina` / `consumible` / `recambio` / `accesorio` / `otro`) y su `gama`, que pone oficina en la pantalla; se conservan al recargar. `propuesta_descartada`: la propuesta que Bart vio y rechazó («Mantener la mía»). |
+| `historico_gamas` (0154) | La lista de gamas: UV LED, Láser, DTF, CD-DVD, Packaging, Textil, CNC, Otros. Se amplía desde la pantalla. |
+| `historico_reglas_familia` (0154) | Reglas que **proponen** clase y gama: por código exacto o por nombre que contiene un texto. Gana la de menor orden. Sembradas por código con la lista del encargo del 30/10; editables. |
 
 No toca ninguna tabla existente.
 
@@ -69,13 +71,35 @@ serie-número), unidades, nº de compras y artículos. Solo líneas de producto.
   la pantalla marca «Sin empresa vinculada».
 - `EQUART` (SKU comercial) no se usa para casar: solo lo tiene el 4 %.
 
+## Clase y gama (`app/erp/historico_clasificacion.py`, migración 0154)
+
+- **Clase:** qué es. Un accesorio no es una máquina (el parque instalado no
+  lo cuenta); un recambio se compra cuando algo se rompe (alerta de
+  servicio); un consumible se repone con un ritmo (previsión).
+- **Gama:** en una máquina, qué es; en lo demás, para qué máquina sirve.
+  «Clientes con impresora UV LED» = máquina + UV LED; «qué ofrecerles» = el
+  resto de la gama UV LED.
+- **Propuestas:** se calculan al vuelo con las reglas. Estados:
+  `propuesta` (falta algo y no choca), `coincide`, `revisar` (lo que puso
+  Bart choca: no se cambia solo), `descartada` (chocaba y Bart mantuvo lo
+  suyo; vuelve a `revisar` si cambia la propuesta), `sin_propuesta`.
+- **«Aceptar todas»** solo rellena lo que falta en las que no chocan. Las de
+  `revisar` cambian únicamente con «Aceptar» en su fila.
+- La recarga de familias (`cargar_familias`) solo actualiza la descripción:
+  clase y gama no se tocan.
+- **Compradores** filtra también por `clase` y `gama` (de la familia del
+  artículo en el catálogo de su año).
+- Fuera de alcance: el modelo concreto (A2100, Beamo…), el parque instalado y
+  clasificar artículos sueltos.
+
 ## API (`/api/erp/historico`)
 
 | Ruta | Permiso |
 |---|---|
 | `GET /ejercicios` (estado + resumen de notas) | `erp.office.view` |
 | `POST /cargar` | `erp.documents` |
-| `GET /familias`, `PATCH /familias/{codigo}` | ver: `erp.office.view`; clasificar: `erp.config` |
+| `GET /familias` (con gamas y propuestas), `GET /reglas` | `erp.office.view` |
+| `PATCH /familias/{codigo}` (clase y/o gama), `POST /familias/{codigo}/aceptar`, `POST /familias/{codigo}/mantener`, `POST /familias/aceptar-propuestas`, `POST /gamas`, `POST/PUT/DELETE /reglas` | `erp.config` |
 | `GET /articulos?q=` | `erp.office.view` |
 | `GET /compradores`, `GET /compradores.csv` | `erp.office.view` |
 
