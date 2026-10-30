@@ -15975,3 +15975,46 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   background: #f1f8f3;
   border-radius: 6px;
 }
+
+/* ERP · Quién compró qué */
+.erp-historico-filtros {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) minmax(180px, 1.5fr) repeat(2, minmax(110px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.erp-historico-filtros .field { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.erp-historico-filtros input, .erp-historico-filtros select { height: 36px; }
+.erp-historico-acciones { display: flex; gap: 8px; }
+.erp-historico-sugerencias {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 2px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+.erp-historico-sugerencias button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.erp-historico-sugerencias button:hover { background: var(--color-bg-light); }
+@media (max-width: 900px) {
+  .erp-historico-filtros { grid-template-columns: 1fr 1fr; }
+  .erp-historico-filtros .field:first-child { grid-column: 1 / -1; }
+}

@@ -1,0 +1,183 @@
+"""ERP · Histórico de ventas: «¿quién compró qué?» (30/10/2026).
+
+Lee lo que BoHub ya ha volcado de FACTUSOL (`app/erp/historico.py`), nunca
+FACTUSOL en vivo. Lanzar una carga solo encola un trabajo que LEE FACTUSOL.
+
+Permisos: ver y exportar (`require_office_view`: lleva datos de clientes, el
+taller no lo ve), lanzar cargas (`require_documents`), clasificar familias
+(`require_config`: lo decide Bart).
+"""
+from __future__ import annotations
+
+import csv
+import io
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.db.session import get_session
+from app.erp import historico
+from app.erp.api.deps import require_config, require_documents, require_office_view
+from app.models.crm import User
+
+router = APIRouter(prefix="/api/erp/historico", tags=["erp-historico"])
+
+
+def _en_curso(session: Session) -> str:
+    from app.erp.ejercicio import ejercicio_en_curso  # noqa: PLC0415
+
+    return ejercicio_en_curso(session)
+
+
+@router.get("/ejercicios")
+def estado(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Cómo está la carga de cada ejercicio (2014 → en curso) y el total de
+    líneas de producto y de nota."""
+    en_curso = _en_curso(session)
+    return {
+        "en_curso": en_curso,
+        "ejercicios": historico.estado_ejercicios(session, en_curso),
+        "notas": historico.resumen_notas(session),
+    }
+
+
+class CargarIn(BaseModel):
+    #: Vacío = todos (2014 → en curso).
+    ejercicios: list[str] = Field(default_factory=list, max_length=40)
+
+
+@router.post("/cargar", status_code=status.HTTP_202_ACCEPTED)
+def cargar(
+    body: CargarIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_documents),
+) -> dict[str, Any]:
+    from app.erp.historico_job import encolar_carga  # noqa: PLC0415
+
+    posibles = historico.ejercicios_posibles(_en_curso(session))
+    pedidos = [e.strip() for e in body.ejercicios if e.strip()] or posibles
+    fuera = [e for e in pedidos if e not in posibles]
+    if fuera:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "ejercicio_no_valido",
+            "detail": f"Ese ejercicio no existe en FACTUSOL: {', '.join(fuera)}.",
+        })
+    resultado = encolar_carga(session, pedidos)
+    if resultado == "ocupada":
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "carga_en_marcha",
+            "detail": "Ya hay una carga en marcha. Espera a que termine y vuelve a lanzarla.",
+        })
+    if resultado == "sin_cola":
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "sin_cola",
+            "detail": "No se ha podido encolar la carga. Prueba de nuevo en un momento.",
+        })
+    return {"encolada": pedidos}
+
+
+@router.get("/familias")
+def familias(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    return {"items": historico.familias(session), "clases": list(historico.CLASES_FAMILIA)}
+
+
+class ClaseIn(BaseModel):
+    clase: str | None = None
+
+
+@router.patch("/familias/{codigo}")
+def clasificar(
+    codigo: str,
+    body: ClaseIn,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    try:
+        return historico.clasificar_familia(session, codigo, body.clase or None,
+                                            por=user.email or str(user.id))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "clase_no_valida", "detail": "Esa clase no existe.",
+        }) from exc
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "familia_no_existe", "detail": "Esa familia no está en el histórico.",
+        }) from exc
+
+
+@router.get("/articulos")
+def articulos(
+    q: str = Query("", max_length=120),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    return {"items": historico.buscar_articulos(session, q)}
+
+
+def _compradores(
+    session: Session, codart: str | None, q: str | None, familia: str | None,
+    desde: int | None, hasta: int | None,
+) -> list[dict[str, Any]]:
+    return historico.compradores(session, codart=codart or None, q=q or None,
+                                 familia=familia or None, desde=desde, hasta=hasta)
+
+
+@router.get("/compradores")
+def compradores(
+    codart: str | None = Query(None, max_length=64),
+    q: str | None = Query(None, max_length=120),
+    familia: str | None = Query(None, max_length=32),
+    desde: int | None = Query(None, ge=2000, le=2100),
+    hasta: int | None = Query(None, ge=2000, le=2100),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    items = _compradores(session, codart, q, familia, desde, hasta)
+    return {"items": items, "total": len(items),
+            "sin_empresa": sum(1 for c in items if not c["empresa"])}
+
+
+#: Las columnas del CSV, en el orden en que salen.
+CSV_COLUMNAS = ("Código cliente FACTUSOL", "Cliente", "Empresa en BoHub", "Última compra",
+                "Ejercicio", "Documento", "Tipo", "Unidades", "Compras", "Artículos")
+
+
+@router.get("/compradores.csv")
+def compradores_csv(
+    codart: str | None = Query(None, max_length=64),
+    q: str | None = Query(None, max_length=120),
+    familia: str | None = Query(None, max_length=32),
+    desde: int | None = Query(None, ge=2000, le=2100),
+    hasta: int | None = Query(None, ge=2000, le=2100),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> Response:
+    items = _compradores(session, codart, q, familia, desde, hasta)
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(CSV_COLUMNAS)
+    for c in items:
+        u = c["ultima_compra"] or {}
+        w.writerow([
+            c["codcli"] or "", c["nombre"] or "",
+            c["empresa"]["nombre"] if c["empresa"] else "(sin empresa vinculada)",
+            u.get("fecha") or u.get("fecha_original") or "", u.get("ejercicio") or "",
+            u.get("documento") or "", u.get("tipo") or "",
+            f"{c['unidades']:g}".replace(".", ","), c["compras"],
+            " | ".join(f"{a['codart']} {a['descripcion'] or ''}".strip() for a in c["articulos"]),
+        ])
+    # BOM: que Excel abra los acentos bien.
+    return Response(
+        content=("﻿" + buf.getvalue()).encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="quien_compro.csv"'},
+    )

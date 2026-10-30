@@ -8,6 +8,7 @@ import {
   FileCheck,
   FileText,
   FormInput,
+  History,
   Kanban,
   LayoutTemplate,
   Landmark,
@@ -127,6 +128,15 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: FileText,
     scope: "erp",
     requiredCapability: Cap.DOCUMENTS,
+  },
+  {
+    // Quién compró qué: el histórico de ventas de FACTUSOL (2014 → hoy)
+    // volcado en BoHub. Lleva datos de clientes: oficina, no el taller.
+    href: "/erp/historico",
+    label: "ERP · Quién compró qué",
+    icon: History,
+    scope: "erp",
+    requiredCapability: Cap.OFFICE_VIEW,
   },
   {
     // ERP-F6 — seguimiento de pedidos (sustituye el Excel manual de Bart).

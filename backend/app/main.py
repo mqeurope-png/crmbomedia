@@ -168,6 +168,7 @@ from app.erp.api import cuadre_router as erp_cuadre_router  # noqa: E402
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
 from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import genei_router as erp_genei_router  # noqa: E402
+from app.erp.api import historico_router as erp_historico_router  # noqa: E402
 from app.erp.api import ia_router as erp_ia_router  # noqa: E402
 from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import ofertas_router as erp_ofertas_router  # noqa: E402
@@ -217,6 +218,8 @@ app.include_router(erp_plantillas_router)
 # asistente busca él solo al redactar, sin pasar por estas rutas).
 app.include_router(erp_soporte_router)
 app.include_router(erp_webs_router)
+# Histórico de ventas de FACTUSOL volcado en BoHub: «¿quién compró qué?».
+app.include_router(erp_historico_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402
@@ -476,6 +479,23 @@ async def _arm_bank_drive() -> None:
 
         logging.getLogger(__name__).warning(
             "bank.drive arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
+async def _arm_historico_ventas() -> None:
+    """ERP · Histórico de ventas — recarga diaria del ejercicio en curso y de
+    las familias (cola `erp:historico`, worker-sync), a las 05:20 de Madrid.
+    Solo lee FACTUSOL. Idempotente vía SETNX."""
+    try:
+        from app.erp.historico_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "historico arm failed at startup", exc_info=True
         )
 
 

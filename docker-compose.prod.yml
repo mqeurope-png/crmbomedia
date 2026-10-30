@@ -205,6 +205,9 @@ services:
       # y la factura/pedido conciliados escritos en celdas vacías). No toca
       # FACTUSOL.
       - bank:drive
+      # Histórico de ventas: recarga diaria (05:20) del ejercicio en curso y las
+      # cargas lanzadas desde ERP · Quién compró qué. Solo lee FACTUSOL.
+      - erp:historico
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script
