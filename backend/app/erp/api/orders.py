@@ -1108,6 +1108,8 @@ def list_orders(
     # Fase 3 (ficha de empresa): pedidos de UNA empresa, con su `workflow`,
     # para la «actividad reciente».
     company_id: str | None = Query(default=None, max_length=36),
+    # Los pedidos de UN contacto, para su ficha (30/10/2026).
+    contact_id: str | None = Query(default=None, max_length=36),
     # Fase 6 (bandeja): tienda por SLUG (artisjet-europe / boprint / fluxlasers…),
     # facturado sí/no y rango de fechas del pedido (placed_at, ISO date).
     store_slug: str | None = Query(default=None, max_length=64),
@@ -1127,6 +1129,8 @@ def list_orders(
     stmt = select(Order)
     if company_id:
         stmt = stmt.where(Order.company_id == company_id)
+    if contact_id:
+        stmt = stmt.where(Order.contact_id == contact_id)
     stmt = _where_store_slug(stmt, store_slug)
     if invoiced is True:
         stmt = stmt.where(or_(

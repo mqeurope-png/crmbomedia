@@ -449,6 +449,15 @@ export function RegistrarCobroModal({
                       con la factura; no se registra otra vez.
                     </p>
                   ) : null}
+                  {/* Las dos escrituras de aquí, dichas antes: la conciliación en
+                      BoHub y, si la cuenta tiene hoja, la factura en la hoja. */}
+                  <p className="form-info small erp-cobro-concilia" role="note">
+                    {mov.conciliado
+                      ? <>El movimiento ya está conciliado con la {invoice?.numero} en BoHub.</>
+                      : <>Además, el movimiento quedará <strong>conciliado</strong> con
+                        la {invoice?.numero} en BoHub, como al pulsar «Confirmar» en
+                        Conciliación.</>}
+                  </p>
                   {info.hoja ? (
                     <p className="form-info small erp-cobro-hoja" role="note">
                       También se escribirá <strong>{info.hoja.factura}</strong> en la columna
