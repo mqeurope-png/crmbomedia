@@ -141,17 +141,21 @@ export function buildActivityRows(
  *  y su fallo se dice en la propia tabla sin ocultar las demás. */
 export function CompanyActivityPanel({
   companyId,
+  contactId,
   companyName = "",
   factusolCodcli,
   contactsCount,
   canDuplicate = true,
   canEmail = true,
 }: {
-  companyId: string;
+  companyId?: string;
+  /** Ficha de contacto (30/10/2026): solo SUS pedidos, con el mismo criterio
+   *  y la misma tabla. Sin pedidos, el bloque no se enseña. */
+  contactId?: string;
   /** Punto B: nombre de la empresa, para el modal de duplicar proforma. */
   companyName?: string | null;
   factusolCodcli: string | null;
-  contactsCount: number;
+  contactsCount?: number;
   /** Remates · punto 6: sin el permiso, el «⋯» no ofrece la acción. */
   canDuplicate?: boolean;
   canEmail?: boolean;
@@ -190,10 +194,13 @@ export function CompanyActivityPanel({
     let alive = true;
     // Pedidos de BoHub (con su cola): siempre.
     Promise.resolve()
-      .then(() => listOrders({ company_id: companyId, limit: MAX, show_external: true }))
+      .then(() => listOrders({
+        ...(contactId ? { contact_id: contactId } : { company_id: companyId }),
+        limit: MAX, show_external: true,
+      }))
       .then((r) => { if (alive) setOrders(r.items); })
       .catch(() => { if (alive) { setOrders([]); setOrdersError(true); } });
-    if (!factusolCodcli) {
+    if (contactId || !factusolCodcli) {
       setInvoices([]);
       setQuotes([]);
       return () => { alive = false; };
@@ -213,7 +220,7 @@ export function CompanyActivityPanel({
       })
       .catch(() => { if (alive) { setQuotes([]); setQuotesError(true); } });
     return () => { alive = false; };
-  }, [companyId, factusolCodcli, reloadKey]);
+  }, [companyId, contactId, factusolCodcli, reloadKey]);
 
   const loading = orders === null || invoices === null || quotes === null;
   const rows = useMemo(
@@ -239,7 +246,7 @@ export function CompanyActivityPanel({
     if (invoicesError && verFacturas) notes.push("FACTUSOL no responde: faltan las facturas.");
     if (quotesError && verProformas) notes.push("FACTUSOL no responde: faltan las proformas.");
   }
-  if (!factusolCodcli && !verPedidos) {
+  if (!factusolCodcli && !verPedidos && !contactId) {
     notes.push("Sin cliente FACTUSOL vinculado: no hay facturas ni proformas que consultar.");
   }
   const emptyText = filter === "todo"
@@ -248,11 +255,15 @@ export function CompanyActivityPanel({
       ? "Sin pedidos recientes."
       : filter === "factura" ? "Sin facturas recientes." : "Sin proformas recientes.";
 
+  // Un contacto sin pedidos: nada (ni un bloque vacío).
+  if (contactId && !loading && !ordersError && rows.length === 0) return null;
+
   return (
-    <section className="erp-flow-panel company-activity" aria-label="Actividad reciente">
+    <section className="erp-flow-panel company-activity"
+             aria-label={contactId ? "Pedidos del contacto" : "Actividad reciente"}>
       <div className="company-activity-head">
-        <h3>Actividad reciente</h3>
-        <div className="company-activity-filter" role="group" aria-label="Filtrar por tipo">
+        <h3>{contactId ? "Pedidos" : "Actividad reciente"}</h3>
+        {contactId ? null : <div className="company-activity-filter" role="group" aria-label="Filtrar por tipo">
           {FILTERS.map((f) => {
             const n = f.key === "todo" ? rows.length : counts[f.key];
             const active = filter === f.key;
@@ -268,7 +279,7 @@ export function CompanyActivityPanel({
               </button>
             );
           })}
-        </div>
+        </div>}
       </div>
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
       <div className="erp-flow-table">
@@ -341,12 +352,14 @@ export function CompanyActivityPanel({
           </tbody>
         </table>
       </div>
-      <div className="erp-flow-kv">
-        <span className="k">Contactos</span>
-        <span className="v">{contactsCount}</span>
-      </div>
+      {contactId ? null : (
+        <div className="erp-flow-kv">
+          <span className="k">Contactos</span>
+          <span className="v">{contactsCount}</span>
+        </div>
+      )}
 
-      {duplicating ? (
+      {duplicating && companyId ? (
         <CreateQuoteModal
           companyId={companyId}
           companyName={companyName ?? ""}

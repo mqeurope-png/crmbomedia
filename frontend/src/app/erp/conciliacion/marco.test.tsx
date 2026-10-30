@@ -4,6 +4,7 @@ import ConciliacionPage from "./page";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   confirmAllHighBank,
+  confirmBankMovement,
   importBankStatement,
   listBankAccounts,
   listBankMovements,
@@ -22,6 +23,7 @@ jest.mock("../../lib/errors", () => ({
   extractErrorMessage: (_e: unknown, fallback: string) => fallback,
 }));
 jest.mock("../../lib/erpApi", () => ({
+  getBankSinCobro: jest.fn(() => Promise.resolve({ ok: true, ejercicio: "2026", count: 1, ids: ["m9"] })),
   getBankEjercicios: jest.fn(() => Promise.resolve({
     en_curso: "2026",
     anios: [
@@ -249,4 +251,29 @@ it("con «Todos los años» no se ofrece cobrar un movimiento de otro año", asy
   await screen.findByText("CONCILIADO EN 2025");
   expect(screen.queryByRole("button", { name: "Registrar cobro de la 5-250090" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Registrar cobro de la 5-260090" })).toBeInTheDocument();
+});
+
+it("confirmar dice que falta registrar el cobro; el contador de sin cobro filtra y marca la fila", async () => {
+  const user = userEvent.setup();
+  (confirmBankMovement as jest.Mock).mockResolvedValue({});
+  (listBankMovements as jest.Mock).mockResolvedValue({
+    ...PAGE,
+    items: [
+      mov({ id: "m1", concepto: "CON PROPUESTA", proposals: [{
+        id: "p1", serie: 5, codigo: 260090, numero: "5-260090", cliente_nombre: "Cliente figurante",
+        importe: 408.48, confidence: "alta", reason: "figurante", status: "proposed", origen: null,
+        pedido: { id: "o-1", order_number: "BOPRIN-100090" } }] }),
+      mov({ id: "m9", concepto: "CONCILIADO SIN COBRO", status: "reconciled", reconciled: [] }),
+    ],
+  });
+  render(<ConciliacionPage />);
+  const fila = (await screen.findByText("CON PROPUESTA")).closest("tr") as HTMLElement;
+  await user.click(within(fila).getByRole("button", { name: "Confirmar" }));
+  expect(await screen.findByText(/Falta registrar el cobro en FACTUSOL/)).toHaveTextContent(
+    "Conciliado 2026-10-20. Falta registrar el cobro en FACTUSOL: «Registrar cobro» en la fila (Estado: Conciliado) o desde la ficha del pedido.");
+  // La fila conciliada sin cobro, marcada; el contador, pulsable.
+  const conciliada = screen.getByText("CONCILIADO SIN COBRO").closest("tr") as HTMLElement;
+  expect(within(conciliada).getByText("Cobro sin registrar")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "1 conciliados sin cobro registrado" }));
+  await waitFor(() => expect(ultima().sin_cobro).toBe(true));
 });

@@ -217,3 +217,13 @@ it("si FACTUSOL ya la tenía cobrada al llegar el cobro, no dice que lo ha regis
   expect(screen.getByLabelText("La hoja de Drive")).toHaveTextContent("es un .xlsx subido");
   expect(screen.getByLabelText("La hoja de Drive").className).not.toContain("form-error");
 });
+
+it("dice que además conciliará el movimiento (y que ya lo está, si lo está)", async () => {
+  const { unmount } = await abrirDesdeDocumentos({ ...INFO, movimiento: { ...MOV, conciliado: false } });
+  expect(screen.getByText(/quedará/).closest("p")).toHaveTextContent(
+    "Además, el movimiento quedará conciliado con la 2-526081 en BoHub, como al pulsar «Confirmar» en Conciliación.");
+  unmount();
+  await abrirDesdeDocumentos();
+  expect(screen.getByText(/ya está conciliado/)).toHaveTextContent(
+    "El movimiento ya está conciliado con la 2-526081 en BoHub.");
+});

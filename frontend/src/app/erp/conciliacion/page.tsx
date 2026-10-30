@@ -22,6 +22,7 @@ import {
   getBankDrive,
   getContrapartidas,
   getBankEjercicios,
+  getBankSinCobro,
   importBankStatement,
   listBankAccounts,
   listBankMovements,
@@ -242,6 +243,10 @@ function ResumenCasado({ matching }: { matching: BankImportSummary["matching"] }
   );
 }
 
+/** Conciliar no es cobrar: lo que queda por hacer tras confirmar. */
+const FALTA_COBRO = "Falta registrar el cobro en FACTUSOL: «Registrar cobro» en la fila (Estado: Conciliado) "
+  + "o desde la ficha del pedido.";
+
 /** Lo que dice la pantalla tras añadir el export a la hoja: lo añadido y lo
  *  que de verdad ha entrado en BoHub (puede ser menos si Drive aún no da la
  *  hoja nueva; entra en la próxima lectura). */
@@ -336,6 +341,10 @@ function ConciliacionScreen() {
   const [incluirExternas, setIncluirExternas] = useState(false);
   // El contador «solo casan con facturas externas», pulsado.
   const [soloExternas, setSoloExternas] = useState(false);
+  // «Conciliados sin cobro registrado» (ejercicio en curso): conciliar y
+  // cobrar son dos pasos; estos se han quedado en el primero.
+  const [sinCobro, setSinCobro] = useState<{ count: number; ids: Set<string> } | null>(null);
+  const [soloSinCobro, setSoloSinCobro] = useState(false);
 
   const loadMovements = useCallback(async () => {
     // Sin saber el ejercicio en curso no se pide nada (saldrían todos los años).
@@ -347,13 +356,17 @@ function ConciliacionScreen() {
         ...filters, limit: 200, ejercicio: todosLosAnios ? undefined : ejercicio ?? undefined,
         externas: incluirExternas,
         solo_externas: !incluirExternas && soloExternas,
+        sin_cobro: soloSinCobro || undefined,
       }));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron cargar los movimientos."));
     }
     // El recuento por año también cambia al conciliar o importar.
     getBankEjercicios(filters.account_id).then(setBanco).catch(() => undefined);
-  }, [filters, movimiento, ejercicio, todosLosAnios, incluirExternas, soloExternas]);
+    getBankSinCobro(filters.account_id)
+      .then((r) => setSinCobro(r.ok ? { count: r.count, ids: new Set(r.ids) } : null))
+      .catch(() => setSinCobro(null));
+  }, [filters, movimiento, ejercicio, todosLosAnios, incluirExternas, soloExternas, soloSinCobro]);
 
   useEffect(() => {
     let vivo = true;
@@ -730,7 +743,8 @@ function ConciliacionScreen() {
                     disabled={busy}
                     onClick={() => {
                       if (!window.confirm("¿Confirmar TODAS las propuestas de confianza alta? Es una decisión tuya, no automática.")) return;
-                      void act("Confirmadas las de confianza alta.", () => confirmAllHighBank(
+                      void act("Confirmadas las de confianza alta. Falta registrar sus cobros en FACTUSOL: "
+                        + "están en «conciliados sin cobro registrado».", () => confirmAllHighBank(
                         filters.account_id, {
                           externas: incluirExternas,
                           ejercicio: todosLosAnios ? undefined : ejercicio ?? undefined,
@@ -754,6 +768,18 @@ function ConciliacionScreen() {
                   />
                   {" "}Incluir facturas externas (solo FACTUSOL, sin pedido)
                 </label>
+                {sinCobro && (sinCobro.count > 0 || soloSinCobro) ? (
+                  <button
+                    type="button"
+                    className={`erp-doc-chip ${soloSinCobro ? "is-active" : ""}`}
+                    aria-pressed={soloSinCobro}
+                    title="Conciliados del ejercicio en curso cuyo cobro aún no está en FACTUSOL (también los de facturas sin pedido, que no salen en «Por cobrar» de Pedidos)"
+                    onClick={() => setSoloSinCobro((v) => !v)}
+                  >
+                    {sinCobro.count} conciliados sin cobro registrado
+                    {soloSinCobro ? <> <span aria-hidden>✕</span></> : null}
+                  </button>
+                ) : null}
                 {!incluirExternas && (page?.counters.solo_externas ?? 0) > 0 ? (
                   <button
                     type="button"
@@ -864,13 +890,18 @@ function ConciliacionScreen() {
                           </span>
                         ) : "—"}
                       </td>
-                      <td>{STATUS_LABEL[m.status]}</td>
+                      <td>
+                        {STATUS_LABEL[m.status]}
+                        {m.status === "reconciled" && sinCobro?.ids.has(m.id) ? (
+                          <div><span className="badge warn small" title="Conciliado, pero su cobro aún no está en FACTUSOL">Cobro sin registrar</span></div>
+                        ) : null}
+                      </td>
                       <td className="erp-bank-actions">
                         {canDecidir && m.status === "pending" ? (
                           <>
                             {m.proposals.length > 0 ? (
                               <button type="button" className="button small" disabled={busy}
-                                onClick={() => act(`Conciliado ${m.fecha_oper}.`, () => confirmBankMovement(m.id, incluirExternas))}>
+                                onClick={() => act(`Conciliado ${m.fecha_oper}. ${FALTA_COBRO}`, () => confirmBankMovement(m.id, incluirExternas))}>
                                 Confirmar
                               </button>
                             ) : null}
@@ -931,7 +962,7 @@ function ConciliacionScreen() {
           onDone={async (targets, learn) => {
             const mov = reassignFor;
             setReassignFor(null);
-            await act(`Conciliado ${mov.fecha_oper} a mano.`, () => reassignBankMovement(mov.id, targets, learn));
+            await act(`Conciliado ${mov.fecha_oper} a mano. ${FALTA_COBRO}`, () => reassignBankMovement(mov.id, targets, learn));
           }}
         />
       ) : null}

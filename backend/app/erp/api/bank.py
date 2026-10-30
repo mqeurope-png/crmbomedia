@@ -6,6 +6,7 @@ conciliar es contable), gestionar cuentas (`require_erp_admin`).
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
@@ -21,6 +22,7 @@ from app.erp.bank.parsing import ParseError
 from app.models.crm import User
 
 router = APIRouter(prefix="/api/erp/bank", tags=["erp-bank"])
+logger = logging.getLogger(__name__)
 
 _MAX_UPLOAD = 25 * 1024 * 1024
 
@@ -390,6 +392,37 @@ def run_match(
 # --- listado -----------------------------------------------------------------------------
 
 
+def _sin_cobro(session: Session, account_id: str | None) -> dict[str, Any]:
+    """Los conciliados del ejercicio en curso sin su cobro en FACTUSOL (lee
+    F_LCO una vez). Sin FACTUSOL, `ok: false` y nada (no se inventa)."""
+    from app.erp.ejercicio import ejercicio_en_curso  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.collections import load_collections_index  # noqa: PLC0415
+
+    anio = ejercicio_en_curso(session)
+    try:
+        index = load_collections_index(FactusolClient.from_settings(), ejercicio=anio)
+    except Exception as exc:  # noqa: BLE001 — sin FACTUSOL no se puede saber
+        logger.info("bank: sin cobro no disponible (%s)", type(exc).__name__)
+        return {"ok": False, "ejercicio": anio, "count": 0, "ids": set()}
+    ids = service.conciliados_sin_cobro(session, index, anio=anio, account_id=account_id)
+    return {"ok": True, "ejercicio": anio, "count": len(ids), "ids": ids}
+
+
+@router.get("/sin-cobro")
+def conciliados_sin_cobro(
+    account_id: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> dict[str, Any]:
+    """«Conciliados sin cobro registrado»: los movimientos conciliados del
+    ejercicio en curso cuyo cobro aún no está en FACTUSOL (también los de
+    facturas sin pedido, que no salen en «Por cobrar» de Pedidos)."""
+    _ = current_user
+    r = _sin_cobro(session, account_id)
+    return {**r, "ids": sorted(r["ids"])}
+
+
 @router.get("/ejercicios")
 def ejercicios_del_banco(
     account_id: str | None = Query(default=None),
@@ -434,6 +467,8 @@ def list_movements(
     externas: bool = Query(default=True),
     #: El contador pulsado: solo los que casan únicamente con externas.
     solo_externas: bool = Query(default=False),
+    #: El contador pulsado: conciliados cuyo cobro aún no está en FACTUSOL.
+    sin_cobro: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
@@ -451,6 +486,7 @@ def list_movements(
         ejercicio=ejercicio,
         externas=externas,
         solo_externas=solo_externas,
+        solo_ids=_sin_cobro(session, account_id)["ids"] if sin_cobro else None,
     )
 
 

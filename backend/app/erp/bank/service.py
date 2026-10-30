@@ -935,6 +935,7 @@ def list_movements(
     ejercicio: str | None = None,
     externas: bool = True,
     solo_externas: bool = False,
+    solo_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Los movimientos, con sus propuestas y lo conciliado. `ejercicio`: solo
     los de ese año (fecha de operación); los contadores, también. Sin
@@ -958,7 +959,10 @@ def list_movements(
         q = q.where(BankMovement.fecha_oper >= desde)
     if hasta:
         q = q.where(BankMovement.fecha_oper <= hasta)
-    if status and not solo_externas:
+    if solo_ids is not None:
+        # El contador «conciliados sin cobro registrado», pulsado.
+        q = q.where(BankMovement.id.in_(solo_ids or {""}))
+    elif status and not solo_externas:
         q = q.where(BankMovement.status == status)
     if only_incoming:
         q = q.where(BankMovement.importe > 0)
@@ -997,6 +1001,46 @@ def list_movements(
         ),
     }
     return {"items": items[offset : offset + limit], "total": total, "counters": counters}
+
+
+def conciliados_sin_cobro(
+    session: Session, cobros_por_factura: dict[tuple[int, int], list[dict[str, Any]]], *,
+    anio: str, account_id: str | None = None,
+) -> set[str]:
+    """Los movimientos conciliados del año cuyo cobro aún NO está en FACTUSOL:
+    conciliar y cobrar son dos pasos, y estos se han quedado en el primero.
+    `cobros_por_factura`: las líneas de cobro (F_LCO) del ejercicio, leídas
+    UNA vez. Un movimiento cuenta si alguna de sus facturas no tiene una línea
+    que case con él (mismo casado que la ficha: importe, fecha ±7 días, cada
+    línea para un solo movimiento). Vale igual para las facturas sin pedido de
+    BoHub, que no salen en «Por cobrar» de Pedidos."""
+    from app.erp.ejercicio import limites  # noqa: PLC0415
+
+    q = select(BankMovement).where(
+        BankMovement.status == "reconciled", BankMovement.importe > 0,
+        BankMovement.fecha_oper.between(*limites(anio)),
+    )
+    if account_id:
+        q = q.where(BankMovement.account_id == account_id)
+    movs = {m.id: m for m in session.scalars(q)}
+    if not movs:
+        return set()
+    facturas: set[tuple[int, int]] = {
+        (r.serie, r.codigo) for r in session.scalars(select(BankReconciliation).where(
+            BankReconciliation.movement_id.in_(movs), BankReconciliation.status == "confirmed",
+        ))
+    }
+    contrapartidas = {a.id: a.contrapartida_codigo for a in session.scalars(select(BankAccount))}
+    sin_cobro: set[str] = set()
+    for serie, codigo in facturas:
+        conciliados = conciliados_de_factura(session, serie, codigo)
+        casados = casar_lineas_de_cobro(
+            [(m.id, imp, fechas_de_movimiento(m), contrapartidas.get(m.account_id))
+             for m, imp in conciliados],
+            list(cobros_por_factura.get((serie, codigo), [])),
+        )
+        sin_cobro |= {m.id for m, _ in conciliados if m.id in movs and m.id not in casados}
+    return sin_cobro
 
 
 def ejercicios_de_movimientos(

@@ -482,6 +482,8 @@ export type OrderFilters = {
   queue?: WorkflowQueue;
   /** Fase 3 (ficha de empresa): pedidos de UNA empresa. */
   company_id?: string;
+  /** Ficha de contacto (30/10/2026): pedidos de UN contacto. */
+  contact_id?: string;
   sort?: string;
   limit?: number;
 };
@@ -5419,6 +5421,8 @@ export type BankMovementFilters = {
   externas?: boolean;
   /** Solo los que casan únicamente con facturas externas (el contador pulsado). */
   solo_externas?: boolean;
+  /** Solo los conciliados cuyo cobro aún no está en FACTUSOL (el contador). */
+  sin_cobro?: boolean;
   limit?: number;
   offset?: number;
 };
@@ -5438,12 +5442,21 @@ export async function getBankEjercicios(accountId?: string): Promise<BankEjercic
 }
 
 export async function listBankMovements(filters: BankMovementFilters = {}): Promise<BankMovementsPage> {
-  const { externas, solo_externas, ...rest } = filters;
+  const { externas, solo_externas, sin_cobro, ...rest } = filters;
   return apiFetch(`/api/erp/bank/movements${qs({
     ...rest,
     externas: externas === undefined ? undefined : String(externas),
     solo_externas: solo_externas ? "true" : undefined,
+    sin_cobro: sin_cobro ? "true" : undefined,
   })}`);
+}
+
+/** «Conciliados sin cobro registrado» del ejercicio en curso: conciliados
+ *  cuyo cobro aún no está en FACTUSOL. `ok: false` si FACTUSOL no responde. */
+export async function getBankSinCobro(
+  accountId?: string,
+): Promise<{ ok: boolean; ejercicio: string; count: number; ids: string[] }> {
+  return apiFetch(`/api/erp/bank/sin-cobro${qs({ account_id: accountId })}`);
 }
 
 /** Confirma la propuesta. Sin `externas` (la casilla apagada), el backend no

@@ -146,6 +146,9 @@ def test_cobrar_desde_documentos_registra_y_escribe_la_factura_en_la_hoja(
     with session_factory() as s:
         log = s.scalars(select(AuditLog).where(AuditLog.action == "erp.order_cobro_banco")).one()
         assert (log.target_type, log.target_id) == ("order", "o-1")
+        # Lo que el diálogo dice que hará, además: el movimiento queda conciliado.
+        from app.erp.models import BankMovement  # noqa: PLC0415
+        assert s.get(BankMovement, "m-1").status == "reconciled"
 
 
 def test_desde_la_ficha_es_el_mismo_cobro_y_el_mismo_apunte(
@@ -262,3 +265,49 @@ def test_un_movimiento_ya_conciliado_sin_marcar_para_la_hoja_tambien_se_escribe(
     assert r.status_code == 202, r.text
     assert r.json()["hoja"]["estado"] == "escrita"
     assert hoja.fila_de(CONCEPTO)[COL_FACTURA] == "2-526081"
+
+
+# --- 30/10/2026: conciliados sin cobro registrado ---------------------------------
+
+
+def _sin_cobro(http, fake, **params):
+    with _patched(fake):
+        r = http.get("/api/erp/bank/sin-cobro", params=params,
+                     headers=auth_headers(http, "admin"))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_el_contador_de_conciliados_sin_cobro_cuadra_y_filtra(http, session_factory) -> None:
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, status="reconciled")
+        _conciliado(s, "m-1", 927.0)
+        # Una externa (sin pedido de BoHub), conciliada y sin cobro: también cuenta.
+        _movimiento(s, "m-2", concepto="TRANSFERENCIA FIGURANTE 2-526099", importe=300.0,
+                    status="reconciled")
+        _conciliado(s, "m-2", 300.0, codigo=526099)
+        # Una con su cobro ya en FACTUSOL: no cuenta.
+        _movimiento(s, "m-3", concepto="TRANSFERENCIA FIGURANTE 2-526098", importe=150.0,
+                    status="reconciled")
+        _conciliado(s, "m-3", 150.0, codigo=526098)
+    fake = FakeFactusol([], [_lco(2, 526098, 150.0, fecha="2026-08-26", cuenta=6)])
+    r = _sin_cobro(http, fake)
+    assert (r["ok"], r["count"], r["ids"]) == (True, 2, ["m-1", "m-2"])
+    with _patched(fake):
+        lista = http.get("/api/erp/bank/movements", params={"sin_cobro": "true"},
+                         headers=auth_headers(http, "admin")).json()
+    assert sorted(i["id"] for i in lista["items"]) == ["m-1", "m-2"]
+    # Registrado el cobro de la m-1 en FACTUSOL, deja de contar.
+    fake.f_lco.append(_lco(2, 526081, 927.0, fecha="2026-08-26", cuenta=6, linea=2))
+    assert _sin_cobro(http, fake)["ids"] == ["m-2"]
+
+
+def test_sin_factusol_el_contador_no_inventa(http, session_factory) -> None:
+    with session_factory() as s:
+        _movimiento(s, status="reconciled")
+        _conciliado(s, "m-1", 927.0)
+    with patch("app.integrations.factusol.client.FactusolClient.from_settings",
+               side_effect=RuntimeError("sin credenciales")):
+        r = http.get("/api/erp/bank/sin-cobro", headers=auth_headers(http, "admin")).json()
+    assert (r["ok"], r["count"]) == (False, 0)

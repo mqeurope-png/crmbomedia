@@ -253,3 +253,26 @@ describe("CompanyActivityPanel · actividad unificada", () => {
     expect(importe(1234.5)).toMatch(/^1\.?234,50 €$/);
   });
 });
+
+describe("CompanyActivityPanel en la ficha de un contacto (30/10/2026)", () => {
+  it("enseña SUS pedidos, enlazados, con el mismo criterio que la empresa", async () => {
+    render(<CompanyActivityPanel contactId="ct-1" factusolCodcli={null} />);
+    const bloque = await screen.findByRole("region", { name: "Pedidos del contacto" });
+    expect(listOrders).toHaveBeenCalledWith(expect.objectContaining({ contact_id: "ct-1" }));
+    expect(listOrders).not.toHaveBeenCalledWith(expect.objectContaining({ company_id: expect.anything() }));
+    // Sin facturas ni proformas: aquí solo pedidos.
+    expect(listFactusolDocuments).not.toHaveBeenCalled();
+    expect(listFactusolQuotes).not.toHaveBeenCalled();
+    const enlaces = await within(bloque).findAllByRole("link");
+    expect(enlaces.length).toBe(ORDERS.length);
+    expect(enlaces[0].getAttribute("href")).toMatch(/^\/erp\/orders\//);
+    expect(within(bloque).queryByText("Contactos")).not.toBeInTheDocument();
+  });
+
+  it("un contacto sin pedidos no enseña un bloque vacío", async () => {
+    (listOrders as jest.Mock).mockResolvedValue({ items: [], queue_counts: {}, queue: null });
+    const { container } = render(<CompanyActivityPanel contactId="ct-2" factusolCodcli={null} />);
+    await waitFor(() => expect(listOrders).toHaveBeenCalled());
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+});

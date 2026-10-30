@@ -44,6 +44,7 @@ import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { Cap, can } from "../../lib/capabilities";
 import { getCompany } from "../../lib/companiesApi";
 import { ContactEditForm } from "./ContactEditForm";
+import { CompanyActivityPanel } from "../../components/erp/CompanyActivityPanel";
 import { CONTACT_DETAIL_TABS, type ContactTab } from "./tabs";
 import {
   addTagToContact,
@@ -482,6 +483,11 @@ export default function ContactDetailPage() {
                     contactId={contact.id}
                     onSeeAll={() => setActiveTab("opportunities")}
                   />
+                  {/* Sus pedidos (30/10/2026): el mismo bloque y criterio que
+                      la «Actividad reciente» de la empresa; sin pedidos, nada. */}
+                  {can(currentUser, Cap.ACCESS) ? (
+                    <CompanyActivityPanel contactId={contact.id} factusolCodcli={null} />
+                  ) : null}
                   <ContactOfertasCard
                     contactId={contact.id}
                     contactName={
