@@ -398,14 +398,23 @@ def _sin_cobro(session: Session, account_id: str | None) -> dict[str, Any]:
     from app.erp.ejercicio import ejercicio_en_curso  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
     from app.integrations.factusol.collections import load_collections_index  # noqa: PLC0415
+    from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
 
     anio = ejercicio_en_curso(session)
     try:
-        index = load_collections_index(FactusolClient.from_settings(), ejercicio=anio)
+        client = FactusolClient.from_settings()
+        index = load_collections_index(client, ejercicio=anio)
+        facturas = {
+            (coerce_serie(r.get("TIPFAC")), int(r["CODFAC"]))
+            for r in client.load_table("F_FAC", filtro="1=1", ejercicio=anio)
+            if r.get("CODFAC") is not None and coerce_serie(r.get("TIPFAC")) is not None
+        }
     except Exception as exc:  # noqa: BLE001 — sin FACTUSOL no se puede saber
         logger.info("bank: sin cobro no disponible (%s)", type(exc).__name__)
         return {"ok": False, "ejercicio": anio, "count": 0, "ids": set()}
-    ids = service.conciliados_sin_cobro(session, index, anio=anio, account_id=account_id)
+    ids = service.conciliados_sin_cobro(
+        session, index, anio=anio, account_id=account_id, facturas_del_ejercicio=facturas,
+    )
     return {"ok": True, "ejercicio": anio, "count": len(ids), "ids": ids}
 
 

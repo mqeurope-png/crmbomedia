@@ -291,12 +291,22 @@ def test_el_contador_de_conciliados_sin_cobro_cuadra_y_filtra(http, session_fact
         _movimiento(s, "m-3", concepto="TRANSFERENCIA FIGURANTE 2-526098", importe=150.0,
                     status="reconciled")
         _conciliado(s, "m-3", 150.0, codigo=526098)
-    fake = FakeFactusol([], [_lco(2, 526098, 150.0, fecha="2026-08-26", cuenta=6)])
+    # La 526097 no está en el F_FAC de este ejercicio (de diciembre pasado):
+    # su cobro iría en el F_LCO del año pasado y aquí no se cuenta.
+    with session_factory() as s:
+        _movimiento(s, "m-4", concepto="TRANSFERENCIA FIGURANTE 2-526097", importe=80.0,
+                    status="reconciled")
+        _conciliado(s, "m-4", 80.0, codigo=526097)
+    fake = FakeFactusol([_fac(2, 526081, 927.0), _fac(2, 526099, 300.0), _fac(2, 526098, 150.0)],
+                        [_lco(2, 526098, 150.0, fecha="2026-08-26", cuenta=6)])
     r = _sin_cobro(http, fake)
     assert (r["ok"], r["count"], r["ids"]) == (True, 2, ["m-1", "m-2"])
     with _patched(fake):
-        lista = http.get("/api/erp/bank/movements", params={"sin_cobro": "true"},
-                         headers=auth_headers(http, "admin")).json()
+        # Con otros filtros puestos (confianza, externas, otro año), lo mismo.
+        lista = http.get("/api/erp/bank/movements", params={
+            "sin_cobro": "true", "confidence": "alta", "externas": "false",
+            "solo_externas": "true", "ejercicio": "2025", "status": "pending",
+        }, headers=auth_headers(http, "admin")).json()
     assert sorted(i["id"] for i in lista["items"]) == ["m-1", "m-2"]
     # Registrado el cobro de la m-1 en FACTUSOL, deja de contar.
     fake.f_lco.append(_lco(2, 526081, 927.0, fecha="2026-08-26", cuenta=6, linea=2))

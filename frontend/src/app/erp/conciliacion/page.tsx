@@ -363,10 +363,18 @@ function ConciliacionScreen() {
     }
     // El recuento por año también cambia al conciliar o importar.
     getBankEjercicios(filters.account_id).then(setBanco).catch(() => undefined);
-    getBankSinCobro(filters.account_id)
-      .then((r) => setSinCobro(r.ok ? { count: r.count, ids: new Set(r.ids) } : null))
-      .catch(() => setSinCobro(null));
   }, [filters, movimiento, ejercicio, todosLosAnios, incluirExternas, soloExternas, soloSinCobro]);
+
+  // «Conciliados sin cobro registrado»: lee FACTUSOL, así que solo al entrar,
+  // al cambiar de cuenta y cuando cambia lo conciliado (no en cada filtro).
+  const conciliadosAhora = page?.counters?.reconciled;
+  useEffect(() => {
+    let vivo = true;
+    getBankSinCobro(filters.account_id)
+      .then((r) => { if (vivo) setSinCobro(r.ok ? { count: r.count, ids: new Set(r.ids) } : null); })
+      .catch(() => { if (vivo) setSinCobro(null); });
+    return () => { vivo = false; };
+  }, [filters.account_id, conciliadosAhora]);
 
   useEffect(() => {
     let vivo = true;
@@ -768,7 +776,7 @@ function ConciliacionScreen() {
                   />
                   {" "}Incluir facturas externas (solo FACTUSOL, sin pedido)
                 </label>
-                {sinCobro && (sinCobro.count > 0 || soloSinCobro) ? (
+                {(sinCobro && sinCobro.count > 0) || soloSinCobro ? (
                   <button
                     type="button"
                     className={`erp-doc-chip ${soloSinCobro ? "is-active" : ""}`}
@@ -776,7 +784,8 @@ function ConciliacionScreen() {
                     title="Conciliados del ejercicio en curso cuyo cobro aún no está en FACTUSOL (también los de facturas sin pedido, que no salen en «Por cobrar» de Pedidos)"
                     onClick={() => setSoloSinCobro((v) => !v)}
                   >
-                    {sinCobro.count} conciliados sin cobro registrado
+                    {sinCobro ? `${sinCobro.count} conciliados sin cobro registrado`
+                      : "Conciliados sin cobro registrado (FACTUSOL no responde)"}
                     {soloSinCobro ? <> <span aria-hidden>✕</span></> : null}
                   </button>
                 ) : null}

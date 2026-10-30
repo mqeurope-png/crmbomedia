@@ -946,7 +946,7 @@ def list_movements(
     por la casilla."""
     from app.erp.ejercicio import limites  # noqa: PLC0415
 
-    rango = limites(ejercicio) if ejercicio and not movement_id else None
+    rango = limites(ejercicio) if ejercicio and not movement_id and solo_ids is None else None
     q = select(BankMovement)
     if movement_id:
         # «Ver el movimiento» desde la ficha del pedido: solo ese.
@@ -970,7 +970,11 @@ def list_movements(
         q.order_by(BankMovement.fecha_oper.desc(), BankMovement.source_row.asc())
     ).all()
     items = _con_propuestas(session, rows, externas=externas)
-    if solo_externas:
+    if solo_ids is not None:
+        # El contador «sin cobro» pulsado: exactamente los que cuenta, sin
+        # que otros filtros (confianza, externas, año) los vacíen.
+        confidence = None
+    elif solo_externas:
         # El contador pulsado: los mismos que cuenta (por conciliar, sin
         # propuesta visible), sin que la confianza los vacíe.
         items = [i for i in items if _solo_externas(i)]
@@ -1006,6 +1010,7 @@ def list_movements(
 def conciliados_sin_cobro(
     session: Session, cobros_por_factura: dict[tuple[int, int], list[dict[str, Any]]], *,
     anio: str, account_id: str | None = None,
+    facturas_del_ejercicio: set[tuple[int, int]] | None = None,
 ) -> set[str]:
     """Los movimientos conciliados del año cuyo cobro aún NO está en FACTUSOL:
     conciliar y cobrar son dos pasos, y estos se han quedado en el primero.
@@ -1013,7 +1018,12 @@ def conciliados_sin_cobro(
     UNA vez. Un movimiento cuenta si alguna de sus facturas no tiene una línea
     que case con él (mismo casado que la ficha: importe, fecha ±7 días, cada
     línea para un solo movimiento). Vale igual para las facturas sin pedido de
-    BoHub, que no salen en «Por cobrar» de Pedidos."""
+    BoHub, que no salen en «Por cobrar» de Pedidos.
+
+    `facturas_del_ejercicio`: las facturas que existen en el ejercicio leído.
+    Un cobro se apunta en el ejercicio de SU factura: una de diciembre
+    cobrada en enero no tiene líneas en el F_LCO de este año, y no se cuenta
+    (no se sabe desde aquí)."""
     from app.erp.ejercicio import limites  # noqa: PLC0415
 
     q = select(BankMovement).where(
@@ -1030,10 +1040,27 @@ def conciliados_sin_cobro(
             BankReconciliation.movement_id.in_(movs), BankReconciliation.status == "confirmed",
         ))
     }
+    if facturas_del_ejercicio is not None:
+        facturas &= facturas_del_ejercicio
+    if not facturas:
+        return set()
     contrapartidas = {a.id: a.contrapartida_codigo for a in session.scalars(select(BankAccount))}
+    # Todos los movimientos conciliados con esas facturas, en UNA consulta.
+    por_factura: dict[tuple[int, int], dict[str, tuple[BankMovement, float]]] = {}
+    for rec, mov in session.execute(
+        select(BankReconciliation, BankMovement)
+        .join(BankMovement, BankMovement.id == BankReconciliation.movement_id)
+        .where(BankReconciliation.status == "confirmed",
+               BankReconciliation.codigo.in_({c for _, c in facturas}))
+    ):
+        clave = (rec.serie, rec.codigo)
+        if clave not in facturas:
+            continue
+        previo = por_factura.setdefault(clave, {}).get(mov.id, (mov, 0.0))[1]
+        por_factura[clave][mov.id] = (mov, round(previo + float(rec.importe), 2))
     sin_cobro: set[str] = set()
-    for serie, codigo in facturas:
-        conciliados = conciliados_de_factura(session, serie, codigo)
+    for (serie, codigo), filas in por_factura.items():
+        conciliados = list(filas.values())
         casados = casar_lineas_de_cobro(
             [(m.id, imp, fechas_de_movimiento(m), contrapartidas.get(m.account_id))
              for m, imp in conciliados],
