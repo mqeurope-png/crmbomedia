@@ -230,8 +230,10 @@ def test_conciliacion_propone_la_factura_posterior_con_su_pedido_pagado(s, datos
 
 
 def test_la_suma_de_facturas_posteriores_tampoco_sube_sola_a_alta() -> None:
-    f1 = {**_factura("2026-10-30"), "codigo": 260157, "numero": "5-260157", "saldo_pendiente": 1000.0}
-    f2 = {**_factura("2026-10-31"), "codigo": 260158, "numero": "5-260158", "saldo_pendiente": 1952.0}
+    f1 = {**_factura("2026-10-30"), "codigo": 260157, "numero": "5-260157",
+          "saldo_pendiente": 1000.0}
+    f2 = {**_factura("2026-10-31"), "codigo": 260158, "numero": "5-260158",
+          "saldo_pendiente": 1952.0}
     props = propose(_cobro(date(2026, 10, 27)), [f1, f2])
     assert {p["numero"] for p in props} == {"5-260157", "5-260158"}
     assert all(p["confidence"] == "media" for p in props)
