@@ -15,6 +15,7 @@ jest.mock("next/link", () => ({
 }));
 jest.mock("../../lib/erpApi", () => ({
   fichaDocumentoHref: jest.requireActual("../../lib/erpApi").fichaDocumentoHref,
+  getEjercicios: jest.fn(() => Promise.resolve({ en_curso: "2026", ejercicios: ["2026"] })),
   listOrders: jest.fn(),
   listFactusolDocuments: jest.fn(),
   listFactusolQuotes: jest.fn(),
@@ -292,4 +293,12 @@ test("facturas y proformas abren su ficha de documento", () => {
     .toBe("/erp/documentos/ficha/factura/2026/5/260001");
   expect(rows.find((r) => r.kind === "proforma")?.href)
     .toBe("/erp/documentos/ficha/proforma/2026/1/77");
+});
+
+test("sin saber el ejercicio en curso, la factura no enlaza a una ficha adivinada", () => {
+  const rows = buildActivityRows(
+    [], [{ numero: "5-260001", serie: 5, codigo: 260001, fecha: "2025-12-31", total: 1,
+           saldo_pendiente: 0 } as never], [], null,
+  );
+  expect(rows[0].href).toBeNull();
 });

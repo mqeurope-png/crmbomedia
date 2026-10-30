@@ -7835,6 +7835,8 @@ export type FichaDocumento = {
   /** «volcado» (cualquier año) o «vivo» (de hoy, aún sin volcar). */
   fuente: "volcado" | "vivo";
   cargado_at: string | null;
+  /** El estado de cobro / total se han leído en vivo (ejercicio en curso). */
+  estado_en_vivo: boolean;
   tipo: HistoricoTipoDocumento;
   tipo_label: string;
   doc_type: FactusolDocType;

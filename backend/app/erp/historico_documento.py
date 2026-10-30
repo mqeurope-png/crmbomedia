@@ -45,6 +45,10 @@ class DocumentoNoEncontrado(LookupError):
     pass
 
 
+class FactusolNoResponde(RuntimeError):
+    """El lector en vivo no ha podido leer FACTUSOL (no es que no exista)."""
+
+
 def _num(v: Any) -> float | None:
     return None if v is None else float(v)
 
@@ -64,10 +68,18 @@ def _empresa(session: Session, codcli: str | None) -> dict[str, Any] | None:
 
 def _pedido(
     session: Session, tipo: str, serie: str, codigo: int, user: Any, *,
+    ejercicio: str, en_curso: str,
     referencia: str | None = None, codcli: str | None = None,
 ) -> dict | None:
     """El pedido de BoHub que apunta a este documento (o None). Un pedido web
-    que el usuario no puede ver cuenta como que no lo hay."""
+    que el usuario no puede ver cuenta como que no lo hay.
+
+    Solo para el ejercicio en curso y el anterior: el pedido no guarda el
+    ejercicio y la numeración de FACTUSOL vuelve a empezar cada año, así que
+    una factura de 2017 con el mismo serie-número que una de hoy enseñaría el
+    pedido de hoy (BoHub no tiene pedidos de antes)."""
+    if int(ejercicio) < int(en_curso) - 1:
+        return None
     from app.erp.api.orders import web_oculto  # noqa: PLC0415
     from app.erp.quotes_bandeja import _orders_by_document  # noqa: PLC0415
 
@@ -120,19 +132,40 @@ def ficha(
     doc = session.scalar(select(HistoricoDocumento).where(
         HistoricoDocumento.ejercicio == ejercicio, HistoricoDocumento.tipo == tipo,
         HistoricoDocumento.serie == serie, HistoricoDocumento.codigo == codigo))
+    del_curso = ejercicio == str(en_curso) and lector_vivo is not None
     if doc is not None:
-        return _ficha_volcada(session, doc, user)
-    if ejercicio == str(en_curso) and lector_vivo is not None:
-        vivo = lector_vivo(DOC_TYPE[tipo], serie, codigo)
+        out = _ficha_volcada(session, doc, user, en_curso=str(en_curso))
+        if del_curso:
+            # El cobro de hoy no puede salir de la carga de anoche: se lee la
+            # cabecera en vivo; si FACTUSOL no responde, se queda lo volcado.
+            try:
+                vivo = lector_vivo(DOC_TYPE[tipo], serie, codigo, solo_cabecera=True)
+            except FactusolNoResponde:
+                vivo = None
+            if vivo:
+                out["estado"] = vivo.get("estado", out["estado"])
+                out["estado_label"] = vivo.get("estado_label") or out["estado_label"]
+                if vivo.get("total") is not None:
+                    out["total"] = vivo.get("total")
+                out["estado_en_vivo"] = True
+        return out
+    if del_curso:
+        vivo = lector_vivo(DOC_TYPE[tipo], serie, codigo)   # FactusolNoResponde sube
         if vivo is not None:
             return _ficha_viva(session, vivo, tipo=tipo, ejercicio=ejercicio,
-                               serie=serie, codigo=codigo, user=user)
+                               serie=serie, codigo=codigo, user=user, en_curso=str(en_curso))
     raise DocumentoNoEncontrado(f"{tipo} {serie}-{codigo} {ejercicio}")
 
 
-def _ficha_volcada(session: Session, doc: HistoricoDocumento, user: Any) -> dict[str, Any]:
-    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
+def _numero(serie: str, codigo: int) -> str:
+    """`serie-código` tal cual (la serie no se interpreta: una serie ya
+    retirada se sigue viendo)."""
+    return f"{serie}-{int(codigo):06d}" if serie else f"{int(codigo):06d}"
 
+
+def _ficha_volcada(
+    session: Session, doc: HistoricoDocumento, user: Any, *, en_curso: str,
+) -> dict[str, Any]:
     lineas = list(session.scalars(select(HistoricoLinea).where(
         HistoricoLinea.documento_id == doc.id).order_by(HistoricoLinea.posicion,
                                                         HistoricoLinea.id)))
@@ -156,9 +189,10 @@ def _ficha_volcada(session: Session, doc: HistoricoDocumento, user: Any) -> dict
         "cargado_at": carga.cargado_at.isoformat() + "Z" if carga and carga.cargado_at else None,
         "tipo": doc.tipo, "tipo_label": ETIQUETA[doc.tipo], "doc_type": DOC_TYPE[doc.tipo],
         "ejercicio": doc.ejercicio, "serie": doc.serie, "codigo": doc.codigo,
-        "numero": visible_number(doc.serie, doc.codigo),
+        "numero": _numero(doc.serie, doc.codigo),
         "fecha": doc.fecha.isoformat() if doc.fecha else None,
         "fecha_original": None if doc.fecha else doc.fecha_original,
+        "estado_en_vivo": False,
         "cliente": {"codcli": doc.codcli, "nombre": doc.cliente_nombre,
                     "empresa": _empresa(session, doc.codcli)},
         "referencia": doc.referencia,
@@ -169,6 +203,7 @@ def _ficha_volcada(session: Session, doc: HistoricoDocumento, user: Any) -> dict
         "estado": doc.estado,
         "estado_label": _estado_label(doc.tipo, doc.estado),
         "pedido": _pedido(session, doc.tipo, doc.serie, doc.codigo, user,
+                          ejercicio=doc.ejercicio, en_curso=en_curso,
                           referencia=doc.referencia, codcli=doc.codcli),
         "lineas": salida_lineas,
     }
@@ -176,7 +211,7 @@ def _ficha_volcada(session: Session, doc: HistoricoDocumento, user: Any) -> dict
 
 def _ficha_viva(
     session: Session, vivo: dict[str, Any], *, tipo: str, ejercicio: str, serie: str,
-    codigo: int, user: Any,
+    codigo: int, user: Any, en_curso: str,
 ) -> dict[str, Any]:
     lineas = vivo.get("lines") or []
     clas = _clasificacion(session, ejercicio, {ln.get("codart") for ln in lineas
@@ -193,7 +228,7 @@ def _ficha_viva(
         })
     codcli = vivo.get("cliente_codigo")
     return {
-        "fuente": "vivo", "cargado_at": None,
+        "fuente": "vivo", "cargado_at": None, "estado_en_vivo": True,
         "tipo": tipo, "tipo_label": ETIQUETA[tipo], "doc_type": DOC_TYPE[tipo],
         "ejercicio": ejercicio, "serie": serie, "codigo": codigo,
         "numero": vivo.get("numero"),
@@ -208,6 +243,7 @@ def _ficha_viva(
         "estado": vivo.get("estado"),
         "estado_label": vivo.get("estado_label"),
         "pedido": _pedido(session, tipo, serie, codigo, user,
+                          ejercicio=ejercicio, en_curso=en_curso,
                           referencia=vivo.get("referencia"), codcli=codcli),
         "lineas": salida_lineas,
     }
@@ -218,8 +254,6 @@ def documentos_de_cliente(
 ) -> list[dict[str, Any]]:
     """Los documentos volcados de un cliente (todos los años o uno), más
     recientes primero, con lo justo para listarlos y abrir su ficha."""
-    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
-
     codigos = {codcli.strip()}
     if codcli.strip().isdigit():
         codigos.add(str(int(codcli)))
@@ -231,7 +265,7 @@ def documentos_de_cliente(
         HistoricoDocumento.codigo.desc())).all()
     return [{
         "tipo": d.tipo, "tipo_label": ETIQUETA.get(d.tipo, d.tipo), "ejercicio": d.ejercicio,
-        "serie": d.serie, "codigo": d.codigo, "numero": visible_number(d.serie, d.codigo),
+        "serie": d.serie, "codigo": d.codigo, "numero": _numero(d.serie, d.codigo),
         "fecha": d.fecha.isoformat() if d.fecha else None,
         "fecha_original": None if d.fecha else d.fecha_original,
         "total": _num(d.total), "estado_label": _estado_label(d.tipo, d.estado),

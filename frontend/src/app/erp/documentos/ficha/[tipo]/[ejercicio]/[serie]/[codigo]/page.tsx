@@ -37,6 +37,8 @@ export default function FichaDocumentoPage() {
 
   useEffect(() => {
     let vivo = true;
+    setDoc(null);
+    setError(null);
     getFichaDocumento(p.tipo, p.ejercicio, p.serie, p.codigo)
       .then((d) => { if (vivo) setDoc(d); })
       .catch((err) => { if (vivo) setError(extractErrorMessage(err, "No se ha podido abrir el documento.")); });
@@ -107,8 +109,9 @@ export default function FichaDocumentoPage() {
               </div>
               {doc.tipo === "factura" ? (
                 <div><dt>Cobro</dt><dd>{doc.estado_label ?? "—"}
-                  {doc.fuente === "volcado" && doc.cargado_at ? (
-                    <span className="muted"> · a fecha de la última carga</span>) : null}</dd></div>
+                  {doc.estado_en_vivo ? <span className="muted"> · en vivo</span>
+                    : doc.cargado_at ? <span className="muted"> · a fecha de la última carga</span>
+                    : null}</dd></div>
               ) : doc.estado_label ? (
                 <div><dt>Estado</dt><dd>{doc.estado_label}</dd></div>
               ) : null}

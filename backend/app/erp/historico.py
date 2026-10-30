@@ -256,7 +256,10 @@ def _sustituir(
         for r in lineas:
             doc = docs.get((_texto(r.get(f"TIP{t.lin}"), 8) or "", _entero(r.get(f"COD{t.lin}"))))
             if doc is None:
-                cuentas["huerfanas"] += 1
+                # El aviso de la pestaña Carga habla de ventas: las proformas
+                # huérfanas no cuentan ahí.
+                if t.tipo in TIPOS_VENTA:
+                    cuentas["huerfanas"] += 1
                 continue
             codart = _texto(r.get(f"ART{t.lin}"), 64)
             filas.append({

@@ -133,3 +133,63 @@ def test_api_ficha_con_su_pedido_de_bohub(http, session_factory) -> None:  # noq
                     headers=auth_headers(http, "admin")).status_code == 404
     assert http.get("/api/erp/historico/documentos/factura/2026/5/260001",
                     headers=auth_headers(http, "sat")).status_code == 403
+
+
+# --- lo que encontró la revisión -------------------------------------------------------
+
+
+def test_un_documento_antiguo_no_se_cruza_con_un_pedido_de_hoy(
+    session_factory,  # noqa: F811
+) -> None:
+    _cargar(session_factory)
+    with session_factory() as s:
+        # Mismo serie-número que la factura de 2019: la numeración vuelve a empezar.
+        s.add(Order(order_number="FIG-HOY", external_source=OrderSource.MANUAL.value,
+                    factusol_invoice_serie=1, factusol_invoice_number="190001"))
+        s.commit()
+        assert _ficha(s, "factura", "2019", "1", 190001)["pedido"] is None
+
+
+def test_el_cobro_del_ejercicio_en_curso_se_lee_en_vivo(session_factory) -> None:  # noqa: F811
+    _cargar(session_factory)
+
+    def lector(doc_type, serie, codigo, *, solo_cabecera=False):
+        assert solo_cabecera
+        return {"estado": "2", "estado_label": "Cobrada", "total": 999.0}
+
+    with session_factory() as s:
+        f = _ficha(s, "factura", "2026", "5", 260001, lector_vivo=lector)
+    assert (f["fuente"], f["estado_label"], f["total"], f["estado_en_vivo"]) == (
+        "volcado", "Cobrada", 999.0, True)
+
+
+def test_si_factusol_no_responde_se_dice_y_no_se_manda_a_cargar(
+    session_factory,  # noqa: F811
+) -> None:
+    from app.erp.historico_documento import FactusolNoResponde
+
+    _cargar(session_factory)
+
+    def caido(*a, **k):
+        raise FactusolNoResponde("ConnectionError")
+
+    with session_factory() as s:
+        # Volcado: se queda con lo volcado.
+        assert _ficha(s, "factura", "2026", "5", 260001, lector_vivo=caido)["fuente"] == "volcado"
+        # No volcado y de este ejercicio: sube el error (la API da 503).
+        try:
+            _ficha(s, "factura", "2026", "5", 260777, lector_vivo=caido)
+            raise AssertionError("debería subir")
+        except FactusolNoResponde:
+            pass
+
+
+def test_el_numero_conserva_una_serie_retirada(session_factory) -> None:  # noqa: F811
+    datos = _datos()
+    for f in datos["2019"]["F_FAC"]:
+        f["TIPFAC"] = "9"
+    for ln in datos["2019"]["F_LFA"]:
+        ln["TIPLFA"] = "9"
+    with session_factory() as s:
+        historico.cargar_ejercicio(s, FactusolFalso(datos), "2019")
+        assert _ficha(s, "factura", "2019", "9", 190001)["numero"] == "9-190001"

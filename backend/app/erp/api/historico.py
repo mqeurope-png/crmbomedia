@@ -338,17 +338,24 @@ def compradores_csv(
 
 def _lector_vivo(session: Session):
     """Lee un documento del ejercicio en curso en vivo (lo creado después de la
-    última carga). Si FACTUSOL no responde, None: la ficha dirá que no está."""
-    def leer(doc_type: str, serie: str, codigo: int) -> dict[str, Any] | None:
+    última carga, o solo su cabecera para el cobro de hoy). None si no existe;
+    `FactusolNoResponde` si FACTUSOL no contesta (no es lo mismo)."""
+    from app.erp.historico_documento import FactusolNoResponde  # noqa: PLC0415
+
+    def leer(doc_type: str, serie: str, codigo: int, *, solo_cabecera: bool = False):
         from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
-        from app.integrations.factusol.documents import get_document  # noqa: PLC0415
+        from app.integrations.factusol.documents import (  # noqa: PLC0415
+            get_document,
+            get_header,
+        )
 
         try:
             client, ejercicio = _client_and_ejercicio(session)
-            return get_document(client, doc_type, serie=int(serie), codigo=codigo,
-                                ejercicio=ejercicio)
-        except Exception:  # noqa: BLE001 — sin FACTUSOL, la ficha no inventa
-            return None
+            leer_fn = get_header if solo_cabecera else get_document
+            return leer_fn(client, doc_type, serie=int(serie), codigo=codigo,
+                           ejercicio=ejercicio)
+        except Exception as exc:  # noqa: BLE001 — se dice, no se inventa
+            raise FactusolNoResponde(type(exc).__name__) from exc
     return leer
 
 
@@ -363,12 +370,22 @@ def ficha_documento(
 ) -> dict[str, Any]:
     """Cabecera, líneas (las de nota marcadas), estado, pedido de BoHub y lo
     necesario para el PDF. Solo lectura."""
-    from app.erp.historico_documento import DocumentoNoEncontrado, ficha  # noqa: PLC0415
+    from app.erp.historico_documento import (  # noqa: PLC0415
+        DocumentoNoEncontrado,
+        FactusolNoResponde,
+        ficha,
+    )
 
     try:
         return ficha(session, tipo=tipo, ejercicio=ejercicio, serie=serie, codigo=codigo,
                      user=user, en_curso=_en_curso(session),
                      lector_vivo=_lector_vivo(session))
+    except FactusolNoResponde as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable",
+            "detail": ("Es un documento de este ejercicio que aún no está en la carga de "
+                       "anoche, y FACTUSOL no responde. Prueba de nuevo en un momento."),
+        }) from exc
     except DocumentoNoEncontrado as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "documento_no_encontrado",
