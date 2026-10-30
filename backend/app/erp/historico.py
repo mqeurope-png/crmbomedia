@@ -273,6 +273,13 @@ def cargar_familias(session: Session, client: Any, ejercicio: str) -> int:
                 session.add(fam)
                 actuales[codigo] = fam
             fam.descripcion = _texto(r.get("DESFAM"), 255)
+        # Las familias que solo salen en catálogos de años anteriores (borradas
+        # de F_FAM): también se listan, para poder clasificarlas; si no, sus
+        # ventas no saldrían al filtrar por clase o gama.
+        usadas = set(session.scalars(select(HistoricoArticulo.familia).distinct()
+                                     .where(HistoricoArticulo.familia.is_not(None))))
+        for codigo in usadas - set(actuales):
+            session.add(HistoricoFamilia(codigo=codigo, descripcion=None))
         session.commit()
     except Exception as exc:  # noqa: BLE001
         session.rollback()

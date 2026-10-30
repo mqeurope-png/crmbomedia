@@ -454,14 +454,16 @@ function FamiliasPanel({
   const nombreGama = (c: string | null) => gamas.find((g) => g.codigo === c)?.nombre ?? c ?? "";
   const visibles = soloRevisar ? familias.filter((f) => f.propuesta?.estado === "revisar") : familias;
 
+  /** Hace la acción y recarga. Si la acción devuelve un texto, es el aviso. */
   async function hacer(accion: () => Promise<unknown>, fallo: string, ok?: string) {
     setError(null);
     setAviso(null);
     setOcupado(true);
     try {
-      await accion();
+      const r = await accion();
       await onRecargar();
-      if (ok) setAviso(ok);
+      const texto = typeof r === "string" ? r : ok;
+      if (texto) setAviso(texto);
     } catch (err) {
       setError(extractErrorMessage(err, fallo));
     } finally {
@@ -494,9 +496,8 @@ function FamiliasPanel({
             disabled={ocupado || nPropuestas === 0}
             onClick={() => void hacer(async () => {
               const r = await aceptarPropuestasFamilias();
-              return r;
-            }, "No se han podido aplicar las propuestas.",
-            `Aplicadas ${nPropuestas} propuestas. Las de «Revisar» no se han tocado.`)}
+              return `Aplicadas ${r.aplicadas} propuestas. Las de «Revisar» no se han tocado.`;
+            }, "No se han podido aplicar las propuestas.")}
           >
             Aceptar las {nPropuestas} propuestas
           </button>
@@ -540,7 +541,9 @@ function FamiliasPanel({
               return (
                 <tr key={f.codigo}>
                   <td data-label="Familia" className="mono">{f.codigo}</td>
-                  <td data-label="Descripción">{f.descripcion ?? "—"}</td>
+                  <td data-label="Descripción">
+                    {f.descripcion ?? <span className="muted">Solo en catálogos de años anteriores</span>}
+                  </td>
                   <td data-label="Artículos" className="num">{nf.format(f.articulos)}</td>
                   <td data-label="Líneas vendidas" className="num">{nf.format(f.ventas)}</td>
                   <td data-label="Clase">

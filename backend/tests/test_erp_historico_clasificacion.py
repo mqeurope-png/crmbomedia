@@ -173,3 +173,50 @@ def test_api_familias_propuestas_y_filtro(http, clasificado) -> None:  # noqa: F
     # Clasificar es de Configuración: pedidos no puede.
     assert http.patch("/api/erp/historico/familias/LAS", headers=auth_headers(http, "pedidos"),
                       json={"clase": "otro"}).status_code == 403
+
+
+# --- lo que encontró la revisión ---------------------------------------------------------
+
+
+def test_mantener_la_mia_rellena_lo_que_no_choca_y_editar_otra_cosa_no_reabre(
+    clasificado,
+) -> None:
+    with clasificado() as s:
+        _regla(s, "ACC", "recambio", "uv-led")
+        cl.clasificar(s, "ACC", {"clase": "maquina"}, por=POR)
+        cl.mantener(s, "ACC", por=POR)
+        acc = s.get(HistoricoFamilia, "ACC")
+        # La clase es la suya; la gama, que no chocaba, se toma.
+        assert (acc.clase, acc.gama) == ("maquina", "uv-led")
+        assert cl.propuestas(s)["ACC"]["estado"] == "descartada"
+        # Cambiar la gama (que no chocaba) no la vuelve a marcar…
+        cl.clasificar(s, "ACC", {"gama": "laser"}, por=POR)
+        assert cl.propuestas(s)["ACC"]["estado"] == "descartada"
+        # …cambiar la clase, sí.
+        cl.clasificar(s, "ACC", {"clase": "otro"}, por=POR)
+        assert cl.propuestas(s)["ACC"]["estado"] == "revisar"
+
+
+def test_familias_solo_en_catalogos_antiguos_se_listan_para_clasificar(
+    session_factory,  # noqa: F811
+) -> None:
+    datos = datos_figurantes()
+    # PLO solo está en el F_ART de 2017; el F_FAM de 2026 no la tiene.
+    datos["2026"]["F_FAM"] = [f for f in datos["2026"]["F_FAM"] if f["CODFAM"] != "PLO"]
+    with session_factory() as s:
+        _gamas(s)
+        historico.cargar(s, FactusolFalso(datos), ["2026", "2017"], en_curso="2026")
+        plo = s.get(HistoricoFamilia, "PLO")
+        assert plo is not None and plo.descripcion is None
+        cl.clasificar(s, "PLO", {"clase": "maquina", "gama": "laser"}, por=POR)
+        assert [c["codcli"] for c in historico.compradores(s, clase="maquina", gama="laser")] == [
+            CLI_TALLER]
+
+
+def test_regla_con_orden_cero_y_nombre_sin_acentos(clasificado) -> None:
+    with clasificado() as s:
+        r = cl.guardar_regla(s, {"campo": "nombre", "patron": "laseres", "clase": "maquina",
+                                 "gama": "laser", "orden": 0})
+        assert r["orden"] == 0
+        # «laseres» casa con «Láseres».
+        assert cl.propuestas(s)["LAS"]["clase"] == "maquina"

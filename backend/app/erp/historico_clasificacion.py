@@ -119,7 +119,8 @@ def guardar_regla(session: Session, datos: dict[str, Any],
         if regla is None:
             raise LookupError("regla")
     regla.campo, regla.patron, regla.clase, regla.gama = campo, patron, clase, gama
-    regla.orden = int(datos.get("orden") or 100)
+    orden = datos.get("orden")
+    regla.orden = 100 if orden is None else int(orden)
     session.commit()
     return _regla_dict(regla)
 
@@ -135,10 +136,18 @@ def borrar_regla(session: Session, regla_id: int) -> None:
 # --- la propuesta ------------------------------------------------------------------------
 
 
+def _plano(texto: str) -> str:
+    """Sin mayúsculas ni acentos: «Láser» casa con «laser»."""
+    import unicodedata  # noqa: PLC0415
+
+    t = unicodedata.normalize("NFKD", texto or "")
+    return "".join(c for c in t if not unicodedata.combining(c)).lower().strip()
+
+
 def _casa(regla: HistoricoReglaFamilia, fam: HistoricoFamilia) -> bool:
     if regla.campo == REGLA_CODIGO:
         return fam.codigo.strip() == regla.patron.strip()
-    return regla.patron.strip().lower() in (fam.descripcion or "").lower()
+    return _plano(regla.patron) in _plano(fam.descripcion or "")
 
 
 def _clave(clase: str | None, gama: str | None) -> str:
@@ -172,6 +181,20 @@ def propuesta(fam: HistoricoFamilia,
     return {"clase": clase, "gama": gama, "estado": estado}
 
 
+def _choques(fam: HistoricoFamilia, p: dict[str, Any]) -> set[str]:
+    """Los campos en que lo puesto choca con lo propuesto."""
+    return {c for c in ("clase", "gama")
+            if p.get(c) and getattr(fam, c) and getattr(fam, c) != p[c]}
+
+
+def _rellenar(fam: HistoricoFamilia, p: dict[str, Any]) -> None:
+    """Pone lo propuesto solo donde no hay nada."""
+    if p.get("clase") and not fam.clase:
+        fam.clase = p["clase"]
+    if p.get("gama") and not fam.gama:
+        fam.gama = p["gama"]
+
+
 def _reglas_ordenadas(session: Session) -> list[HistoricoReglaFamilia]:
     return list(session.scalars(select(HistoricoReglaFamilia).order_by(
         HistoricoReglaFamilia.orden, HistoricoReglaFamilia.id)))
@@ -194,11 +217,14 @@ def clasificar(session: Session, codigo: str, cambios: dict[str, str | None], *,
     if fam is None:
         raise LookupError("familia")
     _validar(session, cambios.get("clase"), cambios.get("gama"))
+    # «Mantener la mía» sigue valiendo si no se toca lo que chocaba.
+    choques = _choques(fam, propuesta(fam, _reglas_ordenadas(session)))
     if "clase" in cambios:
         fam.clase = cambios["clase"]
     if "gama" in cambios:
         fam.gama = cambios["gama"]
-    fam.propuesta_descartada = None
+    if choques & set(cambios):
+        fam.propuesta_descartada = None
     _marcar(fam, por)
     session.commit()
     return {"codigo": fam.codigo, "clase": fam.clase, "gama": fam.gama}
@@ -225,13 +251,16 @@ def aceptar(session: Session, codigo: str, *, por: str) -> dict[str, Any]:
 
 def mantener(session: Session, codigo: str, *, por: str) -> dict[str, Any]:
     """«Mantener la mía»: deja de marcar esta familia para revisar mientras
-    la propuesta no cambie."""
+    la propuesta no cambie. Lo que la propuesta trae y no choca (p. ej. la
+    gama, si no tenía) sí se rellena."""
     fam = session.get(HistoricoFamilia, codigo)
     if fam is None:
         raise LookupError("familia")
     p = propuesta(fam, _reglas_ordenadas(session))
     if p["estado"] not in (REVISAR, DESCARTADA):
         raise ValueError("no_choca")
+    # Lo que no choca y falta (p. ej. la gama) sí se toma de la propuesta.
+    _rellenar(fam, p)
     fam.propuesta_descartada = _clave(p["clase"], p["gama"])
     _marcar(fam, por)
     session.commit()
@@ -250,10 +279,7 @@ def aceptar_todas(session: Session, *, por: str) -> dict[str, int]:
             continue
         if p["estado"] != PROPUESTA:
             continue
-        if p["clase"] and not fam.clase:
-            fam.clase = p["clase"]
-        if p["gama"] and not fam.gama:
-            fam.gama = p["gama"]
+        _rellenar(fam, p)
         _marcar(fam, por)
         aplicadas += 1
     session.commit()

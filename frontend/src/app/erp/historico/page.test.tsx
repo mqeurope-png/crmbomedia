@@ -211,7 +211,8 @@ test("propuestas: aceptar todas y las de revisar una a una", async () => {
   expect(within(acc).getByText(/Accesorio · UV LED/)).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Aceptar las 1 propuestas" }));
   expect(api().aceptarPropuestasFamilias).toHaveBeenCalled();
-  expect(await screen.findByText(/Las de «Revisar» no se han tocado/)).toBeInTheDocument();
+  expect(await screen.findByText(/Aplicadas 1 propuestas. Las de «Revisar» no se han tocado/))
+    .toBeInTheDocument();
   await user.click(screen.getByLabelText(/Solo las de revisar \(1\)/));
   expect(screen.queryByLabelText("Clase de LAS")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Mantener la clasificación de ACC" }));
