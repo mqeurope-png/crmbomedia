@@ -7873,3 +7873,100 @@ export function fichaDocumentoHref(
 ): string {
   return `/erp/documentos/ficha/${tipo}/${ejercicio}/${serie}/${Number(codigo)}`;
 }
+
+// --- Parque instalado (ficha de empresa) ------------------------------------
+
+export type ParqueMaquina = {
+  /** De dónde sale: una factura, un albarán o añadida a mano. */
+  origen: "factura" | "albaran" | "manual";
+  /** Máquina volcada: su clave estable (para darla de baja). */
+  clave: string | null;
+  /** Máquina manual: su id. */
+  id: string | null;
+  codart: string | null;
+  articulo: string | null;
+  familia: string | null;
+  gama: string | null;
+  gama_nombre: string | null;
+  fecha: string | null;
+  fecha_original: string | null;
+  ejercicio: string | null;
+  cantidad: number;
+  documento: { tipo: "factura" | "albaran"; serie: string; codigo: number; numero: string } | null;
+  nota?: string | null;
+  baja: { at: string | null; motivo: string | null; por: string | null } | null;
+};
+
+export type ParqueEmpresa = {
+  codcli: string | null;
+  /** Sin cliente de FACTUSOL vinculado: no se sabe qué ha comprado. */
+  sin_cliente_factusol: boolean;
+  maquinas: ParqueMaquina[];
+  activas: number;
+};
+
+export type ComprasDocumento = {
+  tipo: HistoricoTipoDocumento;
+  tipo_label: string;
+  ejercicio: string;
+  serie: string;
+  codigo: number;
+  numero: string;
+  fecha: string | null;
+  fecha_original: string | null;
+  total: number | null;
+  estado_label: string | null;
+};
+
+export type ComprasEmpresa = {
+  codcli: string | null;
+  sin_cliente_factusol: boolean;
+  /** El año elegido, o «todos». */
+  ejercicio: string;
+  en_curso: string;
+  /** Años con documentos de este cliente, del más reciente al más antiguo. */
+  ejercicios: string[];
+  documentos: ComprasDocumento[];
+};
+
+export async function getParqueEmpresa(companyId: string): Promise<ParqueEmpresa> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}`);
+}
+
+export async function getComprasEmpresa(
+  companyId: string, ejercicio?: string,
+): Promise<ComprasEmpresa> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/compras${
+    qs({ ejercicio })}`);
+}
+
+export async function anadirMaquinaParque(
+  companyId: string,
+  datos: { descripcion: string; codart?: string; gama?: string; fecha?: string; nota?: string },
+): Promise<{ id: string }> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/maquinas`, {
+    method: "POST", body: JSON.stringify(datos),
+  });
+}
+
+export async function borrarMaquinaParque(companyId: string, maquinaId: string): Promise<void> {
+  await apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/maquinas/${
+    encodeURIComponent(maquinaId)}`, { method: "DELETE" });
+}
+
+export async function darBajaMaquina(
+  companyId: string, maquina: { clave?: string | null; maquina_id?: string | null },
+  motivo?: string,
+): Promise<ParqueEmpresa> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/bajas`, {
+    method: "POST", body: JSON.stringify({ ...maquina, motivo }),
+  });
+}
+
+export async function deshacerBajaMaquina(
+  companyId: string, maquina: { clave?: string | null; maquina_id?: string | null },
+): Promise<ParqueEmpresa> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/bajas/deshacer`, {
+    method: "POST", body: JSON.stringify(maquina),
+  });
+}

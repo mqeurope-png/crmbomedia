@@ -27,6 +27,7 @@ import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 import { type FactusolCustomer } from "../../lib/erpApi";
 import { CompanyActivityPanel } from "../../components/erp/CompanyActivityPanel";
+import { CompanyParquePanel } from "../../components/erp/CompanyParquePanel";
 import { CompanyFactusolPanel } from "../../components/erp/CompanyFactusolPanel";
 import { CompanyQuotesPanel } from "../../components/erp/CompanyQuotesPanel";
 import { CompanySearch } from "../../components/CompanySearch";
@@ -117,6 +118,9 @@ export default function CompanyDetailPage() {
     void load();
   }, [load]);
 
+  const [canSeeParque, setCanSeeParque] = useState(false);
+  const [canEditParque, setCanEditParque] = useState(false);
+
   useEffect(() => {
     getCurrentUser()
       .then((u) => {
@@ -127,6 +131,9 @@ export default function CompanyDetailPage() {
           duplicate: can(u, Cap.PROFORMAS) && can(u, Cap.ORDERS_CREATE),
           email: can(u, Cap.PROFORMAS) && can(u, Cap.EMAIL_CLIENT),
         });
+        // Parque: verlo con oficina; añadir y dar de baja, quien trabaja pedidos.
+        setCanSeeParque(can(u, Cap.OFFICE_VIEW));
+        setCanEditParque(can(u, Cap.ORDERS_CREATE));
       })
       .catch(() => {
         setCanEdit(false);
@@ -619,6 +626,10 @@ export default function CompanyDetailPage() {
           canEmail={quoteCaps.email}
         />
       </div>
+
+      {canSeeParque ? (
+        <CompanyParquePanel companyId={company.id} puedeEditar={canEditParque} />
+      ) : null}
 
       <div className="tab-bar">
         <button

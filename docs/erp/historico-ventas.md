@@ -94,6 +94,35 @@ abre desde la «Actividad reciente» de la ficha de empresa.
   proformas de los años cerrados.
 - Solo lectura: cobrar, mención y vincular siguen donde estaban.
 
+## Parque instalado (`app/erp/parque.py`, migración 0156)
+
+En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
+`…/compras`):
+
+- **Máquinas:** las líneas de producto de sus facturas y albaranes cuyo
+  artículo es, en el catálogo de su año, de una familia de clase `maquina`
+  (un accesorio, recambio o consumible no lo es). Con gama, fecha, ejercicio y
+  documento (enlace a su ficha).
+  - **Una venta, una vez:** cuenta la factura; un albarán solo si FACTUSOL lo
+    da por pendiente de facturar (`ESTALB` 0) o, sin ese dato (volcado antes
+    de la 0155), si de ese artículo no hay factura del cliente.
+  - **A mano** (`parque_maquinas_manuales`): lo vendido antes de 2014, como
+    línea de nota o en otro sitio. Se ven marcadas «Añadida a mano».
+  - **Bajas:** una máquina que ya no está en servicio deja de contar en el
+    parque activo (lo que usarán dormidos y huecos). Las volcadas se guardan
+    en `parque_bajas` por una clave estable a las recargas
+    `ejercicio|tipo|serie|codigo|posicion|codart`.
+    **Limitación conocida:** si alguien edita el documento en FACTUSOL y
+    cambian las líneas de orden, la posición cambia y la baja se pierde o cae
+    en otra línea. En facturas antiguas no pasa.
+- **Qué ha comprado:** sus documentos (facturas, albaranes, proformas). Por
+  defecto el ejercicio en curso; «Ver todo el histórico» o un año concreto.
+  Cada fila lleva su año.
+- **Sin cliente de FACTUSOL vinculado** se dice: una lista vacía se leería
+  como «no ha comprado nunca».
+- Permisos: ver, `erp.office.view`; añadir a mano y dar de baja,
+  `erp.orders.create`.
+
 ## Clase y gama (`app/erp/historico_clasificacion.py`, migración 0154)
 
 - **Clase:** qué es. Un accesorio no es una máquina (el parque instalado no
@@ -126,6 +155,8 @@ abre desde la «Actividad reciente» de la ficha de empresa.
 | `GET /articulos?q=` | `erp.office.view` |
 | `GET /compradores`, `GET /compradores.csv` | `erp.office.view` |
 | `GET /documentos/{tipo}/{ejercicio}/{serie}/{codigo}` (ficha) | `erp.office.view` |
+| `GET /api/erp/parque/empresas/{id}`, `…/compras?ejercicio=` | `erp.office.view` |
+| `POST/DELETE /api/erp/parque/empresas/{id}/maquinas`, `POST …/bajas`, `POST …/bajas/deshacer` | `erp.orders.create` |
 
 ## Fuera de alcance
 

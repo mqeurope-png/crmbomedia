@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
@@ -195,3 +196,48 @@ class HistoricoReglaFamilia(Base):
     clase: Mapped[str | None] = mapped_column(String(16))
     gama: Mapped[str | None] = mapped_column(String(32))
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+
+
+# --- Parque instalado (0156) -----------------------------------------------------------
+
+
+class ParqueMaquinaManual(Base):
+    """Una máquina que no sale de las ventas volcadas y se añade a mano: las
+    vendidas antes de 2014, las que entraron como línea de nota o las que el
+    cliente compró en otro sitio."""
+
+    __tablename__ = "parque_maquinas_manuales"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True,
+                                    default=lambda: str(uuid4()))
+    company_id: Mapped[str] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    codart: Mapped[str | None] = mapped_column(String(64))
+    descripcion: Mapped[str] = mapped_column(String(255), nullable=False)
+    gama: Mapped[str | None] = mapped_column(String(32))
+    fecha: Mapped[date | None] = mapped_column(Date)
+    nota: Mapped[str | None] = mapped_column(String(255))
+    creado_por: Mapped[str | None] = mapped_column(String(255))
+    creado_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: Dada de baja (ya no está en servicio): deja de contar en el parque activo.
+    baja_at: Mapped[datetime | None] = mapped_column(DateTime)
+    baja_motivo: Mapped[str | None] = mapped_column(String(255))
+    baja_por: Mapped[str | None] = mapped_column(String(255))
+
+
+class ParqueBaja(Base):
+    """Una máquina de las ventas volcadas dada de baja. La clave es estable a
+    las recargas (las líneas cambian de id en cada carga):
+    `ejercicio|tipo|serie|codigo|posicion|codart`.
+
+    Limitación conocida: si alguien edita el documento en FACTUSOL y cambia el
+    orden de las líneas, la posición cambia y la baja se pierde o cae en otra
+    línea. En facturas antiguas no pasa."""
+
+    __tablename__ = "parque_bajas"
+
+    clave: Mapped[str] = mapped_column(String(160), primary_key=True)
+    company_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    motivo: Mapped[str | None] = mapped_column(String(255))
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)
