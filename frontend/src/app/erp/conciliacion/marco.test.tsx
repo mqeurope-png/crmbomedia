@@ -4,6 +4,7 @@ import ConciliacionPage from "./page";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   confirmAllHighBank,
+  importBankStatement,
   listBankAccounts,
   listBankMovements,
   listBankRules,
@@ -21,6 +22,15 @@ jest.mock("../../lib/errors", () => ({
   extractErrorMessage: (_e: unknown, fallback: string) => fallback,
 }));
 jest.mock("../../lib/erpApi", () => ({
+  getBankEjercicios: jest.fn(() => Promise.resolve({
+    en_curso: "2026",
+    anios: [
+      { anio: "2026", movimientos: 3, pending: 2, reconciled: 1, discarded: 0, pending_amount: 10 },
+      { anio: "2025", movimientos: 1, pending: 1, reconciled: 0, discarded: 0, pending_amount: 5 },
+      { anio: "2019", movimientos: 4, pending: 4, reconciled: 0, discarded: 0, pending_amount: 7 },
+    ],
+    total: { movimientos: 8, pending: 7, reconciled: 1, discarded: 0, pending_amount: 22 },
+  })),
   getEjercicios: jest.fn(() => Promise.resolve({ en_curso: "2026", ejercicios: ["2026", "2025"] })),
   anadirExportBankDrive: jest.fn(),
   confirmAllHighBank: jest.fn().mockResolvedValue({ confirmed: 0 }),
@@ -169,4 +179,74 @@ it("en un movimiento conciliado, «Registrar cobro» abre la herramienta con ese
   expect(screen.queryByRole("button", { name: "Registrar cobro de la 5-260092" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Registrar cobro de la 5-260090" }));
   expect(screen.getByRole("dialog", { name: "cobro" })).toHaveTextContent("COBRO 5-260090 m9");
+});
+
+it("el selector ofrece todos los años que tienen movimientos, con su recuento, y «Todos los años»", async () => {
+  const user = userEvent.setup();
+  render(<ConciliacionPage />);
+  await screen.findByText("SOLO CASA CON UNA EXTERNA");
+  const sel = screen.getByLabelText("Ejercicio");
+  const opciones = within(sel).getAllByRole("option").map((o) => o.textContent);
+  expect(opciones).toEqual([
+    "Todos los años · 8 movimientos · 7 por conciliar",
+    "2026 (en curso) · 3 movimientos · 2 por conciliar",
+    "2025 · 1 movimientos · 1 por conciliar",
+    "2019 · 4 movimientos · 4 por conciliar",   // un año que FACTUSOL no tiene
+  ]);
+  await user.selectOptions(sel, "todos");
+  await waitFor(() => expect(ultima().ejercicio).toBeUndefined());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await user.selectOptions(sel, "2019");
+  await waitFor(() => expect(ultima().ejercicio).toBe("2019"));
+  expect(screen.getByRole("alert")).toHaveTextContent("Ejercicio 2019, no el en curso (2026)");
+});
+
+it("el campo de la hoja se ve sin cuenta elegida, deshabilitado y diciendo por qué", async () => {
+  render(<ConciliacionPage />);
+  await screen.findByText("SOLO CASA CON UNA EXTERNA");
+  expect(screen.getByLabelText("Extracto bancario").closest("label")).toHaveTextContent(
+    "Traer a BoHub · .xls / .xlsx / .csvMete los movimientos en BoHub. La hoja de Drive no se toca.");
+  const hoja = screen.getByLabelText("Export del banco para la hoja");
+  expect(hoja).toBeDisabled();
+  expect(hoja.closest("label")).toHaveTextContent("Escribir en la hoja de Drive lo que falte");
+  expect(hoja.closest("label")).toHaveTextContent("Elige arriba la cuenta");
+});
+
+it("traer a BoHub dice que en la hoja no se ha escrito nada si la cuenta tiene hoja", async () => {
+  const user = userEvent.setup();
+  (listBankAccounts as jest.Mock).mockResolvedValue([{
+    id: "a1", name: "Sabadell Ejemplo", iban: "ES0000000000000000000001", drive_file_id: "hoja-1",
+  }]);
+  (importBankStatement as jest.Mock).mockResolvedValue({
+    ok: true, code: "imported", account_id: "a1", account_name: "Sabadell Ejemplo",
+    total_rows: 34, imported: 0, duplicates: 34, no_entendidas_total: 0, no_entendidas: [],
+    resumen: "0 movimientos importados",
+  });
+  render(<ConciliacionPage />);
+  await user.upload(await screen.findByLabelText("Extracto bancario"), new File(["x"], "export.xls"));
+  expect(await screen.findByText(/no se ha escrito nada/)).toHaveTextContent(
+    "En la hoja de Drive de Sabadell Ejemplo no se ha escrito nada: «Traer a BoHub» solo mete los movimientos en BoHub.");
+});
+
+it("con «Todos los años» no se ofrece cobrar un movimiento de otro año", async () => {
+  const user = userEvent.setup();
+  const rec = {
+    id: "r-1", serie: 5, codigo: 250090, numero: "5-250090", cliente_nombre: "Cliente figurante",
+    importe: 100, confidence: "alta" as const, reason: "figurante", status: "confirmed" as const,
+    origen: null, pedido: { id: "o-1", order_number: "BOPRIN-100090" },
+  };
+  (listBankMovements as jest.Mock).mockResolvedValue({
+    ...PAGE,
+    items: [
+      mov({ id: "m7", concepto: "CONCILIADO EN 2025", fecha_oper: "2025-12-20", status: "reconciled",
+            reconciled: [rec] }),
+      mov({ id: "m6", concepto: "CONCILIADO EN 2026", status: "reconciled",
+            reconciled: [{ ...rec, id: "r-2", numero: "5-260090", codigo: 260090 }] }),
+    ],
+  });
+  render(<ConciliacionPage />);
+  await user.selectOptions(await screen.findByLabelText("Ejercicio"), "todos");
+  await screen.findByText("CONCILIADO EN 2025");
+  expect(screen.queryByRole("button", { name: "Registrar cobro de la 5-250090" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Registrar cobro de la 5-260090" })).toBeInTheDocument();
 });

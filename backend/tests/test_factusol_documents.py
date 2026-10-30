@@ -823,3 +823,22 @@ def test_documentos_leen_el_ejercicio_en_curso_y_el_que_se_pida(client, session_
     assert "2019" in r.json()["detail"]["detail"]
     assert ej.json() == {"en_curso": "2026",
                          "ejercicios": ["2026", "2025", "2024", "2023", "2022", "2021"]}
+
+
+def test_ver_el_cobro_en_un_ejercicio_anterior_lee_ese_ejercicio(client, session_factory) -> None:
+    """La 5-000101 de 2025 cobrada y su homónima de 2026 pendiente: desde 2025
+    se ve la de 2025 (consulta), nunca la de este año."""
+    _ = session_factory
+    fake = FakeClientPorEjercicio({
+        "2026": {"F_FAC": [_fac(101, "5", TOTFAC=50.0)], "F_LCO": []},
+        "2025": {"F_FAC": [_fac(101, "5", TOTFAC=80.0, ESTFAC=2)],
+                 "F_LCO": [{"TFALCO": "5", "CFALCO": 101, "LINLCO": 1, "IMPLCO": 80.0,
+                            "CPALCO": 6, "FECLCO": "2025-05-02T00:00:00"}]},
+    })
+    with _patched_factusol(fake):
+        r = client.get("/api/erp/factusol/documents/facturas/5/101/cobro?ejercicio=2025",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["status"], body["total"]) == ("cobrada", 80.0)
+    assert body["cobrado_con"][0]["fecha"] == "2025-05-02"

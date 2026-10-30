@@ -1944,9 +1944,19 @@ qué dirección compartirla: como **Lector** si BoHub solo la lee, como
   movimiento por fecha, importe y saldo.
 
 **Ejercicio y facturas externas.** La lista arranca en el **ejercicio en
-curso**: salen los movimientos de ese año y los contadores cuentan esos. Un
-ejercicio anterior se elige en **«Ejercicio»**, y la pantalla avisa mientras
-estás en él. El extracto sale **entero** siempre: todos los movimientos del
+curso**: salen los movimientos de ese año y los contadores cuentan esos. En
+**«Ejercicio»** salen **todos los años que tienen movimientos** (también los
+anteriores a FACTUSOL), cada uno con cuántos movimientos tiene y cuántos
+quedan por conciliar, y **«Todos los años»**. La pantalla avisa mientras estás
+en un año anterior. Una factura emitida **hasta 15 días después del cobro**
+también se propone (el prepago): el motivo lo dice («factura emitida 1 día
+después del cobro»).
+
+**Los dos ficheros.** **«Traer a BoHub»** mete los movimientos en BoHub y no
+toca la hoja de Drive; si la cuenta tiene hoja, el resultado lo recuerda.
+**«Escribir en la hoja de Drive lo que falte»** (recuadro verde) es el que
+añade a la hoja las filas que le falten. Se ve siempre; hasta que eliges una
+cuenta con hoja está deshabilitado y dice por qué. El extracto sale **entero** siempre: todos los movimientos del
 ejercicio salen y cuentan en «por conciliar». Lo que se acota es **lo que se
 ofrece**:
 

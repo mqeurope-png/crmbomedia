@@ -128,11 +128,11 @@ jest.mock("../../components/erp/CreateQuoteModal", () => ({
 }));
 jest.mock("../../components/erp/quoteJobs", () => ({ pollQuoteJob: jest.fn() }));
 jest.mock("../../components/erp/RegistrarCobroModal", () => ({
-  RegistrarCobroModal: ({ factura, onDone }: {
-    factura: { numero: string }; onDone?: (info: unknown) => void;
+  RegistrarCobroModal: ({ factura, onDone, ejercicio }: {
+    factura: { numero: string }; onDone?: (info: unknown) => void; ejercicio?: string;
   }) => (
     <div role="dialog" aria-label="cobro">
-      COBRO {factura.numero}
+      COBRO {factura.numero}{ejercicio ? ` · solo consulta ${ejercicio}` : ""}
       <button type="button"
               onClick={() => onDone?.({ status: "cobrada", numero: factura.numero })}>
         REGISTRAR
@@ -291,7 +291,7 @@ describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
     await screen.findByText("5-500005");
     await user.click(screen.getByRole("button", { name: "PDF" }));
     await waitFor(() =>
-      expect(mockPdf).toHaveBeenCalledWith("albaranes", 5, 500005, "es"),
+      expect(mockPdf).toHaveBeenCalledWith("albaranes", 5, 500005, "es", {}),
     );
     expect(saveBlob).toHaveBeenCalled();
   });
@@ -828,5 +828,42 @@ describe("Documentos · «Guardar como plantilla» en el «…» (plantillas de 
     );
     // Solo abre el modal: no crea pedido ni nada más.
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("en un ejercicio anterior, una cobrada deja ver contra qué se cobró, pero no se cobra ni se vincula", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [
+        factura({ codigo: 250001, numero: "5-250001", estado: "2", estado_label: "Cobrada",
+                  estado_tone: "ok", order: { id: "o-x", order_number: "MAN-7001" } }),
+        factura({ codigo: 250002, numero: "5-250002" }),
+      ],
+      total: 2, unlinked_total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    await user.selectOptions(await screen.findByLabelText("Ejercicio"), "2025");
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].ejercicio).toBe("2025"));
+    const cobrada = (await screen.findByText("5-250001")).closest("tr") as HTMLElement;
+    const pendiente = screen.getByText("5-250002").closest("tr") as HTMLElement;
+    await user.click(within(cobrada).getByRole("button", { name: "Ver el cobro de 5-250001" }));
+    expect(screen.getByRole("dialog", { name: "cobro" })).toHaveTextContent(
+      "COBRO 5-250001 · solo consulta 2025");
+    expect(within(pendiente).queryByRole("button", { name: "Registrar cobro" })).not.toBeInTheDocument();
+    expect(within(pendiente).queryByRole("button", { name: /Vincular/ })).not.toBeInTheDocument();
+    // El PDF de ESE ejercicio y el «⋯» con lo de consulta.
+    expect(within(cobrada).getByRole("button", { name: "PDF" })).toBeEnabled();
+    expect(within(cobrada).getByRole("button", { name: "Más acciones 5-250001" })).toBeInTheDocument();
+  });
+
+  it("un ejercicio con documentos pero todos externos dice cuántos hay, no «sin documentos»", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ items: [], total: 0, unlinked_total: 1472 });
+    render(<FactusolDocumentosPage />);
+    await user.selectOptions(await screen.findByLabelText("Ejercicio"), "2025");
+    await waitFor(() => expect(screen.getAllByRole("status").some((el) =>
+      el.textContent?.includes("Hay 1.472 facturas en 2025, todas sin pedido de BoHub."))).toBe(true));
+    expect(screen.queryByText("Sin documentos que casen los filtros.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Encender «Incluir facturas externas»/ }));
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].linked).toBeUndefined());
   });
 });

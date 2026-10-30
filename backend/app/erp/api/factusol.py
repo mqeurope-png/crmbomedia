@@ -865,6 +865,8 @@ def download_document_pdf(
     bank: int | None = Query(default=None, ge=0, le=20),
     currency: str = Query(default="EUR", pattern="^[A-Z]{3}$"),
     warehouse: int = Query(default=0, ge=0, le=20),
+    #: Otro ejercicio de FACTUSOL (consulta desde un ejercicio anterior).
+    ejercicio_q: str | None = Query(default=None, alias="ejercicio", pattern=r"^\d{4}$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_office_view),
 ) -> Response:
@@ -916,6 +918,7 @@ def download_document_pdf(
         )
         selected_warehouse = warehouses[min(warehouse, len(warehouses) - 1)]
     client, ejercicio = _client_and_ejercicio(session)
+    ejercicio = ejercicio_q or ejercicio
     try:
         raw = load_raw_document(
             client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
@@ -1602,6 +1605,8 @@ def factura_cobro_info(
     codigo: int,
     #: El movimiento del banco con el que se va a cobrar (Conciliación).
     movimiento: str | None = Query(default=None, max_length=36),
+    #: Otro ejercicio de FACTUSOL: solo consulta (contra qué se cobró).
+    ejercicio_q: str | None = Query(default=None, alias="ejercicio", pattern=r"^\d{4}$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
@@ -1621,6 +1626,7 @@ def factura_cobro_info(
     )
 
     client, ejercicio = _client_and_ejercicio(session)
+    ejercicio = ejercicio_q or ejercicio
     numero = f"{serie}-{int(codigo):06d}"
     try:
         status_info = collection_status(

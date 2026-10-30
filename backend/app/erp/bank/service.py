@@ -747,6 +747,39 @@ def pending_invoices(client: Any, ejercicio: str) -> list[dict[str, Any]]:
 # --- casado ----------------------------------------------------------------------
 
 
+def _con_prepago(session: Session, invoices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Marca `prepago` en las facturas cuyo pedido de BoHub consta pagado: su
+    factura posterior al cobro es lo normal (`matching._posterior`)."""
+    from app.erp.models import Order  # noqa: PLC0415
+
+    claves = {(int(i["serie"]), int(i["codigo"])) for i in invoices
+              if i.get("serie") is not None and i.get("codigo") is not None}
+    if not claves:
+        return invoices
+    pagados: set[tuple[int, int]] = set()
+    # El número se guarda como el código («260156») o como el visible
+    # («5-260156»): valen los dos.
+    numeros = {str(c) for _, c in claves} | {f"{se}-{c:06d}" for se, c in claves}
+    for order in session.scalars(select(Order).where(
+        Order.factusol_invoice_number.in_(numeros),
+        Order.payment_status == "paid",
+    )):
+        numero = str(order.factusol_invoice_number or "")
+        try:
+            if "-" in numero:
+                serie_txt, codigo_txt = numero.split("-", 1)
+                clave = (int(serie_txt), int(codigo_txt))
+            else:
+                clave = (int(order.factusol_invoice_serie), int(numero))
+        except (TypeError, ValueError):
+            continue
+        if clave in claves:
+            pagados.add(clave)
+    return [{**i, "prepago": (int(i["serie"]), int(i["codigo"])) in pagados}
+            if i.get("serie") is not None and i.get("codigo") is not None else i
+            for i in invoices]
+
+
 def run_matching(
     session: Session,
     invoices: list[dict[str, Any]],
@@ -756,6 +789,7 @@ def run_matching(
     """Genera PROPUESTAS para los movimientos pendientes de entrada. Nunca
     confirma nada. Reemplaza las propuestas anteriores no confirmadas."""
     patterns, payer_map = _rules_snapshot(session)
+    invoices = _con_prepago(session, invoices)
     query = select(BankMovement).where(BankMovement.status == "pending")
     if account_id:
         query = query.where(BankMovement.account_id == account_id)
@@ -963,6 +997,34 @@ def list_movements(
         ),
     }
     return {"items": items[offset : offset + limit], "total": total, "counters": counters}
+
+
+def ejercicios_de_movimientos(
+    session: Session, *, account_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Los años que tienen movimientos de entrada (los que lista Conciliación),
+    con su recuento por estado, del más reciente al más antiguo. El extracto
+    va más atrás que FACTUSOL: aquí manda lo que hay en el banco, no los
+    ejercicios que tiene FACTUSOL."""
+    anio = func.extract("year", BankMovement.fecha_oper)
+    q = (select(anio, BankMovement.status, func.count(BankMovement.id),
+                func.coalesce(func.sum(BankMovement.importe), 0))
+         .where(BankMovement.importe > 0)
+         .group_by(anio, BankMovement.status))
+    if account_id:
+        q = q.where(BankMovement.account_id == account_id)
+    por_anio: dict[int, dict[str, Any]] = {}
+    for a, estado, n, suma in session.execute(q):
+        fila = por_anio.setdefault(int(a), {
+            "anio": str(int(a)), "movimientos": 0, "pending": 0, "reconciled": 0,
+            "discarded": 0, "pending_amount": 0.0,
+        })
+        fila["movimientos"] += int(n)
+        if estado in ("pending", "reconciled", "discarded"):
+            fila[estado] += int(n)
+        if estado == "pending":
+            fila["pending_amount"] = round(fila["pending_amount"] + float(suma), 2)
+    return [por_anio[a] for a in sorted(por_anio, reverse=True)]
 
 
 def _con_propuestas(
@@ -1352,7 +1414,9 @@ def movimientos_de_factura(
         "serie": serie, "codigo": codigo, "numero": factura.get("numero"),
         "cliente_codigo": factura.get("cliente_codigo"),
         "cliente_nombre": factura.get("cliente_nombre"),
-        "fecha": desde.isoformat() if desde else None,
+        # Sin fecha: la de aquí sería la del PEDIDO, no la de la factura (la
+        # ventana ya la pone la consulta: desde unos días antes del pedido).
+        "fecha": None,
         "saldo_pendiente": saldo,
     }
     q = (

@@ -21,6 +21,7 @@ import {
   escribirBankDrive,
   getBankDrive,
   getContrapartidas,
+  getBankEjercicios,
   importBankStatement,
   listBankAccounts,
   listBankMovements,
@@ -42,6 +43,7 @@ import {
   type BankDriveTraida,
   type BankExportPlan,
   type BankImportSummary,
+  type BankEjercicios,
   type BankMovement,
   type BankProposal,
   type BankMovementFilters,
@@ -54,7 +56,7 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import { ExportBancoADrive } from "../../components/erp/ExportBancoADrive";
-import { EjercicioSelector, useEjercicio } from "../../components/erp/EjercicioSelector";
+import { AnioBancoSelector, TODOS_LOS_ANIOS } from "./AnioBancoSelector";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 
 const CONFIDENCE_LABEL: Record<BankConfidence, { label: string; tone: string }> = {
@@ -313,8 +315,15 @@ function ConciliacionScreen() {
   const canEdit = can(user, Cap.CONCILIACION);
   const isAdmin = user?.role === "admin";
 
-  // El ejercicio (el de FACTUSOL): los movimientos de ese año.
-  const { info: ejercicios, ejercicio, anterior, setEjercicio } = useEjercicio();
+  // El año de los movimientos: arranca en el ejercicio en curso (el de
+  // FACTUSOL), pero ofrece TODOS los años que tienen movimientos y «Todos los
+  // años»: el extracto va más atrás que FACTUSOL y ninguno queda fuera.
+  const [banco, setBanco] = useState<BankEjercicios | null>(null);
+  const [anioElegido, setAnioElegido] = useState<string | null>(null);
+  const ejercicio = anioElegido ?? banco?.en_curso ?? null;
+  const todosLosAnios = ejercicio === TODOS_LOS_ANIOS;
+  const anterior = !!banco && !!ejercicio && !todosLosAnios && ejercicio !== banco.en_curso;
+  const setEjercicio = setAnioElegido;
   // Un ejercicio anterior es solo consulta: ni confirmar ni elegir.
   const canDecidir = canEdit && (!anterior || !!movimiento);
   // Cobrar, solo en el ejercicio en curso (es el que lee y escribe FACTUSOL).
@@ -335,13 +344,29 @@ function ConciliacionScreen() {
       // Un movimiento concreto va sin los demás filtros: puede estar ya
       // conciliado y el estado por defecto es «Pendiente».
       setPage(await listBankMovements(movimiento ? { movimiento, externas: incluirExternas } : {
-        ...filters, limit: 200, ejercicio: ejercicio ?? undefined, externas: incluirExternas,
+        ...filters, limit: 200, ejercicio: todosLosAnios ? undefined : ejercicio ?? undefined,
+        externas: incluirExternas,
         solo_externas: !incluirExternas && soloExternas,
       }));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron cargar los movimientos."));
     }
-  }, [filters, movimiento, ejercicio, incluirExternas, soloExternas]);
+    // El recuento por año también cambia al conciliar o importar.
+    getBankEjercicios(filters.account_id).then(setBanco).catch(() => undefined);
+  }, [filters, movimiento, ejercicio, todosLosAnios, incluirExternas, soloExternas]);
+
+  useEffect(() => {
+    let vivo = true;
+    getBankEjercicios(filters.account_id)
+      .then((r) => { if (vivo) setBanco(r); })
+      .catch(() => {
+        // Sin recuento, al menos el año natural y «todos»: nunca sin salida.
+        const anio = String(new Date().getFullYear());
+        if (vivo) setBanco((b) => b ?? { en_curso: anio, anios: [], total: {
+          movimientos: 0, pending: 0, reconciled: 0, discarded: 0, pending_amount: 0 } });
+      });
+    return () => { vivo = false; };
+  }, [filters.account_id]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -414,6 +439,15 @@ function ConciliacionScreen() {
   const counters = page?.counters;
   const conHoja = accounts.filter((a) => a.drive_file_id);
   const cuentaConHoja = conHoja.find((a) => a.id === filters.account_id);
+  const cuentaElegida = accounts.find((a) => a.id === filters.account_id);
+  const cuentaImportada = importSummary?.account_id
+    ? accounts.find((a) => a.id === importSummary.account_id) : undefined;
+  // Por qué no se puede escribir en la hoja todavía (el campo se ve igual).
+  const motivoSinHoja = !filters.account_id
+    ? "Elige arriba la cuenta: el fichero se escribe en la hoja de Drive de esa cuenta."
+    : !cuentaElegida?.drive_file_id
+      ? `La cuenta ${cuentaElegida?.name ?? ""} no tiene hoja de Drive: ponla en la pestaña Cuentas.`
+      : "Falta la cuenta de servicio de Google: un admin la pega en Configuración ERP.";
   const puedeTraer = filters.account_id
     ? conHoja.some((a) => a.id === filters.account_id)
     : conHoja.length > 0;
@@ -484,7 +518,7 @@ function ConciliacionScreen() {
       {tab === "revision" ? (
         <>
           <section className="erp-card">
-            <h3>Importar extracto</h3>
+            <h3>Extracto del banco</h3>
             <div className="erp-doc-filters">
               <label className="field">
                 <span>Cuenta</span>
@@ -500,8 +534,9 @@ function ConciliacionScreen() {
                 </select>
               </label>
               {canEdit ? (
-                <label className="field">
-                  <span>Fichero (.xls / .xlsx / .csv)</span>
+                <label className="field erp-fichero-bohub">
+                  <span>Traer a BoHub · .xls / .xlsx / .csv</span>
+                  <small className="muted">Mete los movimientos en BoHub. La hoja de Drive no se toca.</small>
                   <input
                     type="file"
                     accept=".xls,.xlsx,.csv"
@@ -599,7 +634,9 @@ function ConciliacionScreen() {
                 </p>
               )
             ) : null}
-            {canEdit && drive?.configured && cuentaConHoja ? (
+            {canEdit ? (
+              <div className="erp-fichero-hoja" role="group" aria-label="Escribir en la hoja de Drive">
+            {drive?.configured && cuentaConHoja ? (
               <ExportBancoADrive
                 key={cuentaConHoja.id}
                 accountId={cuentaConHoja.id}
@@ -613,12 +650,25 @@ function ConciliacionScreen() {
                   await Promise.all([loadMovements(), loadAccounts()]);
                 }}
               />
-            ) : canEdit && drive?.configured && conHoja.length > 0 && !filters.account_id ? (
-              <p className="muted small">
-                Para subir el export del banco a su hoja de Drive, elige antes la cuenta.
-              </p>
+            ) : (
+              // Siempre a la vista: deshabilitado y diciendo por qué.
+              <label className="field">
+                <span>Escribir en la hoja de Drive lo que falte · .xls / .xlsx / .csv</span>
+                <small className="muted" role="note">{motivoSinHoja}</small>
+                <input type="file" disabled aria-label="Export del banco para la hoja" />
+              </label>
+            )}
+              </div>
             ) : null}
             {importSummary ? <ResumenImport summary={importSummary} /> : null}
+            {importSummary?.ok && cuentaImportada?.drive_file_id ? (
+              <p className="form-info small" role="note">
+                En la hoja de Drive de {cuentaImportada.name} no se ha escrito nada: «Traer a
+                BoHub» solo mete los movimientos en BoHub. Para añadir a la hoja lo que le falte,
+                elige la cuenta y sube este mismo fichero en «Escribir en la hoja de Drive lo que
+                falte».
+              </p>
+            ) : null}
             {traidas ? traidas.map((t) => <TraidaDeDrive key={t.account_id} traida={t} />) : null}
             {importSummary ? (
               <p className="muted small" role="status">
@@ -637,10 +687,7 @@ function ConciliacionScreen() {
               </div>
             ) : (
               <div className="erp-doc-filters">
-                <EjercicioSelector
-                  info={ejercicios} ejercicio={ejercicio}
-                  onChange={setEjercicio} que="Los movimientos"
-                />
+                <AnioBancoSelector banco={banco} ejercicio={ejercicio} onChange={setEjercicio} />
                 <label className="field">
                   <span>Desde</span>
                   <input type="date" aria-label="Desde" value={filters.desde ?? ""}
@@ -684,7 +731,10 @@ function ConciliacionScreen() {
                     onClick={() => {
                       if (!window.confirm("¿Confirmar TODAS las propuestas de confianza alta? Es una decisión tuya, no automática.")) return;
                       void act("Confirmadas las de confianza alta.", () => confirmAllHighBank(
-                        filters.account_id, { externas: incluirExternas, ejercicio: ejercicio ?? undefined },
+                        filters.account_id, {
+                          externas: incluirExternas,
+                          ejercicio: todosLosAnios ? undefined : ejercicio ?? undefined,
+                        },
                       ));
                     }}
                   >
@@ -843,6 +893,9 @@ function ConciliacionScreen() {
                         {/* La herramienta de cobro, con este movimiento: la misma de
                             la ficha y de Documentos. Las externas, solo con la casilla. */}
                         {canCobrar && m.status === "reconciled"
+                          // Solo los del ejercicio en curso, se elija el año que se
+                          // elija (también en «Todos»): FACTUSOL se escribe en ese.
+                          && !!banco && m.fecha_oper.startsWith(banco.en_curso)
                           ? m.reconciled.filter((r) => incluirExternas || r.pedido).map((r) => (
                             <button key={r.id} type="button" className="button small" disabled={busy}
                               aria-label={`Registrar cobro de la ${r.numero}`}

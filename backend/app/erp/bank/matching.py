@@ -15,7 +15,12 @@ Casado contra facturas con saldo pendiente (ESTFAC 0 o 1):
   3. importe < saldo de una factura del cliente        → cobro parcial
   4. nombre del pagador ~ nombre del cliente (tolerante: acentos rotos,
      REFERENCIA 2 truncada a ~16, sin formas societarias)
-  5. fecha: el cobro es ≥ la fecha de la factura; muy lejana baja confianza
+  5. fecha: el cobro suele ser ≥ la fecha de la factura; muy lejana baja
+     confianza. El PREPAGO es lo normal en esta casa (el cliente paga y la
+     factura se emite después): una factura hasta `VENTANA_FACTURA_POSTERIOR`
+     días posterior al cobro también vale. Es una pista, no un filtro: el
+     motivo lo dice y, sola, no sube a confianza alta, salvo que el pedido de
+     BoHub conste pagado por adelantado (`prepago` en la factura).
 """
 
 from __future__ import annotations
@@ -85,6 +90,8 @@ MAX_COMBO = 3
 #: Máximo de días de retraso «normal» del cobro respecto a la factura; más
 #: allá NO se descarta, solo baja la confianza.
 STALE_DAYS = 365
+#: Cuántos días después del cobro puede emitirse su factura (prepago).
+VENTANA_FACTURA_POSTERIOR = 15
 
 
 def normalize_name(text: Any) -> str:
@@ -180,14 +187,37 @@ def _invoice_date(inv: dict[str, Any]) -> date | None:
 
 
 def _date_ok(mov_date: date, inv: dict[str, Any]) -> tuple[bool, bool]:
-    """(cobro ≥ factura, cobro «reciente»). Anterior a la factura → no
-    plausible; muy posterior → plausible pero baja la confianza."""
+    """(plausible, cobro «reciente»). Una factura emitida hasta
+    `VENTANA_FACTURA_POSTERIOR` días después del cobro es plausible (prepago);
+    más allá, no. Un cobro muy posterior a la factura es plausible pero baja
+    la confianza."""
     d = _invoice_date(inv)
     if d is None:
         return True, True
     if mov_date < d:
-        return False, False
+        return (d - mov_date).days <= VENTANA_FACTURA_POSTERIOR, True
     return True, (mov_date - d).days <= STALE_DAYS
+
+
+def dias_factura_posterior(mov_date: date | None, inv: dict[str, Any]) -> int:
+    """Cuántos días después del cobro se emitió la factura (0 si antes)."""
+    d = _invoice_date(inv)
+    if mov_date is None or d is None or d <= mov_date:
+        return 0
+    return (d - mov_date).days
+
+
+def _posterior(mov_date: date | None, inv: dict[str, Any], conf: str, reason: str,
+               ) -> tuple[str, str]:
+    """La pista de la factura posterior al cobro: va en el motivo y, sin
+    prepago constado, la confianza no pasa de media."""
+    dias = dias_factura_posterior(mov_date, inv)
+    if not dias:
+        return conf, reason
+    texto = f"factura emitida {dias} día{'s' if dias != 1 else ''} después del cobro"
+    if inv.get("prepago"):
+        return conf, f"{reason} · {texto} (pedido pagado por adelantado)"
+    return ("media" if conf == "alta" else conf), f"{reason} · {texto}"
 
 
 def _same(a: float, b: float) -> bool:
@@ -251,23 +281,21 @@ def propose(
     exact_named = [inv for inv in exact if name_ok(inv)]
     if len(exact_named) == 1:
         inv = exact_named[0]
-        conf = "alta" if fresh(inv) else "media"
-        return [
-            _prop(
-                inv,
-                amount,
-                conf,
-                "importe exacto + nombre del cliente"
-                + ("" if fresh(inv) else " (cobro muy posterior a la factura)"),
-            )
-        ]
+        conf, reason = _posterior(
+            mov_date, inv, "alta" if fresh(inv) else "media",
+            "importe exacto + nombre del cliente"
+            + ("" if fresh(inv) else " (cobro muy posterior a la factura)"),
+        )
+        return [_prop(inv, amount, conf, reason)]
     if len(exact_named) > 1:
         return [
             _prop(inv, amount, "baja", "importe exacto y nombre, pero varias facturas candidatas")
             for inv in exact_named[:3]
         ]
     if len(exact) == 1:
-        return [_prop(exact[0], amount, "media", "importe exacto (sin confirmación de nombre)")]
+        conf, reason = _posterior(mov_date, exact[0], "media",
+                                  "importe exacto (sin confirmación de nombre)")
+        return [_prop(exact[0], amount, conf, reason)]
     if len(exact) > 1:
         return [
             _prop(inv, amount, "baja", "solo coincide el importe; varias facturas candidatas")
@@ -297,16 +325,12 @@ def propose(
         if chosen is not None:
             conf = "alta" if (named and len(named) == 1) else "media"
             nums = ", ".join(str(i.get("numero")) for i in chosen)
-            return [
-                _prop(
-                    i,
-                    i["saldo_pendiente"],
-                    conf,
-                    f"suma de {len(chosen)} facturas del cliente ({nums})"
-                    + ("" if named else " (sin confirmación de nombre)"),
-                )
-                for i in chosen
-            ]
+            reason = (f"suma de {len(chosen)} facturas del cliente ({nums})"
+                      + ("" if named else " (sin confirmación de nombre)"))
+            # La pista de la factura posterior, con la más tardía del reparto.
+            ultima = max(chosen, key=lambda i: dias_factura_posterior(mov_date, i))
+            conf, reason = _posterior(mov_date, ultima, conf, reason)
+            return [_prop(i, i["saldo_pendiente"], conf, reason) for i in chosen]
         # varias combinaciones plausibles → no inventar
         return []
 
@@ -319,11 +343,12 @@ def propose(
     if len(partial) == 1:
         inv = partial[0]
         pct = amount / float(inv["saldo_pendiente"])
-        reason = (
+        conf, reason = _posterior(
+            mov_date, inv, "media" if fresh(inv) and pct >= 0.05 else "baja",
             f"cobro parcial ({amount:.2f} de {float(inv['saldo_pendiente']):.2f} "
-            "pendientes) + nombre del cliente"
+            "pendientes) + nombre del cliente",
         )
-        return [_prop(inv, amount, "media" if fresh(inv) and pct >= 0.05 else "baja", reason)]
+        return [_prop(inv, amount, conf, reason)]
     if len(partial) > 1:
         # el más reciente pendiente es el candidato más plausible, en baja
         inv = sorted(partial, key=lambda i: str(i.get("fecha") or ""), reverse=True)[0]

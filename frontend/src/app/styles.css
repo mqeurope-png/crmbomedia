@@ -15966,3 +15966,12 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   font-size: var(--fs-small, 12px);
   white-space: nowrap;
 }
+
+/* Conciliación: los dos ficheros, distintos de un vistazo (30/10/2026). */
+.erp-fichero-hoja {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 4px solid #1e8e3e;
+  background: #f1f8f3;
+  border-radius: 6px;
+}

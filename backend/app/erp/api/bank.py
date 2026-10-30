@@ -390,6 +390,30 @@ def run_match(
 # --- listado -----------------------------------------------------------------------------
 
 
+@router.get("/ejercicios")
+def ejercicios_del_banco(
+    account_id: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> dict[str, Any]:
+    """El selector de Conciliación: TODOS los años que tienen movimientos, con
+    su recuento, y el ejercicio en curso (el de FACTUSOL). El extracto va más
+    atrás que FACTUSOL: ningún movimiento queda fuera de alcance."""
+    _ = current_user
+    from app.erp.ejercicio import ejercicio_en_curso  # noqa: PLC0415
+
+    anios = service.ejercicios_de_movimientos(session, account_id=account_id)
+    return {
+        "en_curso": ejercicio_en_curso(session),
+        "anios": anios,
+        "total": {
+            k: (round(sum(a[k] for a in anios), 2) if k == "pending_amount"
+                else sum(a[k] for a in anios))
+            for k in ("movimientos", "pending", "reconciled", "discarded", "pending_amount")
+        },
+    }
+
+
 @router.get("/movements")
 def list_movements(
     account_id: str | None = Query(default=None),

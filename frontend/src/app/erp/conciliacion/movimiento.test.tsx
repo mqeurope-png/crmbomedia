@@ -24,6 +24,15 @@ jest.mock("../../lib/errors", () => ({
     err instanceof Error && err.message ? err.message : fallback,
 }));
 jest.mock("../../lib/erpApi", () => ({
+  getBankEjercicios: jest.fn(() => Promise.resolve({
+    en_curso: "2026",
+    anios: [
+      { anio: "2026", movimientos: 3, pending: 2, reconciled: 1, discarded: 0, pending_amount: 10 },
+      { anio: "2025", movimientos: 1, pending: 1, reconciled: 0, discarded: 0, pending_amount: 5 },
+      { anio: "2019", movimientos: 4, pending: 4, reconciled: 0, discarded: 0, pending_amount: 7 },
+    ],
+    total: { movimientos: 8, pending: 7, reconciled: 1, discarded: 0, pending_amount: 22 },
+  })),
   getEjercicios: jest.fn(() => Promise.resolve({ en_curso: "2026", ejercicios: ["2026", "2025"] })),
   confirmAllHighBank: jest.fn(),
   confirmBankMovement: jest.fn(),
