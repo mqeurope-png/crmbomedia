@@ -979,9 +979,22 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 En la ficha de una empresa, bajo «Actividad reciente»:
 
 - **Máquinas:** las que ha comprado, de sus facturas y albaranes desde 2014
-  (solo las familias de clase «Máquina»: un accesorio no cuenta). Cada una con
+  (solo las de clase «Máquina»: un accesorio no cuenta). Cada una con
   su gama, su fecha y año, y **de dónde sale** (la factura o el albarán, con
   enlace a su ficha, o «Añadida a mano»). Arriba, cuántas siguen en servicio.
+  - **Albarán y factura de la misma venta** salen una vez: la factura, con
+    «y su albarán …» debajo. BoHub los junta por lo que FACTUSOL apunta en
+    las líneas (la factura que viene del albarán, o los dos que vienen de la
+    misma proforma o pedido).
+  - **«¿Misma venta que la factura …?»** en un albarán: FACTUSOL no los une
+    (se hicieron por separado) pero hay una factura del mismo artículo muy
+    cerca. Si es la misma venta, da de baja el albarán; si son dos compras,
+    déjalo.
+  - **«No es una máquina»** (quien configura el ERP): un accesorio que sale
+    como máquina porque su familia mezcla las dos cosas. Eliges qué es
+    (accesorio, recambio…) y sale del parque **de todos los clientes** que lo
+    tengan. Se deshace en Histórico → Familias → «Artículos con clase
+    propia».
   - **«Añadir una máquina a mano»:** para las vendidas antes de 2014, las que
     entraron como línea de nota o las que compró en otro sitio.
   - **«Dar de baja»** (con motivo): la que ya no está en servicio. Deja de
@@ -1003,7 +1016,8 @@ factura o una proforma abre su **ficha**, de cualquier año (2014 → hoy):
 - **Cabecera:** número, fecha, ejercicio, cliente (con enlace a su empresa o
   «Sin empresa vinculada»), total y, en una factura, su **estado de cobro**.
 - **Líneas:** artículo (con el nombre que tenía en el catálogo de ese año),
-  descripción, cantidad, precio y total. Las **notas** (portes, condiciones…)
+  descripción, cantidad, precio y total, y **de dónde viene** la línea si
+  FACTUSOL lo apunta («Viene de Proforma 1-000500», «Viene de Albarán …»). Las **notas** (portes, condiciones…)
   salen aparte y no cuentan como venta.
 - **Pedido de BoHub:** enlace si lo tiene; si no, «Sin pedido de BoHub».
 - **PDF:** botón arriba a la derecha (necesita que FACTUSOL tenga ese ejercicio

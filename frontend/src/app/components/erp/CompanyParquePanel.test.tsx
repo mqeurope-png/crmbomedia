@@ -17,6 +17,8 @@ jest.mock("../../lib/erpApi", () => ({
   borrarMaquinaParque: jest.fn(),
   darBajaMaquina: jest.fn(),
   deshacerBajaMaquina: jest.fn(),
+  setClaseArticulo: jest.fn(),
+  HISTORICO_CLASE_LABEL: jest.requireActual("../../lib/erpApi").HISTORICO_CLASE_LABEL,
 }));
 
 function api() {
@@ -136,4 +138,40 @@ test("si fallan las compras de un año no se quedan las del anterior a la vista"
   expect(within(compras).queryByText("5-260001")).not.toBeInTheDocument();
   await user.click(within(compras).getByRole("button", { name: "Volver al ejercicio en curso" }));
   await waitFor(() => expect(within(compras).getByText("5-260001")).toBeInTheDocument());
+});
+
+
+test("«No es una máquina» pone la clase del artículo y vuelve a leer el parque", async () => {
+  const user = userEvent.setup();
+  api().setClaseArticulo.mockResolvedValue({ items: [] });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} puedeClasificar />);
+  const maquinas = await screen.findByRole("region", { name: "Máquinas" });
+  await within(maquinas).findByText(/2 en servicio/);
+  const fila = within(maquinas).getAllByRole("row").find((r) => within(r).queryByText("Láser Figurante 1390"))!;
+  // Sin permiso de pedidos no se da de baja, pero sí se reclasifica.
+  expect(within(fila).queryByRole("button", { name: "Dar de baja" })).not.toBeInTheDocument();
+  await user.click(within(fila).getByRole("button", { name: "No es una máquina" }));
+  expect(within(fila).getByText(/todos los clientes que lo tengan/)).toBeInTheDocument();
+  await user.selectOptions(within(fila).getByLabelText("Es un"), "recambio");
+  const lecturas = api().getParqueEmpresa.mock.calls.length;
+  await user.click(within(fila).getByRole("button", { name: "Confirmar" }));
+  expect(api().setClaseArticulo).toHaveBeenCalledWith("1712", "recambio");
+  await waitFor(() => expect(api().getParqueEmpresa.mock.calls.length).toBeGreaterThan(lecturas));
+});
+
+test("la factura enseña su albarán y un albarán suelto avisa de la factura cercana", async () => {
+  api().getParqueEmpresa.mockResolvedValue({
+    ...PARQUE, maquinas: [
+      MAQ({ albaranes: [{ tipo: "albaran", serie: "3", codigo: 230001, ejercicio: "2023", numero: "3-230001" }] }),
+      MAQ({ origen: "albaran", clave: "2023|albaran|3|230002|1|1712", ejercicio: "2023",
+            documento: { tipo: "albaran", serie: "3", codigo: 230002, numero: "3-230002" },
+            posible_misma_venta: { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022",
+                                   numero: "1-123021" } }),
+    ],
+  });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
+  expect(await screen.findByText("3-230001")).toBeInTheDocument();
+  expect(screen.getByText(/¿Misma venta que la/)).toBeInTheDocument();
+  expect(screen.getByText("1-123021").closest("a")).toHaveAttribute(
+    "href", expect.stringContaining("/factura/2022/1/123021"));
 });

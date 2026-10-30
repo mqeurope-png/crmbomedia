@@ -94,18 +94,44 @@ abre desde la «Actividad reciente» de la ficha de empresa.
   proformas de los años cerrados.
 - Solo lectura: cobrar, mención y vincular siguen donde estaban.
 
-## Parque instalado (`app/erp/parque.py`, migración 0156)
+## Parque instalado (`app/erp/parque.py`, migraciones 0156 y 0157)
 
 En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
 `…/compras`):
 
 - **Máquinas:** las líneas de producto de sus facturas y albaranes cuyo
-  artículo es, en el catálogo de su año, de una familia de clase `maquina`
-  (un accesorio, recambio o consumible no lo es). Con gama, fecha, ejercicio y
-  documento (enlace a su ficha).
-  - **Una venta, una vez:** cuenta la factura; un albarán solo si FACTUSOL lo
-    da por pendiente de facturar (`ESTALB` 0) o, sin ese dato (volcado antes
-    de la 0155), si de ese artículo no hay factura del cliente.
+  artículo es de clase `maquina`: la **clase propia del artículo** si la
+  tiene (`historico_articulos_clase`, ver abajo) o, si no, la de su familia
+  en el catálogo de su año. Un accesorio, recambio o consumible no lo es.
+  Con gama, fecha, ejercicio y documento (enlace a su ficha).
+  - **Una venta, una vez (0157).** Un albarán y su factura cuentan como una
+    máquina, la de la factura (con «y su albarán …» debajo). Se emparejan por
+    el enlace que FACTUSOL guarda **en cada línea** (`DOC*`/`DTP*`/`DCO*`,
+    ver `factusol-albaranes-discovery.md` §9), volcado en
+    `historico_lineas.origen_tipo/serie/codigo`:
+    1. la línea de factura apunta al albarán (`A`, serie, número): se
+       facturó ese albarán;
+    2. las dos apuntan al mismo presupuesto o pedido (`P`/`C`, serie, número).
+
+    Mismo artículo y sin pasar de las unidades de la factura; si hay varias
+    candidatas, la de fecha más cercana. El auto-enlace de un albarán
+    autónomo (`A` a sí mismo) no cuenta. Un albarán que FACTUSOL da por
+    facturado (`ESTALB` 1) tampoco cuenta, aunque su factura no esté aquí.
+    Ya **no** se usa «albarán solo si no hay factura de ese artículo»: juntaba
+    dos compras reales del mismo modelo.
+  - **Limitación: sin enlace no se empareja.** Si el albarán y la factura se
+    teclearon por separado, sin documento común, no hay dato que los una y
+    salen los dos. Cuando un albarán sin enlace tiene una factura del mismo
+    artículo, también sin enlace, a menos de 60 días (`DIAS_MISMA_VENTA`), la
+    fila avisa «¿Misma venta que la factura …?»; si lo es, se da de baja el
+    albarán (motivo «la misma venta»). El enlace no lleva el ejercicio: se
+    casa por serie y número dentro del cliente. Una factura a otro código de
+    cliente que el albarán tampoco se empareja.
+  - **Hay que volver a cargar los ejercicios** después de la 0157: hasta
+    entonces las líneas no tienen el enlace y no se empareja nada (solo el
+    `ESTALB` 1).
+  - **Abonos:** una línea en negativo anula la venta más reciente de ese
+    artículo.
   - **A mano** (`parque_maquinas_manuales`): lo vendido antes de 2014, como
     línea de nota o en otro sitio. Se ven marcadas «Añadida a mano».
   - **Bajas:** una máquina que ya no está en servicio deja de contar en el
@@ -140,9 +166,15 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
 - La recarga de familias (`cargar_familias`) solo actualiza la descripción:
   clase y gama no se tocan.
 - **Compradores** filtra también por `clase` y `gama` (de la familia del
-  artículo en el catálogo de su año).
-- Fuera de alcance: el modelo concreto (A2100, Beamo…), el parque instalado y
-  clasificar artículos sueltos.
+  artículo en el catálogo de su año; la clase propia del artículo manda).
+- **Clase propia de un artículo** (`historico_articulos_clase`, 0157): por
+  encima de la de su familia, para las familias que mezclan máquinas y
+  accesorios (la 021 de Flux: Beambox y Hexa con sus sensores). Vale para
+  todos los años y todos los clientes. Se pone desde el parque de una
+  empresa («No es una máquina», eligiendo qué es) y se cambia o se quita en
+  Histórico → Familias → «Artículos con clase propia». La ficha de documento
+  y compradores la usan también.
+- Fuera de alcance: el modelo concreto (A2100, Beamo…).
 
 ## API (`/api/erp/historico`)
 
@@ -153,6 +185,8 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
 | `GET /familias` (con gamas y propuestas), `GET /reglas` | `erp.office.view` |
 | `PATCH /familias/{codigo}` (clase y/o gama), `POST /familias/{codigo}/aceptar`, `POST /familias/{codigo}/mantener`, `POST /familias/aceptar-propuestas`, `POST /gamas`, `POST/PUT/DELETE /reglas` | `erp.config` |
 | `GET /articulos?q=` | `erp.office.view` |
+| `GET /articulos-clase` | `erp.office.view` |
+| `PUT /articulos-clase/{codart}` (`{"clase": …}`; `null` la quita) | `erp.config` |
 | `GET /compradores`, `GET /compradores.csv` | `erp.office.view` |
 | `GET /documentos/{tipo}/{ejercicio}/{serie}/{codigo}` (ficha) | `erp.office.view` |
 | `GET /api/erp/parque/empresas/{id}`, `…/compras?ejercicio=` | `erp.office.view` |

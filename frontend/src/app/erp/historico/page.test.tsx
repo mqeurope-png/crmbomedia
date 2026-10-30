@@ -30,7 +30,10 @@ jest.mock("../../lib/erpApi", () => ({
   getHistoricoEstado: jest.fn(),
   getHistoricoFamilias: jest.fn(),
   saveBlob: jest.fn(),
+  HISTORICO_CLASE_LABEL: jest.requireActual("../../lib/erpApi").HISTORICO_CLASE_LABEL,
 }));
+// Los artículos con clase propia tienen su propio test.
+jest.mock("../../components/erp/ArticulosClasePanel", () => ({ ArticulosClasePanel: () => null }));
 jest.mock("../../lib/api", () => ({ getCurrentUser: jest.fn() }));
 
 function api() {

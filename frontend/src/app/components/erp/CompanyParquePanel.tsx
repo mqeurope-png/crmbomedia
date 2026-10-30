@@ -11,7 +11,10 @@ import {
   getComprasEmpresa,
   getHistoricoFamilias,
   getParqueEmpresa,
+  HISTORICO_CLASE_LABEL,
+  setClaseArticulo,
   type ComprasEmpresa,
+  type HistoricoClase,
   type HistoricoGama,
   type ParqueEmpresa,
   type ParqueMaquina,
@@ -37,9 +40,12 @@ function claveDe(m: ParqueMaquina): string {
   return m.clave ?? `manual-${m.id}`;
 }
 
+/** Lo que puede ser algo que no es una máquina. */
+const NO_MAQUINA = (Object.keys(HISTORICO_CLASE_LABEL) as HistoricoClase[]).filter((c) => c !== "maquina");
+
 export function CompanyParquePanel({
-  companyId, puedeEditar,
-}: { companyId: string; puedeEditar: boolean }) {
+  companyId, puedeEditar, puedeClasificar = false,
+}: { companyId: string; puedeEditar: boolean; puedeClasificar?: boolean }) {
   const [parque, setParque] = useState<ParqueEmpresa | null>(null);
   const [compras, setCompras] = useState<ComprasEmpresa | null>(null);
   const [anio, setAnio] = useState<string | undefined>(undefined);
@@ -49,6 +55,7 @@ export function CompanyParquePanel({
   const [ocupado, setOcupado] = useState(false);
   const [bajaDe, setBajaDe] = useState<string | null>(null);
   const [motivo, setMotivo] = useState("");
+  const [noMaquina, setNoMaquina] = useState<{ codart: string; clase: HistoricoClase } | null>(null);
   const [nueva, setNueva] = useState<{ descripcion: string; gama: string; fecha: string; nota: string } | null>(null);
 
   const leerParque = useCallback(async () => {
@@ -119,7 +126,7 @@ export function CompanyParquePanel({
             <thead>
               <tr>
                 <th>Máquina</th><th>Gama</th><th>Fecha</th><th>De dónde sale</th><th>Estado</th>
-                {puedeEditar ? <th aria-label="Acciones" /> : null}
+                {puedeEditar || puedeClasificar ? <th aria-label="Acciones" /> : null}
               </tr>
             </thead>
             <tbody>
@@ -142,6 +149,27 @@ export function CompanyParquePanel({
                         {ORIGEN[m.origen]} <span className="mono">{m.documento.numero}</span>
                       </Link>
                     ) : <span className="badge muted">{ORIGEN[m.origen]}</span>}
+                    {m.albaranes?.map((a) => (
+                      <div key={a.numero} className="muted">
+                        y su{" "}
+                        <Link href={fichaDocumentoHref(a.tipo, a.ejercicio, a.serie, a.codigo)} prefetch={false}>
+                          albarán <span className="mono">{a.numero}</span>
+                        </Link>
+                      </div>
+                    ))}
+                    {m.posible_misma_venta && !m.baja ? (
+                      <div>
+                        <span className="badge warn"
+                              title="Sin enlace en FACTUSOL entre los dos: puede ser la misma venta o dos compras. Si es la misma, da de baja este albarán.">
+                          ¿Misma venta que la{" "}
+                          <Link href={fichaDocumentoHref(m.posible_misma_venta.tipo, m.posible_misma_venta.ejercicio,
+                                                         m.posible_misma_venta.serie, m.posible_misma_venta.codigo)}
+                                prefetch={false}>
+                            factura <span className="mono">{m.posible_misma_venta.numero}</span>
+                          </Link>?
+                        </span>
+                      </div>
+                    ) : null}
                   </td>
                   <td data-label="Estado">
                     {m.baja ? (
@@ -150,9 +178,37 @@ export function CompanyParquePanel({
                       </span>
                     ) : <span className="badge ok">En servicio</span>}
                   </td>
-                  {puedeEditar ? (
+                  {puedeEditar || puedeClasificar ? (
                     <td>
-                      {bajaDe === claveDe(m) ? (
+                      {noMaquina && m.codart === noMaquina.codart && m.origen !== "manual" ? (
+                        <span className="erp-historico-acciones">
+                          <label className="field">
+                            <span>Es un</span>
+                            <select value={noMaquina.clase}
+                                    onChange={(e) => setNoMaquina({ ...noMaquina, clase: e.target.value as HistoricoClase })}>
+                              {NO_MAQUINA.map((c) => <option key={c} value={c}>{HISTORICO_CLASE_LABEL[c]}</option>)}
+                            </select>
+                          </label>
+                          <span className="form-hint">
+                            Sale del parque de todos los clientes que lo tengan. Se deshace en Histórico → Familias.
+                          </span>
+                          <button type="button" className="button small" disabled={ocupado}
+                                  onClick={() => void hacer(() => setClaseArticulo(noMaquina.codart, noMaquina.clase),
+                                    "No se ha podido cambiar la clase del artículo.").then((ok) => { if (ok) setNoMaquina(null); })}>
+                            Confirmar
+                          </button>
+                          <button type="button" className="button small secondary" onClick={() => setNoMaquina(null)}>
+                            Cancelar
+                          </button>
+                        </span>
+                      ) : !puedeEditar ? (
+                        m.codart && m.origen !== "manual" ? (
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  onClick={() => setNoMaquina({ codart: m.codart as string, clase: "accesorio" })}>
+                            No es una máquina
+                          </button>
+                        ) : null
+                      ) : bajaDe === claveDe(m) ? (
                         <span className="erp-historico-acciones">
                           <input aria-label="Motivo de la baja" placeholder="Motivo (opcional)" value={motivo}
                                  maxLength={255} onChange={(e) => setMotivo(e.target.value)} />
@@ -177,6 +233,12 @@ export function CompanyParquePanel({
                                   onClick={() => { setBajaDe(claveDe(m)); setMotivo(""); }}>
                             Dar de baja
                           </button>
+                          {puedeClasificar && m.codart && m.origen !== "manual" ? (
+                            <button type="button" className="button small secondary" disabled={ocupado}
+                                    onClick={() => setNoMaquina({ codart: m.codart as string, clase: "accesorio" })}>
+                              No es una máquina
+                            </button>
+                          ) : null}
                           {m.origen === "manual" && m.id ? (
                             <button type="button" className="button small secondary" disabled={ocupado}
                                     onClick={() => void hacer(() => borrarMaquinaParque(companyId, m.id as string),

@@ -52,6 +52,7 @@ from app.erp.models.historico import (
     TIPO_PRESUPUESTO,
     TIPOS_VENTA,
     HistoricoArticulo,
+    HistoricoArticuloClase,
     HistoricoDocumento,
     HistoricoEjercicio,
     HistoricoFamilia,
@@ -109,6 +110,14 @@ def _entero(valor: Any) -> int | None:
         return int(float(str(valor).strip()))
     except (TypeError, ValueError):
         return None
+
+
+def _serie_origen(valor: Any) -> str | None:
+    """La serie del documento origen como la de las cabeceras («5», no «5.0»)."""
+    t = _texto(valor, 8)
+    if t and t.replace(".", "", 1).isdigit():
+        return str(int(float(t)))
+    return t
 
 
 def _estado_crudo(valor: Any) -> str | None:
@@ -268,6 +277,9 @@ def _sustituir(
                 "descripcion": _texto(r.get(f"DES{t.lin}")),
                 "cantidad": _numero(r.get(f"CAN{t.lin}")), "precio": _numero(r.get(f"PRE{t.lin}")),
                 "total": _numero(r.get(f"TOT{t.lin}")), "es_producto": bool(codart),
+                "origen_tipo": (_texto(r.get(f"DOC{t.lin}"), 1) or "").upper() or None,
+                "origen_serie": _serie_origen(r.get(f"DTP{t.lin}")),
+                "origen_codigo": _entero(r.get(f"DCO{t.lin}")) or None,
             })
         if filas:
             session.execute(HistoricoLinea.__table__.insert(), filas)
@@ -465,10 +477,12 @@ def compradores(
         stmt = stmt.where(art.familia == familia)
     if clase or gama:
         # La clase y la gama son de la familia del artículo en el catálogo de
-        # su año.
-        stmt = stmt.join(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
+        # su año; la clase propia del artículo, si la tiene, manda.
+        stmt = stmt.outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
         if clase:
-            stmt = stmt.where(HistoricoFamilia.clase == clase)
+            stmt = stmt.outerjoin(HistoricoArticuloClase,
+                                  HistoricoArticuloClase.codart == lin.codart).where(
+                func.coalesce(HistoricoArticuloClase.clase, HistoricoFamilia.clase) == clase)
         if gama:
             stmt = stmt.where(HistoricoFamilia.gama == gama)
     if desde:

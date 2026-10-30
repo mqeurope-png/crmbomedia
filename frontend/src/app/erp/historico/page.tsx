@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
+import { ArticulosClasePanel } from "../../components/erp/ArticulosClasePanel";
 import { getCurrentUser, type User } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import {
@@ -19,6 +20,7 @@ import {
   getHistoricoEstado,
   getHistoricoFamilias,
   getHistoricoReglas,
+  HISTORICO_CLASE_LABEL,
   mantenerClasificacionFamilia,
   saveBlob,
   type HistoricoArticulo,
@@ -39,10 +41,7 @@ import { extractErrorMessage } from "../../lib/errors";
 
 type Tab = "compradores" | "familias" | "carga";
 
-const CLASE_LABEL: Record<HistoricoClase, string> = {
-  maquina: "Máquina", consumible: "Consumible", recambio: "Recambio", accesorio: "Accesorio",
-  otro: "Otro",
-};
+const CLASE_LABEL = HISTORICO_CLASE_LABEL;
 const CLASES = Object.keys(CLASE_LABEL) as HistoricoClase[];
 const ESTADO_LABEL: Record<HistoricoEstado, string> = {
   cargado: "Cargado", cargando: "Cargando…", no_disponible: "No disponible en FACTUSOL",
@@ -644,6 +643,7 @@ function FamiliasPanel({
           </button>
         </form>
       ) : null}
+      <ArticulosClasePanel puedeEditar={puedeClasificar} />
       <ReglasPanel gamas={gamas} puedeEditar={puedeClasificar} onCambio={onRecargar} />
     </section>
   );

@@ -138,6 +138,13 @@ class HistoricoLinea(Base):
     cantidad: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     precio: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
     total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    #: El documento del que sale la línea, como lo apunta FACTUSOL en la propia
+    #: línea (`DOC*`/`DTP*`/`DCO*`): `P` presupuesto, `C` pedido de cliente,
+    #: `A` albarán (en una factura, el albarán que se facturó). Desde la 0157;
+    #: vacío hasta que se vuelve a cargar el ejercicio, o si se tecleó a mano.
+    origen_tipo: Mapped[str | None] = mapped_column(String(1))
+    origen_serie: Mapped[str | None] = mapped_column(String(8))
+    origen_codigo: Mapped[int | None] = mapped_column(Integer)
     #: Con artículo: venta de producto. Sin él: una nota (portes, condiciones…).
     es_producto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
 
@@ -171,6 +178,20 @@ class HistoricoFamilia(Base):
     #: «Mantener la mía»: la propuesta (clase|gama) que Bart ya vio y descartó;
     #: no se vuelve a marcar para revisar mientras la propuesta sea esa.
     propuesta_descartada: Mapped[str | None] = mapped_column(String(64))
+
+
+class HistoricoArticuloClase(Base):
+    """La clase de un artículo concreto, por encima de la de su familia
+    (0157): una familia que mezcla máquinas y accesorios. Vale para todos los
+    ejercicios y todos los clientes. La pone Bart (desde el parque o desde
+    Familias) y se quita para volver a la de la familia."""
+
+    __tablename__ = "historico_articulos_clase"
+
+    codart: Mapped[str] = mapped_column(String(64), primary_key=True)
+    clase: Mapped[str] = mapped_column(String(16), nullable=False)
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class HistoricoGama(Base):

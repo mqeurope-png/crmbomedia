@@ -5,7 +5,8 @@ FACTUSOL en vivo. Lanzar una carga solo encola un trabajo que LEE FACTUSOL.
 
 Permisos: ver y exportar (`require_office_view`: lleva datos de clientes, el
 taller no lo ve), lanzar cargas (`require_documents`), clasificar familias, ampliar
-las gamas y editar las reglas que proponen (`require_config`: lo decide Bart).
+las gamas, editar las reglas que proponen y la clase propia de un artículo
+(`require_config`: lo decide Bart).
 """
 from __future__ import annotations
 
@@ -90,7 +91,8 @@ def _por(user: User) -> str:
 
 def _no_existe(exc: LookupError, que: str = "familia") -> HTTPException:
     detalle = {"familia": "Esa familia no está en el histórico.",
-               "regla": "Esa regla ya no existe."}[que]
+               "regla": "Esa regla ya no existe.",
+               "articulo": "Ese artículo no está en ningún catálogo volcado."}[que]
     return HTTPException(status.HTTP_404_NOT_FOUND, {"code": f"{que}_no_existe",
                                                      "detail": detalle})
 
@@ -266,6 +268,39 @@ def articulos(
     _: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     return {"items": historico.buscar_articulos(session, q)}
+
+
+class ClaseArticuloIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: null: vuelve a la clase de su familia.
+    clase: str | None = Field(default=None, max_length=16)
+
+
+@router.get("/articulos-clase")
+def articulos_clase(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    return {"items": clasificacion.clases_de_articulo(session), "clases": list(CLASES_FAMILIA)}
+
+
+@router.put("/articulos-clase/{codart}")
+def clasificar_articulo(
+    body: ClaseArticuloIn,
+    codart: str = Path(..., max_length=64),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """La clase propia de un artículo, por encima de la de su familia («esto
+    no es una máquina», desde el parque o desde Familias)."""
+    try:
+        clasificacion.clasificar_articulo(session, codart, body.clase or None, por=_por(user))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    except LookupError as exc:
+        raise _no_existe(exc, "articulo") from exc
+    return {"items": clasificacion.clases_de_articulo(session), "clases": list(CLASES_FAMILIA)}
 
 
 def _compradores(

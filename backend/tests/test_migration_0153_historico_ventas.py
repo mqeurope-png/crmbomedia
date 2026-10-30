@@ -98,3 +98,17 @@ def test_0156_crea_maquinas_a_mano_y_bajas_del_parque(alembic_setup):
     assert {"parque_maquinas_manuales", "parque_bajas"} <= tablas
     command.downgrade(cfg, "20261030_0155")
     assert not {"parque_maquinas_manuales", "parque_bajas"} & set(inspect(engine).get_table_names())
+
+
+def test_0157_suma_el_origen_de_linea_y_la_clase_propia_del_articulo(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261030_0157")
+    cols = {c["name"] for c in inspect(engine).get_columns("historico_lineas")}
+    assert {"origen_tipo", "origen_serie", "origen_codigo"} <= cols
+    assert "historico_articulos_clase" in inspect(engine).get_table_names()
+    command.downgrade(cfg, "20261030_0156")
+    cols = {c["name"] for c in inspect(engine).get_columns("historico_lineas")}
+    assert not {"origen_tipo", "origen_serie", "origen_codigo"} & cols
+    assert "historico_articulos_clase" not in inspect(engine).get_table_names()
