@@ -18,8 +18,12 @@ vuelcan una vez y se guardan.
   pero `es_producto` = False y no cuentan como venta de producto.
 - `historico_articulos`: el catálogo de CADA año (`F_ART` de su ejercicio):
   una venta de 2017 de un artículo descatalogado sale con su nombre de 2017.
-- `historico_familias`: las familias (`F_FAM`) y su `clase` (máquina,
-  consumible, otro), que decide Bart desde la pantalla, no el código.
+- `historico_familias`: las familias (`F_FAM`), su `clase` (máquina,
+  consumible, recambio, accesorio, otro) y su `gama` (UV LED, Láser…), que
+  decide Bart desde la pantalla, no el código (0154).
+- `historico_gamas`: la lista de gamas, ampliable desde la pantalla (0154).
+- `historico_reglas_familia`: las reglas que PROPONEN clase y gama a partir
+  del código o del nombre de la familia; datos, no código (0154).
 
 Solo se lee FACTUSOL. Estas tablas llevan nombres y códigos de clientes: no
 van a registros, ni a mensajes de error.
@@ -54,8 +58,14 @@ ESTADO_CARGANDO = "cargando"
 TIPO_FACTURA = "factura"
 TIPO_ALBARAN = "albaran"
 
-#: `historico_familias.clase` (la pone Bart).
-CLASES_FAMILIA = ("maquina", "consumible", "otro")
+#: `historico_familias.clase` (la pone Bart). Recambio y accesorio, desde la
+#: 0154: un recambio avisa de servicio y un accesorio no es una máquina.
+CLASES_FAMILIA = ("maquina", "consumible", "recambio", "accesorio", "otro")
+
+#: `historico_reglas_familia.campo`: contra qué se compara el patrón.
+REGLA_CODIGO = "codigo"     # el código de la familia, exacto
+REGLA_NOMBRE = "nombre"     # el nombre de la familia contiene el patrón (sin mayúsculas)
+CAMPOS_REGLA = (REGLA_CODIGO, REGLA_NOMBRE)
 
 
 class HistoricoEjercicio(Base):
@@ -141,5 +151,36 @@ class HistoricoFamilia(Base):
     codigo: Mapped[str] = mapped_column(String(32), primary_key=True)
     descripcion: Mapped[str | None] = mapped_column(String(255))
     clase: Mapped[str | None] = mapped_column(String(16))
+    #: `historico_gamas.codigo`: en una máquina, qué es; en lo demás, para qué
+    #: máquina sirve.
+    gama: Mapped[str | None] = mapped_column(String(32))
     clase_at: Mapped[datetime | None] = mapped_column(DateTime)
     clase_por: Mapped[str | None] = mapped_column(String(255))
+    #: «Mantener la mía»: la propuesta (clase|gama) que Bart ya vio y descartó;
+    #: no se vuelve a marcar para revisar mientras la propuesta sea esa.
+    propuesta_descartada: Mapped[str | None] = mapped_column(String(64))
+
+
+class HistoricoGama(Base):
+    """Una gama (UV LED, Láser…). La lista se amplía desde la pantalla."""
+
+    __tablename__ = "historico_gamas"
+
+    codigo: Mapped[str] = mapped_column(String(32), primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(64), nullable=False)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class HistoricoReglaFamilia(Base):
+    """Una regla que propone clase y gama para las familias que casan con
+    ella. Gana la de menor `orden`. Clase o gama vacías = la regla no propone
+    eso."""
+
+    __tablename__ = "historico_reglas_familia"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    campo: Mapped[str] = mapped_column(String(16), nullable=False)
+    patron: Mapped[str] = mapped_column(String(64), nullable=False)
+    clase: Mapped[str | None] = mapped_column(String(16))
+    gama: Mapped[str | None] = mapped_column(String(32))
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=100)

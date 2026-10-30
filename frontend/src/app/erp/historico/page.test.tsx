@@ -17,7 +17,14 @@ jest.mock("../../components/PageHeader", () => ({
 jest.mock("../../lib/erpApi", () => ({
   buscarHistoricoArticulos: jest.fn(),
   cargarHistorico: jest.fn(),
+  aceptarPropuestaFamilia: jest.fn(),
+  aceptarPropuestasFamilias: jest.fn(),
+  borrarHistoricoRegla: jest.fn(),
   clasificarHistoricoFamilia: jest.fn(),
+  crearHistoricoGama: jest.fn(),
+  crearHistoricoRegla: jest.fn(),
+  getHistoricoReglas: jest.fn(),
+  mantenerClasificacionFamilia: jest.fn(),
   downloadHistoricoCompradoresCsv: jest.fn(),
   getHistoricoCompradores: jest.fn(),
   getHistoricoEstado: jest.fn(),
@@ -70,15 +77,32 @@ const COMPRADORES = {
   ],
 };
 
+const sin = { clase: null, gama: null, estado: "sin_propuesta" };
 const FAMILIAS = [
-  { codigo: "LAS", descripcion: "Láseres", clase: null, articulos: 12, ventas: 300 },
-  { codigo: "TIN", descripcion: "Tintas", clase: "consumible", articulos: 40, ventas: 900 },
+  { codigo: "LAS", descripcion: "Láseres", clase: null, gama: null, articulos: 12, ventas: 300,
+    propuesta: { clase: "maquina", gama: "laser", estado: "propuesta" } },
+  { codigo: "TIN", descripcion: "Tintas", clase: "consumible", gama: null, articulos: 40,
+    ventas: 900, propuesta: sin },
+  // Bart la marcó máquina; la regla dice accesorio: para revisar.
+  { codigo: "ACC", descripcion: "Add-ons Figurante", clase: "maquina", gama: "uv-led",
+    articulos: 3, ventas: 50, propuesta: { clase: "accesorio", gama: "uv-led", estado: "revisar" } },
 ];
+const GAMAS = [{ codigo: "uv-led", nombre: "UV LED" }, { codigo: "laser", nombre: "Láser" }];
 
 beforeEach(() => {
   const m = api();
   m.getHistoricoEstado.mockResolvedValue(ESTADO);
-  m.getHistoricoFamilias.mockResolvedValue({ items: FAMILIAS, clases: ["maquina", "consumible", "otro"] });
+  m.getHistoricoFamilias.mockResolvedValue({
+    items: FAMILIAS, clases: ["maquina", "consumible", "recambio", "accesorio", "otro"], gamas: GAMAS,
+  });
+  m.getHistoricoReglas.mockResolvedValue({ items: [
+    { id: 1, campo: "codigo", patron: "ACC", clase: "accesorio", gama: "uv-led", orden: 100 },
+  ] });
+  m.aceptarPropuestasFamilias.mockResolvedValue({ aplicadas: 1, revisar: 1 });
+  m.aceptarPropuestaFamilia.mockResolvedValue({ codigo: "ACC", clase: "accesorio", gama: "uv-led" });
+  m.mantenerClasificacionFamilia.mockResolvedValue({ codigo: "ACC", clase: "maquina", gama: "uv-led" });
+  m.crearHistoricoGama.mockResolvedValue({ codigo: "corte-por-agua", nombre: "Corte por agua" });
+  m.crearHistoricoRegla.mockResolvedValue({});
   m.buscarHistoricoArticulos.mockResolvedValue({ items: [
     { codart: "1712", descripcion: "Láser Figurante 1390", familia: "LAS",
       ultimo_ejercicio: "2026", ventas: 42 },
@@ -132,7 +156,20 @@ test("filtra por familia y por años", async () => {
   await user.selectOptions(screen.getByLabelText("Hasta"), "2020");
   await user.click(screen.getByRole("button", { name: "Buscar" }));
   await waitFor(() => expect(api().getHistoricoCompradores).toHaveBeenCalledWith(
-    { codart: undefined, q: undefined, familia: "TIN", desde: 2017, hasta: 2020 }));
+    { codart: undefined, q: undefined, familia: "TIN", clase: undefined, gama: undefined,
+      desde: 2017, hasta: 2020 }));
+});
+
+test("filtra por clase y gama sin artículo ni familia", async () => {
+  const user = userEvent.setup();
+  render(<HistoricoPage />);
+  await screen.findByRole("option", { name: "UV LED" });
+  expect(screen.getByRole("button", { name: "Buscar" })).toBeDisabled();
+  await user.selectOptions(screen.getByLabelText("Clase"), "maquina");
+  await user.selectOptions(screen.getByLabelText("Gama"), "uv-led");
+  await user.click(screen.getByRole("button", { name: "Buscar" }));
+  await waitFor(() => expect(api().getHistoricoCompradores).toHaveBeenCalledWith(
+    expect.objectContaining({ clase: "maquina", gama: "uv-led", familia: undefined })));
 });
 
 test("la carga dice qué ejercicio no está disponible y deja relanzarlo", async () => {
@@ -150,14 +187,51 @@ test("la carga dice qué ejercicio no está disponible y deja relanzarlo", async
   expect(api().cargarHistorico).toHaveBeenLastCalledWith([]);
 });
 
-test("las familias se clasifican desde la pantalla", async () => {
+test("las familias se clasifican con clase y gama desde la pantalla", async () => {
   const user = userEvent.setup();
   render(<HistoricoPage />);
   await user.click(screen.getByRole("button", { name: "Familias" }));
-  expect(await screen.findByText(/2 familias de FACTUSOL · 1 sin clasificar/)).toBeInTheDocument();
-  await user.selectOptions(await screen.findByLabelText("Clase de LAS"), "maquina");
-  expect(api().clasificarHistoricoFamilia).toHaveBeenCalledWith("LAS", "maquina");
-  expect(await screen.findByText(/todas clasificadas/)).toBeInTheDocument();
+  expect(await screen.findByText(/3 familias de FACTUSOL · 1 sin clase · 2 sin gama/))
+    .toBeInTheDocument();
+  await user.selectOptions(await screen.findByLabelText("Clase de LAS"), "recambio");
+  expect(api().clasificarHistoricoFamilia).toHaveBeenCalledWith("LAS", { clase: "recambio" });
+  await user.selectOptions(screen.getByLabelText("Gama de TIN"), "uv-led");
+  expect(api().clasificarHistoricoFamilia).toHaveBeenLastCalledWith("TIN", { gama: "uv-led" });
+  await user.type(screen.getByLabelText("Nueva gama"), "Corte por agua");
+  await user.click(screen.getByRole("button", { name: "Añadir gama" }));
+  expect(api().crearHistoricoGama).toHaveBeenCalledWith("Corte por agua");
+});
+
+test("propuestas: aceptar todas y las de revisar una a una", async () => {
+  const user = userEvent.setup();
+  render(<HistoricoPage />);
+  await user.click(screen.getByRole("button", { name: "Familias" }));
+  const acc = (await screen.findAllByRole("row")).find((f) => within(f).queryByText("ACC"))!;
+  expect(within(acc).getByText("Revisar")).toBeInTheDocument();
+  expect(within(acc).getByText(/Accesorio · UV LED/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Aceptar las 1 propuestas" }));
+  expect(api().aceptarPropuestasFamilias).toHaveBeenCalled();
+  expect(await screen.findByText(/Las de «Revisar» no se han tocado/)).toBeInTheDocument();
+  await user.click(screen.getByLabelText(/Solo las de revisar \(1\)/));
+  expect(screen.queryByLabelText("Clase de LAS")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Mantener la clasificación de ACC" }));
+  expect(api().mantenerClasificacionFamilia).toHaveBeenCalledWith("ACC");
+  await user.click(screen.getByRole("button", { name: "Aceptar la propuesta de ACC" }));
+  expect(api().aceptarPropuestaFamilia).toHaveBeenCalledWith("ACC");
+});
+
+test("las reglas se ven y se añaden", async () => {
+  const user = userEvent.setup();
+  render(<HistoricoPage />);
+  await user.click(screen.getByRole("button", { name: "Familias" }));
+  await user.click(await screen.findByText("Reglas que proponen clase y gama"));
+  expect(await screen.findByRole("cell", { name: "El código es" })).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("Si"), "nombre");
+  await user.type(screen.getByLabelText("Patrón"), "spare parts");
+  await user.selectOptions(screen.getByLabelText("Propone clase"), "recambio");
+  await user.click(screen.getByRole("button", { name: "Añadir regla" }));
+  expect(api().crearHistoricoRegla).toHaveBeenCalledWith({
+    campo: "nombre", patron: "spare parts", clase: "recambio", gama: null, orden: 100 });
 });
 
 test("sin permiso de configuración, la clase se ve pero no se cambia", async () => {

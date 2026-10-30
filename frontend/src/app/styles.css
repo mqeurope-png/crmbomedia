@@ -15979,14 +15979,19 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 /* ERP · Quién compró qué */
 .erp-historico-filtros {
   display: grid;
-  grid-template-columns: minmax(220px, 2fr) minmax(180px, 1.5fr) repeat(2, minmax(110px, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
   align-items: end;
   margin-bottom: 12px;
 }
 .erp-historico-filtros .field { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .erp-historico-filtros input, .erp-historico-filtros select { height: 36px; }
-.erp-historico-acciones { display: flex; gap: 8px; }
+.erp-historico-acciones { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.erp-historico-filtros .field:first-child { grid-column: span 2; }
+.erp-historico-propuestas { margin-bottom: 12px; }
+.erp-historico-nueva-gama { margin-top: 16px; align-items: end; }
+.erp-historico-reglas { margin-top: 16px; }
+.erp-historico-reglas summary { cursor: pointer; font-weight: 600; }
 .erp-historico-sugerencias {
   position: absolute;
   z-index: 20;

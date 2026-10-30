@@ -4,8 +4,8 @@ Lee lo que BoHub ya ha volcado de FACTUSOL (`app/erp/historico.py`), nunca
 FACTUSOL en vivo. Lanzar una carga solo encola un trabajo que LEE FACTUSOL.
 
 Permisos: ver y exportar (`require_office_view`: lleva datos de clientes, el
-taller no lo ve), lanzar cargas (`require_documents`), clasificar familias
-(`require_config`: lo decide Bart).
+taller no lo ve), lanzar cargas (`require_documents`), clasificar familias, ampliar
+las gamas y editar las reglas que proponen (`require_config`: lo decide Bart).
 """
 from __future__ import annotations
 
@@ -15,12 +15,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.erp import historico
+from app.erp import historico_clasificacion as clasificacion
 from app.erp.api.deps import require_config, require_documents, require_office_view
+from app.erp.models.historico import CLASES_FAMILIA
 from app.models.crm import User
 
 router = APIRouter(prefix="/api/erp/historico", tags=["erp-historico"])
@@ -82,36 +84,179 @@ def cargar(
     return {"encolada": pedidos}
 
 
+def _por(user: User) -> str:
+    return user.email or str(user.id)
+
+
+def _no_existe(exc: LookupError, que: str = "familia") -> HTTPException:
+    detalle = {"familia": "Esa familia no está en el histórico.",
+               "regla": "Esa regla ya no existe."}[que]
+    return HTTPException(status.HTTP_404_NOT_FOUND, {"code": f"{que}_no_existe",
+                                                     "detail": detalle})
+
+
+_NO_VALIDO = {
+    "clase": "Esa clase no existe.",
+    "gama": "Esa gama no existe: añádela primero a la lista.",
+    "regla": "La regla necesita un patrón y una clase o una gama.",
+    "vacia": "Escribe el nombre de la gama.",
+    "existe": "Esa gama ya está en la lista.",
+    "sin_propuesta": "Ninguna regla propone nada para esta familia.",
+    "no_choca": "La propuesta no choca con lo que tiene: no hay nada que mantener.",
+}
+
+
+def _no_valido(exc: ValueError) -> HTTPException:
+    motivo = str(exc)
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+        "code": f"{motivo}_no_valida" if motivo in ("clase", "gama", "regla") else motivo,
+        "detail": _NO_VALIDO.get(motivo, "Dato no válido."),
+    })
+
+
 @router.get("/familias")
 def familias(
     session: Session = Depends(get_session),
     _: User = Depends(require_office_view),
 ) -> dict[str, Any]:
-    return {"items": historico.familias(session), "clases": list(historico.CLASES_FAMILIA)}
+    return {"items": historico.familias(session), "clases": list(CLASES_FAMILIA),
+            "gamas": clasificacion.gamas(session)}
 
 
-class ClaseIn(BaseModel):
+class ClasificarIn(BaseModel):
+    """Lo que venga se cambia (null lo quita); lo que no venga, no se toca."""
+
+    model_config = ConfigDict(extra="forbid")
+
     clase: str | None = None
+    gama: str | None = None
 
 
 @router.patch("/familias/{codigo}")
 def clasificar(
     codigo: str,
-    body: ClaseIn,
+    body: ClasificarIn,
     session: Session = Depends(get_session),
     user: User = Depends(require_config),
 ) -> dict[str, Any]:
+    cambios = {k: (v or None) for k, v in body.model_dump(exclude_unset=True).items()}
     try:
-        return historico.clasificar_familia(session, codigo, body.clase or None,
-                                            por=user.email or str(user.id))
+        return clasificacion.clasificar(session, codigo, cambios, por=_por(user))
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
-            "code": "clase_no_valida", "detail": "Esa clase no existe.",
-        }) from exc
+        raise _no_valido(exc) from exc
     except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, {
-            "code": "familia_no_existe", "detail": "Esa familia no está en el histórico.",
-        }) from exc
+        raise _no_existe(exc) from exc
+
+
+@router.post("/familias/{codigo}/aceptar")
+def aceptar(
+    codigo: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Acepta la propuesta de una familia, también si estaba para revisar."""
+    try:
+        return clasificacion.aceptar(session, codigo, por=_por(user))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    except LookupError as exc:
+        raise _no_existe(exc) from exc
+
+
+@router.post("/familias/{codigo}/mantener")
+def mantener(
+    codigo: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """«Mantener la mía»: deja de marcarla para revisar."""
+    try:
+        return clasificacion.mantener(session, codigo, por=_por(user))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    except LookupError as exc:
+        raise _no_existe(exc) from exc
+
+
+@router.post("/familias/aceptar-propuestas")
+def aceptar_propuestas(
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, int]:
+    """Aplica de golpe las propuestas que no chocan; las de revisar, no."""
+    return clasificacion.aceptar_todas(session, por=_por(user))
+
+
+class GamaIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/gamas", status_code=status.HTTP_201_CREATED)
+def crear_gama(
+    body: GamaIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    try:
+        return clasificacion.crear_gama(session, body.nombre)
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+
+
+@router.get("/reglas")
+def reglas(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    return {"items": clasificacion.reglas(session)}
+
+
+class ReglaIn(BaseModel):
+    campo: str = Field(pattern="^(codigo|nombre)$")
+    patron: str = Field(min_length=1, max_length=64)
+    clase: str | None = None
+    gama: str | None = None
+    orden: int = Field(default=100, ge=0, le=10000)
+
+
+@router.post("/reglas", status_code=status.HTTP_201_CREATED)
+def crear_regla(
+    body: ReglaIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    try:
+        return clasificacion.guardar_regla(session, body.model_dump())
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+
+
+@router.put("/reglas/{regla_id}")
+def cambiar_regla(
+    regla_id: int,
+    body: ReglaIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    try:
+        return clasificacion.guardar_regla(session, body.model_dump(), regla_id)
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    except LookupError as exc:
+        raise _no_existe(exc, "regla") from exc
+
+
+@router.delete("/reglas/{regla_id}", status_code=status.HTTP_204_NO_CONTENT)
+def borrar_regla(
+    regla_id: int,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> Response:
+    try:
+        clasificacion.borrar_regla(session, regla_id)
+    except LookupError as exc:
+        raise _no_existe(exc, "regla") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/articulos")
@@ -125,10 +270,11 @@ def articulos(
 
 def _compradores(
     session: Session, codart: str | None, q: str | None, familia: str | None,
-    desde: int | None, hasta: int | None,
+    desde: int | None, hasta: int | None, clase: str | None, gama: str | None,
 ) -> list[dict[str, Any]]:
     return historico.compradores(session, codart=codart or None, q=q or None,
-                                 familia=familia or None, desde=desde, hasta=hasta)
+                                 familia=familia or None, desde=desde, hasta=hasta,
+                                 clase=clase or None, gama=gama or None)
 
 
 @router.get("/compradores")
@@ -136,12 +282,14 @@ def compradores(
     codart: str | None = Query(None, max_length=64),
     q: str | None = Query(None, max_length=120),
     familia: str | None = Query(None, max_length=32),
+    clase: str | None = Query(None, max_length=16),
+    gama: str | None = Query(None, max_length=32),
     desde: int | None = Query(None, ge=2000, le=2100),
     hasta: int | None = Query(None, ge=2000, le=2100),
     session: Session = Depends(get_session),
     _: User = Depends(require_office_view),
 ) -> dict[str, Any]:
-    items = _compradores(session, codart, q, familia, desde, hasta)
+    items = _compradores(session, codart, q, familia, desde, hasta, clase, gama)
     return {"items": items, "total": len(items),
             "sin_empresa": sum(1 for c in items if not c["empresa"])}
 
@@ -156,12 +304,14 @@ def compradores_csv(
     codart: str | None = Query(None, max_length=64),
     q: str | None = Query(None, max_length=120),
     familia: str | None = Query(None, max_length=32),
+    clase: str | None = Query(None, max_length=16),
+    gama: str | None = Query(None, max_length=32),
     desde: int | None = Query(None, ge=2000, le=2100),
     hasta: int | None = Query(None, ge=2000, le=2100),
     session: Session = Depends(get_session),
     _: User = Depends(require_office_view),
 ) -> Response:
-    items = _compradores(session, codart, q, familia, desde, hasta)
+    items = _compradores(session, codart, q, familia, desde, hasta, clase, gama)
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
     w.writerow(CSV_COLUMNAS)

@@ -7655,14 +7655,40 @@ export type HistoricoEstadoCarga = {
   notas: { lineas: number; producto: number; notas: number };
 };
 
-export type HistoricoClase = "maquina" | "consumible" | "otro";
+export type HistoricoClase = "maquina" | "consumible" | "recambio" | "accesorio" | "otro";
+
+/** Una gama (UV LED, Láser…): en una máquina, qué es; en lo demás, para qué
+ *  máquina sirve. La lista se amplía desde la pantalla. */
+export type HistoricoGama = { codigo: string; nombre: string };
+
+/** Lo que proponen las reglas para una familia. `revisar`: choca con lo que
+ *  ya tiene y solo cambia si se acepta a mano; `descartada`: chocaba y se
+ *  mantuvo la suya. */
+export type HistoricoPropuesta = {
+  clase: HistoricoClase | null;
+  gama: string | null;
+  estado: "sin_propuesta" | "propuesta" | "coincide" | "revisar" | "descartada";
+};
 
 export type HistoricoFamilia = {
   codigo: string;
   descripcion: string | null;
   clase: HistoricoClase | null;
+  gama: string | null;
   articulos: number;
   ventas: number;
+  propuesta: HistoricoPropuesta | null;
+};
+
+/** Regla que propone clase y/o gama: por el código exacto de la familia o
+ *  porque su nombre contiene el patrón. Gana la de menor orden. */
+export type HistoricoRegla = {
+  id: number;
+  campo: "codigo" | "nombre";
+  patron: string;
+  clase: HistoricoClase | null;
+  gama: string | null;
+  orden: number;
 };
 
 export type HistoricoArticulo = {
@@ -7694,6 +7720,8 @@ export type HistoricoFiltro = {
   codart?: string;
   q?: string;
   familia?: string;
+  clase?: string;
+  gama?: string;
   desde?: number;
   hasta?: number;
 };
@@ -7711,18 +7739,62 @@ export async function cargarHistorico(ejercicios: string[] = []): Promise<{ enco
 }
 
 export async function getHistoricoFamilias(): Promise<{
-  items: HistoricoFamilia[]; clases: HistoricoClase[];
+  items: HistoricoFamilia[]; clases: HistoricoClase[]; gamas: HistoricoGama[];
 }> {
   return apiFetch("/api/erp/historico/familias");
 }
 
+type ClasificacionFamilia = { codigo: string; clase: HistoricoClase | null; gama: string | null };
+
+/** Cambia la clase y/o la gama (lo que no se pasa, no se toca; null la quita). */
 export async function clasificarHistoricoFamilia(
-  codigo: string, clase: HistoricoClase | null,
-): Promise<{ codigo: string; clase: HistoricoClase | null }> {
+  codigo: string, cambios: { clase?: HistoricoClase | null; gama?: string | null },
+): Promise<ClasificacionFamilia> {
   return apiFetch(`/api/erp/historico/familias/${encodeURIComponent(codigo)}`, {
     method: "PATCH",
-    body: JSON.stringify({ clase }),
+    body: JSON.stringify(cambios),
   });
+}
+
+/** Acepta la propuesta de una familia, también si estaba para revisar. */
+export async function aceptarPropuestaFamilia(codigo: string): Promise<ClasificacionFamilia> {
+  return apiFetch(`/api/erp/historico/familias/${encodeURIComponent(codigo)}/aceptar`,
+    { method: "POST" });
+}
+
+/** «Mantener la mía»: deja de marcarla para revisar. */
+export async function mantenerClasificacionFamilia(codigo: string): Promise<ClasificacionFamilia> {
+  return apiFetch(`/api/erp/historico/familias/${encodeURIComponent(codigo)}/mantener`,
+    { method: "POST" });
+}
+
+/** Aplica las propuestas que no chocan; las marcadas para revisar, no. */
+export async function aceptarPropuestasFamilias(): Promise<{ aplicadas: number; revisar: number }> {
+  return apiFetch("/api/erp/historico/familias/aceptar-propuestas", { method: "POST" });
+}
+
+export async function crearHistoricoGama(nombre: string): Promise<HistoricoGama> {
+  return apiFetch("/api/erp/historico/gamas", {
+    method: "POST",
+    body: JSON.stringify({ nombre }),
+  });
+}
+
+export async function getHistoricoReglas(): Promise<{ items: HistoricoRegla[] }> {
+  return apiFetch("/api/erp/historico/reglas");
+}
+
+export async function crearHistoricoRegla(
+  regla: Omit<HistoricoRegla, "id">,
+): Promise<HistoricoRegla> {
+  return apiFetch("/api/erp/historico/reglas", {
+    method: "POST",
+    body: JSON.stringify(regla),
+  });
+}
+
+export async function borrarHistoricoRegla(id: number): Promise<void> {
+  await apiFetch(`/api/erp/historico/reglas/${id}`, { method: "DELETE" });
 }
 
 export async function buscarHistoricoArticulos(q: string): Promise<{ items: HistoricoArticulo[] }> {
