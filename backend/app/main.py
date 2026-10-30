@@ -175,6 +175,7 @@ from app.erp.api import ofertas_router as erp_ofertas_router  # noqa: E402
 from app.erp.api import order_correcciones_router as erp_order_correcciones_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
+from app.erp.api import parque_router as erp_parque_router  # noqa: E402
 from app.erp.api import pedidos_web_router as erp_pedidos_web_router  # noqa: E402
 from app.erp.api import plantillas_router as erp_plantillas_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
@@ -220,6 +221,8 @@ app.include_router(erp_soporte_router)
 app.include_router(erp_webs_router)
 # Histórico de ventas de FACTUSOL volcado en BoHub: «¿quién compró qué?».
 app.include_router(erp_historico_router)
+# Parque instalado en la ficha de empresa: máquinas y compras de 2014 a hoy.
+app.include_router(erp_parque_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402

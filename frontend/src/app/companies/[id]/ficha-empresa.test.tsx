@@ -19,6 +19,10 @@ import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib
  *  cargar cuando está pendiente (VIES caído → «no disponible» sin bloquear). */
 
 const push = jest.fn();
+// El parque se prueba en CompanyParquePanel.test.tsx.
+jest.mock("../../components/erp/CompanyParquePanel", () => ({
+  CompanyParquePanel: () => <div>PARQUE</div>,
+}));
 jest.mock("next/navigation", () => ({
   useParams: () => ({ id: "c1" }),
   useRouter: () => ({ push, replace: jest.fn() }),

@@ -16036,3 +16036,6 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-ficha-notas { margin-top: 16px; }
 .erp-ficha-notas h4 { margin: 0 0 6px; font-size: var(--fs-body); }
 .erp-ficha-notas ul { margin: 0; padding-left: 18px; }
+
+/* Parque y compras en la ficha de empresa */
+.erp-compras-anio { display: inline-flex; flex-direction: column; gap: 4px; margin: 0 12px 12px 0; }

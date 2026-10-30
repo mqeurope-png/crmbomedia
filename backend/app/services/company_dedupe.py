@@ -118,6 +118,8 @@ MOVABLE_TABLES: dict[str, str] = {
     # Ofertas (presupuestos de BoHub a un lead): la empresa de la oferta es la
     # del contacto; al fusionar pasa a la principal como el resto.
     "ofertas": "ofertas_moved",
+    # Parque instalado: las máquinas añadidas a mano (las bajas van con ellas).
+    "parque_maquinas_manuales": "parque_moved",
 }
 
 
@@ -318,12 +320,13 @@ def _merge_into(
 ) -> dict[str, Any]:
     """Mueve todo lo que cuelga de `merges` a `keep` y las ARCHIVA (reversible)."""
     from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.models.historico import ParqueBaja, ParqueMaquinaManual  # noqa: PLC0415
     from app.erp.models.ofertas import Oferta  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
     from app.models.crm import AuditLog, Contact, Task  # noqa: PLC0415
 
     moved = {"contacts_moved": 0, "orders_moved": 0, "tasks_moved": 0,
-             "ofertas_moved": 0, "timeline_moved": 0}
+             "ofertas_moved": 0, "parque_moved": 0, "timeline_moved": 0}
     discarded_codclis: list[str] = []
     snapshots: list[dict[str, Any]] = []
     filled: dict[str, str] = {}
@@ -342,6 +345,12 @@ def _merge_into(
                 .values(company_id=keep.id)
             )
             moved[key] += int(result.rowcount or 0)
+        # El parque instalado (máquinas a mano y bajas) va con la empresa.
+        for model in (ParqueMaquinaManual, ParqueBaja):
+            result = session.execute(update(model.__table__).where(model.company_id == other.id)
+                                     .values(company_id=keep.id))
+            if model is ParqueMaquinaManual:
+                moved["parque_moved"] += int(result.rowcount or 0)
 
         # Actividad / timeline: los eventos de auditoría de la absorbida (su
         # ficha es `target`) pasan a la principal, para que su historial no se

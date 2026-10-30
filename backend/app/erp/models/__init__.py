@@ -23,6 +23,8 @@ from app.erp.models.historico import (
     HistoricoGama,
     HistoricoLinea,
     HistoricoReglaFamilia,
+    ParqueBaja,
+    ParqueMaquinaManual,
 )
 from app.erp.models.integration_events import (
     MAX_RETRIES,
@@ -96,6 +98,8 @@ __all__ = [
     "HistoricoGama",
     "HistoricoLinea",
     "HistoricoReglaFamilia",
+    "ParqueBaja",
+    "ParqueMaquinaManual",
     "BankAccount",
     "BankLearnedRule",
     "BankMovement",

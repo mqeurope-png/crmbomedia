@@ -87,3 +87,14 @@ def test_0155_suma_total_y_estado_a_los_documentos(alembic_setup):
     command.downgrade(cfg, "20261030_0154")
     cols = {c["name"] for c in inspect(engine).get_columns("historico_documentos")}
     assert not {"total", "estado"} & cols
+
+
+def test_0156_crea_maquinas_a_mano_y_bajas_del_parque(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261030_0156")
+    tablas = set(inspect(engine).get_table_names())
+    assert {"parque_maquinas_manuales", "parque_bajas"} <= tablas
+    command.downgrade(cfg, "20261030_0155")
+    assert not {"parque_maquinas_manuales", "parque_bajas"} & set(inspect(engine).get_table_names())

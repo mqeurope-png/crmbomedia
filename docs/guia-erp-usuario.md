@@ -24,6 +24,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
   - [Proformas](#proformas)
   - [Plantillas](#plantillas)
   - [Documentos de FACTUSOL](#documentos-de-factusol)
+  - [Parque instalado (ficha de empresa)](#parque-instalado-ficha-de-empresa)
   - [Ficha de un documento (factura, albarán, proforma)](#ficha-de-un-documento-factura-albarán-proforma)
   - [Quién compró qué (histórico de ventas)](#quién-compró-qué-histórico-de-ventas)
   - [Cola SAT (el taller)](#cola-sat-el-taller)
@@ -972,6 +973,27 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 - **«Ver detalle»** — abre una ventana con las líneas, los cobros y opciones de
   PDF; desde ahí también puedes **crear el albarán/la factura** o **vincular** el
   documento a un pedido existente (**«Vincular a pedido»**, sin tocar FACTUSOL).
+
+### Parque instalado (ficha de empresa)
+
+En la ficha de una empresa, bajo «Actividad reciente»:
+
+- **Máquinas:** las que ha comprado, de sus facturas y albaranes desde 2014
+  (solo las familias de clase «Máquina»: un accesorio no cuenta). Cada una con
+  su gama, su fecha y año, y **de dónde sale** (la factura o el albarán, con
+  enlace a su ficha, o «Añadida a mano»). Arriba, cuántas siguen en servicio.
+  - **«Añadir una máquina a mano»:** para las vendidas antes de 2014, las que
+    entraron como línea de nota o las que compró en otro sitio.
+  - **«Dar de baja»** (con motivo): la que ya no está en servicio. Deja de
+    contar, pero sigue en la lista, al final. «Volver a poner en servicio» la
+    recupera.
+  - Si la empresa no tiene cliente de FACTUSOL vinculado, lo dice: no es que
+    no tenga máquinas, es que no se sabe.
+- **Qué ha comprado:** sus documentos del **ejercicio en curso**; con «Ver todo
+  el histórico» o eligiendo un año, los demás (de 2014 a hoy). Cada uno abre
+  su ficha.
+
+Añadir y dar de baja: quien trabaja pedidos (Comercial, Pedidos, admin).
 
 ### Ficha de un documento (factura, albarán, proforma)
 
