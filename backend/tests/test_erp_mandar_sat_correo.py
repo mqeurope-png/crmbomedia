@@ -157,3 +157,50 @@ def test_desde_una_factura_sin_albaran_el_correo_espera_a_que_se_vincule(
     assert body["correo"]["estado"] == "pendiente_albaran"
     assert body["order"]["preparation_status"] == "in_queue"
     sent.assert_not_called()
+
+
+# --- lo que encontró la primera revisión ---------------------------------------------------
+
+
+def test_un_error_inesperado_del_correo_tampoco_saca_el_pedido_de_la_cola(
+    http, session_factory,  # noqa: F811
+) -> None:
+    oid = _preparar(session_factory, http)
+    with _patched_factusol(), patch("app.integrations.gmail.service.send_email",
+                                    side_effect=RuntimeError("timeout")):
+        r = _mandar(http, oid, _correo())
+    assert r.status_code == 200, r.text
+    assert r.json()["correo"]["estado"] == "fallido"
+    assert "Gmail" in r.json()["correo"]["detalle"]
+    assert r.json()["order"]["preparation_status"] == "in_queue"
+
+
+def test_enviar_ahora_sin_albaran_y_sin_otro_adjunto_no_rompe_el_pendiente(
+    http, session_factory,  # noqa: F811
+) -> None:
+    oid = _preparar(session_factory, http, albaran=None)
+    with _patched_factusol():
+        assert _mandar(http, oid, _correo()).json()["correo"]["estado"] == "pendiente_albaran"
+        r = http.post(f"/api/erp/orders/{oid}/sat-correo/enviar", json={"confirm": True},
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "falta_albaran"
+    with session_factory() as s:
+        assert '"pendiente_albaran"' in s.get(Order, oid).packing_json
+
+
+def test_el_correo_pendiente_sale_solo_al_crearse_el_albaran(http, session_factory) -> None:  # noqa: F811
+    from app.erp.sat_correo import enviar_si_pendiente
+    from tests.test_erp_order_email import FakeClient, _tables
+
+    oid = _preparar(session_factory, http, albaran=None)
+    with _patched_factusol():
+        _mandar(http, oid, _correo())
+    send, _msg = _patch_send()
+    with session_factory() as s, send as sent:
+        o = s.get(Order, oid)
+        o.factusol_albaran_number = "5-500004"     # lo que deja el job del albarán
+        s.commit()
+        enviar_si_pendiente(s, o, client=FakeClient(_tables()), ejercicio="2026")
+        assert '"enviado"' in s.get(Order, oid).packing_json
+    sent.assert_called_once()
+    assert sent.call_args.kwargs["to"] == [SAT]

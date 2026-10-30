@@ -115,7 +115,7 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de enví
       order_number: "FAC-5-000008", external_source: "factusol_factura",
       factusol_invoice_number: "8", invoice_status: "invoiced_by_erp",
       mandar_sat: { desde_documento: true, albaran_lo_crea_bohub: false,
-                    factura_sin_albaran: true, correo: null },
+                    factura_sin_albaran: true, albaran_solo_vincular: true, correo: null },
     }));
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText(/no se crea ninguno/)).toBeInTheDocument();

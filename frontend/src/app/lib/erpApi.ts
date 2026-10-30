@@ -3897,11 +3897,13 @@ export type MandarSatInfo = {
   albaran_lo_crea_bohub: boolean;
   /** Viene de una factura y aún no tiene albarán: se vincula, nunca se crea. */
   factura_sin_albaran: boolean;
+  /** Desde una factura o un albarán y sin albarán: solo se vincula. */
+  albaran_solo_vincular?: boolean;
   correo: SatCorreoEstado | null;
 };
 
 export type MandarSatResult = {
-  cola: "entrado" | "ya_estaba";
+  cola: "entrado" | "ya_estaba" | "mas_adelante";
   albaran: {
     estado: string | null; numero?: string | null; detalle?: string;
     candidatos?: string[]; crear: boolean;

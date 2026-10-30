@@ -64,19 +64,51 @@ def _serie(valor: Any) -> str:
     return t
 
 
-def _factura_del_pedido(order: Order) -> tuple[str, int] | None:
+def _ejercicio_del_pedido(order: Order) -> str:
+    """El ejercicio del documento de origen: guardado al crear el pedido o,
+    en los de antes, el año en que se creó (se crean desde el ejercicio en
+    curso). Los números se repiten cada año: sin él no se casa nada."""
+    src = packing_of(order).get("factusol_source")
+    if isinstance(src, dict) and src.get("ejercicio"):
+        return str(src["ejercicio"])
+    creado = order.created_at or order.placed_at
+    return str(creado.year) if creado else ""
+
+
+def _factura_del_pedido(order: Order) -> tuple[str, int, str] | None:
+    """`(serie, codigo, ejercicio)` de la factura de origen."""
+    ejercicio = _ejercicio_del_pedido(order)
     src = packing_of(order).get("factusol_source")
     if isinstance(src, dict) and src.get("doc_type") == "facturas":
         try:
-            return _serie(src.get("serie")), int(src.get("codigo"))
+            return _serie(src.get("serie")), int(src.get("codigo")), ejercicio
         except (TypeError, ValueError):
             pass
     if order.factusol_invoice_number and order.factusol_invoice_serie is not None:
         try:
-            return str(int(order.factusol_invoice_serie)), int(order.factusol_invoice_number)
+            return (str(int(order.factusol_invoice_serie)), int(order.factusol_invoice_number),
+                    ejercicio)
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _existe_albaran(session: Session, serie: str, codigo: int, ejercicio: str, *,
+                    client: Any = None) -> bool | None:
+    """¿Está el albarán en ESE ejercicio? (volcado o, si no, en vivo). `None`
+    si no se puede saber."""
+    if session.scalar(select(HistoricoDocumento.id).where(
+            HistoricoDocumento.tipo == TIPO_ALBARAN, HistoricoDocumento.ejercicio == ejercicio,
+            HistoricoDocumento.serie == serie, HistoricoDocumento.codigo == int(codigo))
+            .limit(1)) is not None:
+        return True
+    if client is None:
+        return None
+    try:
+        filas = client.load_table("F_ALB", filtro=f"CODALB={int(codigo)}", ejercicio=ejercicio)
+    except Exception:  # noqa: BLE001
+        return None
+    return any(_serie(r.get("TIPALB")) == serie for r in filas)
 
 
 def _ya_vinculados(session: Session, numeros: list[str], salvo: str | None = None) -> set[str]:
@@ -93,21 +125,21 @@ def _ya_vinculados(session: Session, numeros: list[str], salvo: str | None = Non
 
 
 def albaranes_de_factura(
-    session: Session, serie: str, codigo: int, *, client: Any = None,
-    ejercicio: str | None = None,
+    session: Session, serie: str, codigo: int, ejercicio: str, *, client: Any = None,
 ) -> dict[str, Any]:
-    """Los albaranes `[(serie, codigo)]` que apuntan las líneas de una factura.
+    """Los albaranes `[(serie, codigo)]` que apuntan las líneas de la factura
+    `serie-codigo` DEL EJERCICIO `ejercicio` (los números se repiten cada año).
 
-    `fuente`: «volcado» si la factura está en el histórico de un ejercicio
-    ya cargado con los enlaces; si no (la de hoy, aún sin volcar), «vivo»
-    leyendo `F_LFA` (solo lectura). «sin_datos» si no hay forma de saberlo
-    (no volcada y FACTUSOL no responde)."""
+    `fuente`: «volcado» si está en el histórico de ese ejercicio ya cargado
+    con los enlaces; si no (la de hoy, aún sin volcar), «vivo» leyendo `F_LFA`
+    de ese ejercicio (solo lectura). «sin_datos» si no hay forma de saberlo."""
     doc = session.scalar(
         select(HistoricoDocumento).join(
             HistoricoEjercicio, HistoricoEjercicio.ejercicio == HistoricoDocumento.ejercicio)
-        .where(HistoricoDocumento.tipo == TIPO_FACTURA, HistoricoDocumento.serie == serie,
-               HistoricoDocumento.codigo == codigo, HistoricoEjercicio.con_enlaces.is_(True))
-        .order_by(HistoricoDocumento.ejercicio.desc()).limit(1))
+        .where(HistoricoDocumento.tipo == TIPO_FACTURA, HistoricoDocumento.ejercicio == ejercicio,
+               HistoricoDocumento.serie == serie, HistoricoDocumento.codigo == codigo,
+               HistoricoEjercicio.con_enlaces.is_(True))
+        .limit(1))
     if doc is not None:
         refs: list[tuple[str, int]] = []
         for ln in session.scalars(select(HistoricoLinea).where(
@@ -117,7 +149,7 @@ def albaranes_de_factura(
                 if ref not in refs:
                     refs.append(ref)
         return {"fuente": "volcado", "albaranes": refs}
-    if client is None or ejercicio is None:
+    if client is None or not ejercicio:
         return {"fuente": "sin_datos", "albaranes": []}
     try:
         filas = client.load_table("F_LFA", filtro=f"CODLFA={int(codigo)}", ejercicio=ejercicio)
@@ -152,16 +184,19 @@ def vincular_albaran_de_factura(
     - `sin_enlace`: la factura no apunta a ningún albarán;
     - `varios`: apunta a más de uno (una factura de varios albaranes);
     - `en_otro_pedido`: el suyo ya está vinculado a otro pedido;
+    - `otro_ejercicio`: el albarán no está en el ejercicio en curso. El
+      pedido guarda solo serie-número y el PDF y el envío lo buscarían en el
+      ejercicio en curso (otro documento): no se vincula solo;
     - `sin_datos`: ni volcada ni FACTUSOL responde (se reintenta luego).
 
-    Hace commit solo si vincula."""
+    `ejercicio` es el ejercicio EN CURSO de BoHub. Hace commit solo si
+    vincula."""
     if order.factusol_albaran_number:
         return {"estado": "ya_tiene", "numero": order.factusol_albaran_number}
     factura = _factura_del_pedido(order)
     if not is_factura_source(order) or factura is None:
         return {"estado": "no_procede"}
-    leido = albaranes_de_factura(session, factura[0], factura[1], client=client,
-                                 ejercicio=ejercicio)
+    leido = albaranes_de_factura(session, factura[0], factura[1], factura[2], client=client)
     refs = leido["albaranes"]
     if leido["fuente"] == "sin_datos":
         return {"estado": "sin_datos", "detalle": (
@@ -180,6 +215,12 @@ def vincular_albaran_de_factura(
     if _ya_vinculados(session, [n], salvo=order.id):
         return {"estado": "en_otro_pedido", "numero": n, "detalle": (
             f"El albarán {n} de la factura ya está vinculado a otro pedido.")}
+    if ejercicio and _existe_albaran(session, refs[0][0], refs[0][1], ejercicio,
+                                     client=client) is not True:
+        return {"estado": "otro_ejercicio", "numero": n, "detalle": (
+            f"El albarán {n} de la factura no está en el ejercicio {ejercicio}: no se "
+            "vincula solo (BoHub lo buscaría en el ejercicio en curso). Vincúlalo a "
+            "mano si es de este ejercicio.")}
     _attach_albaran(session, order, n, how="vinculado: es el de la factura de origen",
                     actor_user_id=actor_user_id,
                     extra={"factura": {"serie": factura[0], "codigo": factura[1]},
@@ -239,23 +280,29 @@ def candidatos(
     session: Session, order: Order, *, q: str | None = None, client: Any = None,
     ejercicio: str | None = None,
 ) -> dict[str, Any]:
-    """Los albaranes que se proponen para vincular al pedido.
+    """Los albaranes que se proponen para vincular al pedido, del ejercicio
+    en curso (`ejercicio`): el pedido guarda solo serie-número y el PDF y el
+    envío lo buscan en el ejercicio en curso, así que uno de otro año sería
+    otro documento.
 
     Sin `q`: los del cliente del pedido (los de la propia factura delante),
     los más recientes primero. Con `q`: los que casan con el número (de
     cualquier cliente). Nunca uno ya vinculado a OTRO pedido. Lo volcado,
     más lo de hoy en vivo (aún sin volcar) si hay `client`."""
+    from datetime import date  # noqa: PLC0415
+
     from app.erp.parque import codigos_cliente  # noqa: PLC0415
 
+    ejercicio = ejercicio or str(date.today().year)
     doc = HistoricoDocumento
     codcli = _codcli(session, order)
     de_la_factura: list[str] = []
     factura = _factura_del_pedido(order) if is_factura_source(order) else None
     if factura is not None:
         de_la_factura = [numero(s, c) for s, c in albaranes_de_factura(
-            session, factura[0], factura[1], client=client, ejercicio=ejercicio)["albaranes"]]
+            session, factura[0], factura[1], factura[2], client=client)["albaranes"]]
 
-    stmt = select(doc).where(doc.tipo == TIPO_ALBARAN)
+    stmt = select(doc).where(doc.tipo == TIPO_ALBARAN, doc.ejercicio == ejercicio)
     texto = (q or "").strip()
     if texto:
         serie_q, _, cod_q = texto.rpartition("-")
@@ -278,8 +325,8 @@ def candidatos(
     for n in faltan:
         serie_n, _, cod_n = n.rpartition("-")
         extra = session.scalar(select(doc).where(
-            doc.tipo == TIPO_ALBARAN, doc.serie == serie_n, doc.codigo == int(cod_n))
-            .order_by(doc.ejercicio.desc()).limit(1))
+            doc.tipo == TIPO_ALBARAN, doc.ejercicio == ejercicio, doc.serie == serie_n,
+            doc.codigo == int(cod_n)).limit(1))
         if extra is not None:
             docs.append(extra)
     vistos: set[str] = set()
@@ -350,10 +397,10 @@ def _con_lo_de_hoy(
         })
     ocupados = _ya_vinculados(session, [f["numero"] for f in nuevos], salvo=ocupados_salvo)
     nuevos = [f for f in nuevos if f["numero"] not in ocupados]
-    # De dónde sale cada uno: sus líneas, solo para los primeros (una lectura
-    # por albarán).
+    # De dónde sale cada uno: sus líneas, solo para los tres primeros (una
+    # lectura por albarán, dentro de la petición).
     _ordenar(nuevos)
-    for f in nuevos[:5]:
+    for f in nuevos[:3]:
         try:
             lineas = client.load_table("F_LAL", filtro=f"CODLAL={int(f['codigo'])}",
                                        ejercicio=ejercicio)
@@ -395,18 +442,13 @@ def vincular_a_mano(
     if _ya_vinculados(session, [n], salvo=order.id):
         raise AlbaranNoVinculable("en_otro_pedido", (
             f"El albarán {n} ya está vinculado a otro pedido."))
-    existe = session.scalar(select(HistoricoDocumento.id).where(
-        HistoricoDocumento.tipo == TIPO_ALBARAN, HistoricoDocumento.serie == serie,
-        HistoricoDocumento.codigo == int(codigo)).limit(1)) is not None
-    if not existe and client is not None and ejercicio:
-        try:
-            existe = any(_serie(r.get("TIPALB")) == serie for r in client.load_table(
-                "F_ALB", filtro=f"CODALB={int(codigo)}", ejercicio=ejercicio))
-        except Exception:  # noqa: BLE001
-            existe = False
-    if not existe:
+    from datetime import date  # noqa: PLC0415
+
+    ejercicio = ejercicio or str(date.today().year)
+    # Del ejercicio en curso: es donde lo buscarán el PDF y el envío.
+    if _existe_albaran(session, serie, int(codigo), ejercicio, client=client) is not True:
         raise AlbaranNoVinculable("no_existe", (
-            f"No se encuentra el albarán {n} en FACTUSOL."))
+            f"No se encuentra el albarán {n} en el ejercicio {ejercicio} de FACTUSOL."))
     _attach_albaran(session, order, n, how="vinculado a mano desde la ficha del pedido",
                     actor_user_id=actor_user_id)
     session.commit()

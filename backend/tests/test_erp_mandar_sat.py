@@ -310,3 +310,61 @@ def test_el_correo_sin_permiso_de_sat_no_mueve_nada(http, session_factory) -> No
     assert r.status_code in (403, 422)
     with session_factory() as s:
         assert s.get(Order, pedido["id"]).preparation_status == "pending_review"
+
+
+# --- lo que encontró la primera revisión ---------------------------------------------------
+
+
+def test_una_factura_de_otro_anio_con_el_mismo_numero_no_se_usa(http, session_factory) -> None:  # noqa: F811
+    # La 5-8 de 2025 (volcada) venía del albarán 5-31; la de hoy no apunta a ninguno.
+    with session_factory() as s:
+        s.add(HistoricoEjercicio(ejercicio="2025", estado="cargado", con_enlaces=True))
+        doc = HistoricoDocumento(ejercicio="2025", tipo="factura", serie="5", codigo=8,
+                                 codcli="55555")
+        s.add(doc)
+        s.flush()
+        s.add(HistoricoLinea(documento_id=doc.id, ejercicio="2025", posicion=1, codart="MBO",
+                             es_producto=True, origen_tipo="A", origen_serie="5",
+                             origen_codigo=31))
+        s.commit()
+    pedido = _crear_desde(http, FakeClient(_tablas(enlace=False)), "facturas")
+    assert pedido["albaran_de_factura"]["estado"] == "sin_enlace"
+    assert pedido["factusol_albaran_number"] is None
+
+
+def test_un_albaran_de_otro_ejercicio_no_se_vincula_solo(http, session_factory) -> None:  # noqa: F811
+    t = _tablas(enlace=False)
+    # La factura apunta al albarán 5-77, que no está en el ejercicio en curso.
+    t["F_LFA"] = [{**ln, "DOCLFA": "A", "DTPLFA": "5", "DCOLFA": 77} for ln in t["F_LFA"]]
+    pedido = _crear_desde(http, FakeClient(t), "facturas")
+    assert pedido["albaran_de_factura"]["estado"] == "otro_ejercicio"
+    assert pedido["factusol_albaran_number"] is None
+
+
+def test_un_pedido_desde_albaran_desvinculado_no_crea_otro(http, session_factory) -> None:  # noqa: F811
+    fake = FakeClient(_tables())
+    pedido = _crear_desde(http, fake, "albaranes")
+    url = f"/api/erp/orders/{pedido['id']}"
+    r = http.post(f"{url}/unlink-document", json={"kind": "albaran", "confirm": True},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    with _patched(fake), _enqueue() as enq:
+        m = _mandar(http, pedido["id"])
+        r2 = http.post(f"{url}/albaran", json={}, headers=auth_headers(http, "pedidos"))
+    assert m.json()["albaran"]["crear"] is False
+    assert m.json()["order"]["mandar_sat"]["albaran_solo_vincular"] is True
+    assert r2.status_code == 409
+    enq.assert_not_called()
+    assert fake.writes == []
+
+
+def test_un_pedido_quitado_de_las_listas_no_se_manda(http, session_factory) -> None:  # noqa: F811
+    from datetime import UTC, datetime
+
+    pedido = _crear_desde(http, FakeClient(_tablas(enlace=True)), "facturas")
+    with session_factory() as s:
+        s.get(Order, pedido["id"]).seguimiento_excluded_at = datetime.now(UTC)
+        s.commit()
+    with _patched(FakeClient(_tablas(enlace=True))):
+        r = _mandar(http, pedido["id"])
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "excluded"

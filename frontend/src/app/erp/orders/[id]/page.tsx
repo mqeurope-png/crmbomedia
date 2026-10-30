@@ -509,7 +509,9 @@ function ErpOrderDetailScreen() {
     setError(null);
     if (r.albaran.crear) setAlbaranSignal((n) => n + 1);
     const partes: string[] = [r.cola === "entrado"
-      ? "Mandado al SAT: el pedido está en la Cola SAT." : "El pedido ya estaba en la Cola SAT."];
+      ? "Mandado al SAT: el pedido está en la Cola SAT."
+      : r.cola === "ya_estaba" ? "El pedido ya estaba en la Cola SAT."
+        : "El pedido ya pasó por la Cola SAT."];
     if (r.albaran.estado === "vinculado" && r.albaran.numero) {
       partes.push(`Vinculado el albarán ${r.albaran.numero} de la factura (no se ha creado ninguno).`);
     }
@@ -944,8 +946,11 @@ function ErpOrderDetailScreen() {
                 al taller por email», 14/10/2026), pero solo a la dirección del
                 taller y sin factura. Una muestra no tiene albarán ni PDF que
                 mandar. */}
+            {/* Con «Mandar a SAT» a mano, este se esconde; quien no puede
+                mandarlo (el taller) sigue teniendo el correo, que también lo
+                mete en la cola. */}
             {canEmailSat && !esMuestra && wf?.next_action !== "enviar_sat"
-              && wf?.next_action !== "mandar_sat" ? (
+              && (wf?.next_action !== "mandar_sat" || !canMandarSat) ? (
               <button
                 type="button"
                 className="button small secondary"
@@ -1475,18 +1480,11 @@ function ErpOrderDetailScreen() {
             orderSource={order.external_source}
             factusolAlbaranNumber={order.factusol_albaran_number ?? null}
             pdfLang={pdfLang}
-            canCreateAlbaran={canEmit && !order.mandar_sat?.factura_sin_albaran}
+            canCreateAlbaran={canEmit && !order.mandar_sat?.albaran_solo_vincular}
             createSignal={albaranSignal}
-            onAlbaranCreated={({ numero, error: err }) => {
-              if (err) setError(err);
-              // El correo al taller de «Mandar a SAT» esperaba a este albarán.
-              if (numero && order.mandar_sat?.correo?.estado === "pendiente_albaran"
-                  && canEmailSat) {
-                void onEnviarCorreoSat();
-              } else {
-                load();
-              }
-            }}
+            // El correo al taller que esperaba al albarán lo manda el backend
+            // al crearlo; aquí solo se recarga.
+            onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
             openEtiquetaSignal={etiquetaSignal}
             onUploaded={() => load()}
           />
@@ -1555,11 +1553,9 @@ function ErpOrderDetailScreen() {
                   : null}
                 onLinked={(o) => {
                   setOrder(o);
-                  setNotice("Albarán vinculado.");
-                  // El correo al taller de «Mandar a SAT» esperaba a este albarán.
-                  if (o.mandar_sat?.correo?.estado === "pendiente_albaran" && canEmailSat) {
-                    void onEnviarCorreoSat();
-                  }
+                  // Si el correo al taller esperaba a este albarán, ya salió (backend).
+                  setNotice(o.mandar_sat?.correo?.estado === "enviado"
+                    ? "Albarán vinculado y correo enviado al taller." : "Albarán vinculado.");
                 }}
               />
             ) : null}
@@ -1933,7 +1929,7 @@ function ErpOrderDetailScreen() {
           orderNumber={order.order_number}
           onClose={() => setOrderEmailOpen(false)}
           onSent={() => load()}
-          onCreateAlbaran={canEmit && !order.mandar_sat?.factura_sin_albaran
+          onCreateAlbaran={canEmit && !order.mandar_sat?.albaran_solo_vincular
             ? () => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }
             : undefined}
         />

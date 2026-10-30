@@ -139,6 +139,12 @@ def is_web_order(order: Order) -> bool:
     return _status_value(order.external_source) == OrderSource.WOOCOMMERCE.value
 
 
+def is_albaran_source(order: Order) -> bool:
+    """¿El pedido se creó desde un albarán de FACTUSOL? (Su albarán es ese:
+    si se desvincula, se vincula otro; nunca se crea uno nuevo.)"""
+    return _status_value(order.external_source) == OrderSource.FACTUSOL_ALBARAN.value
+
+
 def is_factura_source(order: Order) -> bool:
     """¿El pedido se creó desde una factura de FACTUSOL?"""
     src = packing_of(order).get("factusol_source")
@@ -269,6 +275,12 @@ def albaran_blocker(
             FacturaSourceNoAlbaran.code,
             "El pedido sale de una factura, y la factura de un albarán que ya "
             "existe: no se crea otro. Se vincula el de la factura o uno a mano.",
+        )
+    if is_albaran_source(order):
+        return (
+            FacturaSourceNoAlbaran.code,
+            "El pedido sale de un albarán que ya existe: no se crea otro. "
+            "Vincúlalo de nuevo (o el que corresponda).",
         )
     if order_source(order) is not None:
         return None
