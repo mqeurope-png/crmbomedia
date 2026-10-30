@@ -637,6 +637,9 @@ def order_workflow(
         # Pasos de la línea de vida, todos obligatorios: … → Factura →
         # Factura enviada → Cobro. El SAT/«Enviado» no es un paso.
         "steps": order_steps(order, invoice_emailed_at=invoice_sent_at),
+        # El pago es un hecho que se enseña, no una etapa (31/10/2026, decisión
+        # de Bart): distintivo junto a la línea de vida, fuera de los pasos.
+        "pago": pago_distintivo(order),
         "regime": company_regime(company, issuer_iso2=emisor),
         # Cliente del pedido: lo que la ficha enseña en cabecera (país +
         # régimen) y en el bloque FACTUSOL (nº de cliente o «sin vincular»).
@@ -864,17 +867,17 @@ def _company_of(
 #: SAT/«Enviado» no es un paso (hay pedidos que no pasan por el taller): vive en
 #: la sección «Envío y seguimiento» de la ficha y en la Cola SAT.
 STEP_KEYS: tuple[str, ...] = (
-    "creado", "pagado", "aprobado", "albaran", "factura", "factura_enviada", "cobro",
+    "creado", "aprobado", "albaran", "factura", "factura_enviada", "cobro",
 )
 #: Pasos que NO APLICAN en una muestra / envío no facturable: no se cobra ni se
 #: factura, así que su ciclo es «Creado → (Preparación) → Enviado». Se pintan
 #: en gris igual que el albarán de un pedido web. «Aprobado» NO está aquí: la
 #: muestra entra a la Cola SAT al crearse, así que ese paso se cumple de verdad.
 SAMPLE_SKIPPED_STEPS: frozenset[str] = frozenset(
-    {"pagado", "albaran", "factura", "factura_enviada", "cobro"}
+    {"albaran", "factura", "factura_enviada", "cobro"}
 )
 STEP_LABELS: dict[str, str] = {
-    "creado": "Creado", "pagado": "Pagado", "aprobado": "Aprobado",
+    "creado": "Creado", "aprobado": "Aprobado",
     "albaran": "Albarán", "factura": "Factura", "cobro": "Cobro",
     "factura_enviada": "Factura enviada",
 }
@@ -905,13 +908,32 @@ PASO_DE_LA_ACCION: dict[str, str] = {
 }
 
 
+def pago_distintivo(order: Order) -> dict[str, Any]:
+    """«Pagado» / «Sin pagar», con el importe y la forma de pago (la de la
+    tienda, la apuntada al pagar o la del documento de origen). Una muestra no
+    se cobra."""
+    from app.erp.factusol_albaran import packing_of, payment_intent  # noqa: PLC0415
+
+    intent = payment_intent(order) or {}
+    src = packing_of(order).get("factusol_source")
+    forma = (order.payment_method_title or intent.get("forma_pago_nombre")
+             or (src.get("forma_pago_nombre") if isinstance(src, dict) else None))
+    return {
+        "no_se_cobra": is_sample_order(order) or is_no_charge(order),
+        "pagado": is_paid(order),
+        "estado": _v(order.payment_status) or None,
+        "importe": _importe(order),
+        "forma": forma or None,
+    }
+
+
 def order_steps(
     order: Order, *, invoice_emailed_at: str | None = None,
 ) -> list[dict[str, Any]]:
     """Estado de cada paso de la línea de vida: `done` (hecho, con su detalle),
     `now` (el primero pendiente), `pending` o `skipped`.
 
-    Pasos: Creado → Pagado → Aprobado → Albarán → Factura → Factura enviada →
+    Pasos: Creado → Aprobado → Albarán → Factura → Factura enviada →
     Cobro. El albarán es opcional en un pedido WEB (lo crea WooCommerce, no
     BoHub): si no hay número se marca `skipped` («no aplica») y nunca es el
     paso actual. «Factura enviada» (`invoice_emailed_at`: por email desde
@@ -920,7 +942,6 @@ def order_steps(
     sección «Envío y seguimiento»."""
     done: dict[str, tuple[bool, str]] = {
         "creado": (True, _fecha(order.placed_at or order.created_at)),
-        "pagado": (is_paid(order), "" if not is_paid(order) else _importe(order)),
         "aprobado": (is_approved(order), _fecha(order.approved_at)),
         "albaran": (
             bool(order.factusol_albaran_number),
@@ -950,11 +971,6 @@ def order_steps(
             # facturar. Su ciclo es corto (creado → preparación → enviado).
             state = "skipped"
             detail = "no facturable"
-        elif key == "pagado":
-            # Desde el #587 el pago no frena nada: un pedido sin pagar recorre
-            # toda la línea. «Pagado» se enseña (pendiente) pero nunca es el
-            # paso actual. (Cómo encajarlo en la línea lo decide Bart.)
-            state = "pending"
         elif paso_de_la_accion is not None and key != paso_de_la_accion:
             # El paso actual es el de la acción que se ofrece; uno anterior sin
             # hacer (p. ej. el albarán mientras toca emitir la factura) se ve

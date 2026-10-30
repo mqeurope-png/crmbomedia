@@ -133,7 +133,7 @@ def test_los_pasos_fiscales_salen_no_aplica(http, session_factory):
     assert estados["creado"] == "done"
     # «Aprobado» sí se cumple: la muestra entra a la Cola SAT al crearse.
     assert estados["aprobado"] == "done"
-    for paso in ("pagado", "albaran", "factura", "cobro"):
+    for paso in ("albaran", "factura", "cobro"):
         assert estados[paso] == "skipped", paso
     assert estados["factura_enviada"] == "skipped"
 

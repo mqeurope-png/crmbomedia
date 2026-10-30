@@ -640,10 +640,13 @@ después.
   vinculado). Si el correo al taller ya había salido, te avisa para que les
   digas que vuelve a revisión. Un pedido devuelto así no vuelve a entrar solo
   en la cola al pagarse: se manda otra vez a mano.
-- **La línea de vida** marca como paso actual el de la acción que se ofrece.
-  «Pagado» se ve (hecho o pendiente) pero ya no es una etapa en la que se
-  espera: desde que el cobro no frena el envío, un pedido sin pagar recorre
-  toda la línea.
+- **La línea de vida** tiene **seis pasos** (Creado → Aprobado / Mandado al
+  SAT → Albarán → Factura → Factura enviada → Cobro) y marca como paso actual
+  el de la acción que se ofrece. **El pago ya no es un paso** (decisión de
+  Bart, 31/10/2026): va como distintivo junto a la línea —**«Pagado»** o
+  **«Sin pagar»**, con el importe y la forma de pago; «No se cobra» en una
+  muestra o un envío sin cobro—, porque desde que el cobro no frena el envío
+  un pedido sin pagar recorre toda la línea.
 - **El albarán de un pedido creado desde una factura** — **nunca se crea uno
   nuevo**: la factura salió de un albarán que ya existe. BoHub lo busca en las
   líneas de la factura (cada línea apunta al albarán que se facturó) y lo

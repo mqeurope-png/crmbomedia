@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { WorkflowStep } from "../../../lib/erpApi";
+import type { WorkflowPago, WorkflowStep } from "../../../lib/erpApi";
 
 const ICON: Record<WorkflowStep["state"], string> = {
   done: "✓",
@@ -17,12 +17,30 @@ const TITLE: Record<WorkflowStep["state"], string> = {
   skipped: "No aplica",
 };
 
-/** La «línea de vida» del pedido: Creado → Pagado → Aprobado → Albarán →
- *  Factura → Factura enviada → Cobro, con el paso actual resaltado (el envío
- *  del paquete se sigue en la Cola SAT). Los estados los calcula el backend
- *  (`workflow.steps`): aquí no se deduce nada.
+/** El pago, junto a la línea de vida y fuera de sus pasos (31/10/2026): un
+ *  hecho que se enseña —«Pagado» o «Sin pagar», con importe y forma de pago—,
+ *  no una etapa en la que se espera. */
+export function PagoDistintivo({ pago }: { pago: WorkflowPago }) {
+  if (pago.no_se_cobra) {
+    return <span className="badge muted erp-pago-distintivo" aria-label="Pago">No se cobra</span>;
+  }
+  return (
+    <span className={`badge ${pago.pagado ? "ok" : "warn"} erp-pago-distintivo`}
+          aria-label="Pago">
+      <strong>{pago.pagado ? "Pagado" : "Sin pagar"}</strong>
+      {" · "}{pago.importe}
+      {pago.forma ? <> · {pago.forma}</> : null}
+    </span>
+  );
+}
+
+/** La «línea de vida» del pedido: Creado → Aprobado (Mandado al SAT) →
+ *  Albarán → Factura → Factura enviada → Cobro, con el paso actual resaltado
+ *  (el envío del paquete se sigue en la Cola SAT; el pago, en su distintivo).
+ *  Los estados los calcula el backend (`workflow.steps`): aquí no se deduce
+ *  nada.
  *
- *  Lote 2 · PR-2: en `vertical` los 7 pasos van en columna (cabe en cualquier
+ *  Lote 2 · PR-2: en `vertical` los 6 pasos van en columna (cabe en cualquier
  *  ancho): icono con conector, título y dato del paso en la misma fila, y el
  *  paso actual como la ÚNICA tarjeta azul de la pantalla, con lo que
  *  `renderAction` devuelva dentro (la ficha incrusta ahí «Siguiente paso» con

@@ -16058,3 +16058,6 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   margin: 8px 0 12px;
 }
 .erp-vincular-albaran { margin-bottom: 12px; }
+
+/* El pago como distintivo junto a la línea de vida (31/10/2026) */
+.erp-pago-distintivo { display: inline-block; margin: 0 0 10px; }

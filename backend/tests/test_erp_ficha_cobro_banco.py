@@ -701,7 +701,7 @@ def test_factura_enviada_va_antes_del_cobro_y_se_marca_a_mano(http, session_fact
     wf = _wf(session_factory)
     assert wf["queue"] == "factura_por_enviar" and wf["next_action"] == "enviar_factura"
     keys = [st["key"] for st in wf["steps"]]
-    assert keys.index("factura_enviada") == keys.index("cobro") - 1 == 5
+    assert keys.index("factura_enviada") == keys.index("cobro") - 1 == 4
 
     h = auth_headers(http, "pedidos")
     assert http.post("/api/erp/orders/o-1/factura-enviada", headers=h,

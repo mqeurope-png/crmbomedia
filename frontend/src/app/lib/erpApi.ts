@@ -110,6 +110,16 @@ export type WorkflowStep = {
   optional?: boolean;
 };
 
+/** «Pagado» / «Sin pagar», con importe y forma de pago (31/10/2026: el pago
+ *  es un hecho que se enseña, no una etapa de la línea de vida). */
+export type WorkflowPago = {
+  no_se_cobra: boolean;
+  pagado: boolean;
+  estado: string | null;
+  importe: string;
+  forma: string | null;
+};
+
 export type WorkflowCompany = {
   id: string;
   name: string;
@@ -128,6 +138,8 @@ export type OrderWorkflow = {
   alerts: WorkflowAlert[];
   blocked: boolean;
   steps: WorkflowStep[];
+  /** El pago, como distintivo junto a la línea de vida (no es un paso). */
+  pago?: WorkflowPago;
   /** Régimen de IVA del cliente: nacional / intracomunitario / exportacion. */
   regime: string | null;
   company: WorkflowCompany | null;

@@ -461,7 +461,9 @@ def test_la_linea_de_vida_marca_el_paso_de_la_accion(http, session_factory) -> N
         "workflow"]
     ahora = [p["key"] for p in wf["steps"] if p["state"] == "now"]
     assert ahora == ["aprobado"]
-    assert next(p for p in wf["steps"] if p["key"] == "pagado")["state"] == "pending"
+    # «Pagado» ya no es un paso: es un distintivo con importe y forma.
+    assert "pagado" not in [p["key"] for p in wf["steps"]] and len(wf["steps"]) == 6
+    assert wf["pago"]["pagado"] is False and wf["pago"]["importe"] == "50.00 EUR"
     # Desde factura, sin albarán: toca enviar la factura y ese es el paso actual.
     pedido = _crear_desde(http, FakeClient(_tablas(enlace=False)), "facturas")
     with _patched(FakeClient(_tablas(enlace=False))):

@@ -50,7 +50,11 @@ import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
 import { RegimePill } from "../../../components/erp/flow/RegimePill";
 import { WorkflowAlerts } from "../../../components/erp/flow/WorkflowAlerts";
 import { QUEUE_LABEL } from "../../../components/erp/flow/WorkflowQueueCards";
-import { WorkflowProgress, WorkflowSteps } from "../../../components/erp/flow/WorkflowSteps";
+import {
+  PagoDistintivo,
+  WorkflowProgress,
+  WorkflowSteps,
+} from "../../../components/erp/flow/WorkflowSteps";
 import { isSampleOrder } from "../../../components/erp/OrderStatusGrid";
 import { getCurrentUser, type User } from "../../../lib/api";
 import { Cap, can } from "../../../lib/capabilities";
@@ -1333,6 +1337,7 @@ function ErpOrderDetailScreen() {
       {wf ? (
         <section className="erp-flow-panel erp-lifeline" aria-label="Línea de vida del pedido">
           <h3>Línea de vida del pedido</h3>
+          {wf.pago ? <PagoDistintivo pago={wf.pago} /> : null}
           <WorkflowSteps
             steps={wf.steps}
             vertical
