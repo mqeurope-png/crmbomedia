@@ -34,8 +34,10 @@ No toca ninguna tabla existente.
   ejercicio y **sustituye** lo de ese ejercicio en una transacción
   (idempotente: volcar dos veces deja lo mismo).
 - Si FACTUSOL responde `BDNoExiste`: estado `no_disponible`, con el aviso de
-  reabrirlo en el escritorio; **no se borra** lo ya volcado. Otro fallo:
-  `error` con el tipo de excepción (nunca el mensaje: podría llevar datos).
+  reabrirlo en el escritorio; **no se borra** lo ya volcado. Otro fallo, al
+  leer o al guardar: se deshace la transacción y queda `error` con el tipo de
+  excepción (nunca el mensaje: podría llevar datos). Un ejercicio que falla no
+  para a los demás.
 - Fechas imposibles (hay una de 1900): `fecha` vacía y `fecha_original` guardada.
 - Líneas cuyo documento no está en la cabecera: se cuentan en `detalle` y no
   se guardan.
@@ -44,9 +46,12 @@ No toca ninguna tabla existente.
 ## Cuándo se carga (`app/erp/historico_job.py`, cola `erp:historico`, worker-sync)
 
 - **Cada día a las 05:20 (Madrid):** el ejercicio en curso entero y las
-  familias. Los cerrados no se recargan solos.
+  familias; en enero, también el recién cerrado. Los demás cerrados no se
+  recargan solos. Si a esa hora hay una carga pedida en marcha, el tic se
+  reintenta cada 10 minutos (hasta 12 veces).
 - **Desde la pantalla** (`POST /api/erp/historico/cargar`): los trece o uno.
-  Una carga a la vez (cerrojo en Redis); los pedidos quedan `cargando`.
+  Una carga a la vez (cerrojo en Redis con ficha: cada carga suelta solo el
+  suyo); los pedidos quedan `cargando` antes de encolar.
   Una carga `cargando` desde hace más de 40 min se enseña como interrumpida.
 - A mano: `python -m app.erp.historico_job [2017 2018 …]`.
 
@@ -56,9 +61,10 @@ No toca ninguna tabla existente.
 última compra (fecha o, si es imposible, el ejercicio; documento
 serie-número), unidades, nº de compras y artículos. Solo líneas de producto.
 
-- **Unidades:** de las facturas; si el cliente no tiene ninguna factura de
-  esos artículos, de los albaranes. Un albarán facturado y su factura son la
-  misma venta.
+- **Unidades y compras, por artículo:** de las facturas; de un artículo del
+  que el cliente no tiene ninguna factura, de sus albaranes. Un albarán
+  facturado y su factura son la misma venta.
+- Los `%` y `_` que escriba el usuario se buscan tal cual (no son comodines).
 - **Empresa de BoHub:** `Company.factusol_company_id == codcli`; si no hay,
   la pantalla marca «Sin empresa vinculada».
 - `EQUART` (SKU comercial) no se usa para casar: solo lo tiene el 4 %.

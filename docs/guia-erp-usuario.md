@@ -993,9 +993,9 @@ catálogo de ese año): la pantalla consulta esa copia, no FACTUSOL en vivo, y
 - **Empresa en BoHub:** enlace a su ficha si el cliente de FACTUSOL está
   vinculado a una empresa; si no, **«Sin empresa vinculada»** en ámbar. Arriba
   dice cuántos hay sin vincular.
-- **«Exportar CSV»** descarga la misma lista (se abre en Excel).
-- **Las unidades salen de las facturas.** Si un cliente solo tiene albaranes
-  sin facturar, salen de los albaranes. Un albarán facturado y su factura son
+- **«Exportar CSV»** descarga la lista que estás viendo (se abre en Excel).
+- **Las unidades salen de las facturas.** De un artículo que el cliente solo
+  tiene en albaranes sin facturar, salen de los albaranes. Un albarán facturado y su factura son
   la misma venta: no se suman dos veces.
 - **Las líneas sin artículo** (portes, condiciones, garantías, referencias de
   pedido) se guardan pero **no cuentan como venta**.
@@ -1017,8 +1017,8 @@ ejercicio no se borra.
 - **«Cargar los 13 ejercicios»** — la primera carga, o rehacerlo todo (un par
   de minutos). **«Volver a cargar»** en una fila — solo ese ejercicio. Una carga
   a la vez; la pantalla se actualiza sola mientras dura.
-- **El ejercicio en curso se recarga solo cada día a las 05:20.** Los
-  anteriores solo cuando se pulsa aquí.
+- **El ejercicio en curso se recarga solo cada día a las 05:20** (en enero,
+  también el del año anterior). Los demás, solo cuando se pulsa aquí.
 - Arriba dice cuántas líneas son de producto y cuántas son **notas**.
 
 ### Cola SAT (el taller)

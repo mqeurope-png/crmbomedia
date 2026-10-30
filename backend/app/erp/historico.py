@@ -133,10 +133,22 @@ def _estado(session: Session, ejercicio: str) -> HistoricoEjercicio:
     return fila
 
 
+def _apuntar_fallo(session: Session, ejercicio: str, estado: str, detalle: str) -> dict:
+    """Apunta un fallo sin tocar lo ya volcado (la transacción se deshace)."""
+    session.rollback()
+    fila = _estado(session, ejercicio)
+    fila.intento_at = _ahora()
+    fila.estado, fila.detalle = estado, detalle
+    session.commit()
+    logger.info("historico: ejercicio %s sin cargar (%s)", ejercicio, estado)
+    return {"ejercicio": ejercicio, "estado": estado, "detalle": detalle}
+
+
 def cargar_ejercicio(session: Session, client: Any, ejercicio: str) -> dict[str, Any]:
     """Vuelca un ejercicio entero (sustituyendo lo que hubiera). Devuelve el
-    estado y los recuentos. Hace commit. Si la API no tiene el ejercicio o
-    falla, no toca lo ya volcado y lo apunta."""
+    estado y los recuentos. Hace commit. Si la API no tiene el ejercicio, o
+    falla leer o guardar, no toca lo ya volcado y lo apunta (solo el tipo de
+    error: el mensaje podría llevar datos de clientes). Nunca lanza."""
     ejercicio = str(ejercicio)
     t0 = time.monotonic()
     try:
@@ -149,21 +161,38 @@ def cargar_ejercicio(session: Session, client: Any, ejercicio: str) -> dict[str,
         }
         articulos = client.load_table("F_ART", filtro="1=1", ejercicio=ejercicio)
     except Exception as exc:  # noqa: BLE001 — se apunta y no para a los demás
-        session.rollback()
-        fila = _estado(session, ejercicio)
-        fila.intento_at = _ahora()
         if _sin_base_de_datos(exc):
-            fila.estado = ESTADO_NO_DISPONIBLE
-            fila.detalle = ("FACTUSOL no tiene este ejercicio abierto para la API: "
-                            "reábrelo en el escritorio de FACTUSOL y vuelve a cargarlo.")
-        else:
-            fila.estado = ESTADO_ERROR
-            fila.detalle = f"No se ha podido leer FACTUSOL ({type(exc).__name__})."
+            return _apuntar_fallo(
+                session, ejercicio, ESTADO_NO_DISPONIBLE,
+                "FACTUSOL no tiene este ejercicio abierto para la API: "
+                "reábrelo en el escritorio de FACTUSOL y vuelve a cargarlo.")
+        return _apuntar_fallo(session, ejercicio, ESTADO_ERROR,
+                              f"No se ha podido leer FACTUSOL ({type(exc).__name__}).")
+    try:
+        cuentas = _sustituir(session, ejercicio, leido, articulos)
+        fila = _estado(session, ejercicio)
+        fila.estado = ESTADO_CARGADO
+        fila.cargado_at = fila.intento_at = _ahora()
+        fila.detalle = (f"{cuentas['huerfanas']} líneas sin su documento, no guardadas."
+                        if cuentas["huerfanas"] else None)
+        fila.facturas, fila.albaranes = cuentas["facturas"], cuentas["albaranes"]
+        fila.lineas, fila.lineas_producto = cuentas["lineas"], cuentas["lineas_producto"]
+        fila.articulos = cuentas["articulos"]
+        fila.segundos = round(time.monotonic() - t0, 1)
         session.commit()
-        logger.info("historico: ejercicio %s sin cargar (%s)", ejercicio, fila.estado)
-        return {"ejercicio": ejercicio, "estado": fila.estado, "detalle": fila.detalle}
+    except Exception as exc:  # noqa: BLE001 — se deshace entero; lo anterior sigue
+        return _apuntar_fallo(session, ejercicio, ESTADO_ERROR,
+                              f"No se ha podido guardar en BoHub ({type(exc).__name__}).")
+    logger.info("historico: ejercicio %s cargado: %s documentos, %s líneas", ejercicio,
+                cuentas["facturas"] + cuentas["albaranes"], cuentas["lineas"])
+    return {"ejercicio": ejercicio, "estado": ESTADO_CARGADO, **cuentas,
+            "segundos": float(fila.segundos)}
 
-    # Sustituir el ejercicio entero, en una sola transacción.
+
+def _sustituir(
+    session: Session, ejercicio: str, leido: dict[str, tuple[list, list]], articulos: list,
+) -> dict[str, int]:
+    """Borra lo del ejercicio y escribe lo leído (sin commit)."""
     session.execute(delete(HistoricoLinea).where(HistoricoLinea.ejercicio == ejercicio))
     session.execute(delete(HistoricoDocumento).where(HistoricoDocumento.ejercicio == ejercicio))
     session.execute(delete(HistoricoArticulo).where(HistoricoArticulo.ejercicio == ejercicio))
@@ -184,7 +213,8 @@ def cargar_ejercicio(session: Session, client: Any, ejercicio: str) -> dict[str,
     if catalogo:
         session.execute(HistoricoArticulo.__table__.insert(), catalogo)
 
-    cuentas = {"facturas": 0, "albaranes": 0, "lineas": 0, "lineas_producto": 0, "huerfanas": 0}
+    cuentas = {"facturas": 0, "albaranes": 0, "lineas": 0, "lineas_producto": 0,
+               "huerfanas": 0, "articulos": len(catalogo)}
     for t in TABLAS:
         cabeceras, lineas = leido[t.tipo]
         docs: dict[tuple[str, int], HistoricoDocumento] = {}
@@ -221,21 +251,7 @@ def cargar_ejercicio(session: Session, client: Any, ejercicio: str) -> dict[str,
         cuentas["facturas" if t.tipo == TIPO_FACTURA else "albaranes"] = len(docs)
         cuentas["lineas"] += len(filas)
         cuentas["lineas_producto"] += sum(1 for f in filas if f["es_producto"])
-
-    fila = _estado(session, ejercicio)
-    fila.estado = ESTADO_CARGADO
-    fila.cargado_at = fila.intento_at = _ahora()
-    fila.detalle = (f"{cuentas['huerfanas']} líneas sin su documento, no guardadas."
-                    if cuentas["huerfanas"] else None)
-    fila.facturas, fila.albaranes = cuentas["facturas"], cuentas["albaranes"]
-    fila.lineas, fila.lineas_producto = cuentas["lineas"], cuentas["lineas_producto"]
-    fila.articulos = len(catalogo)
-    fila.segundos = round(time.monotonic() - t0, 1)
-    session.commit()
-    logger.info("historico: ejercicio %s cargado: %s documentos, %s líneas", ejercicio,
-                cuentas["facturas"] + cuentas["albaranes"], cuentas["lineas"])
-    return {"ejercicio": ejercicio, "estado": ESTADO_CARGADO, **cuentas,
-            "articulos": len(catalogo), "segundos": float(fila.segundos)}
+    return cuentas
 
 
 def cargar_familias(session: Session, client: Any, ejercicio: str) -> int:
@@ -246,18 +262,23 @@ def cargar_familias(session: Session, client: Any, ejercicio: str) -> int:
     except Exception as exc:  # noqa: BLE001
         logger.info("historico: familias sin cargar (%s)", type(exc).__name__)
         return 0
-    actuales = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
-    for r in filas:
-        codigo = _texto(r.get("CODFAM"), 32)
-        if not codigo:
-            continue
-        fam = actuales.get(codigo)
-        if fam is None:
-            fam = HistoricoFamilia(codigo=codigo)
-            session.add(fam)
-            actuales[codigo] = fam
-        fam.descripcion = _texto(r.get("DESFAM"), 255)
-    session.commit()
+    try:
+        actuales = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
+        for r in filas:
+            codigo = _texto(r.get("CODFAM"), 32)
+            if not codigo:
+                continue
+            fam = actuales.get(codigo)
+            if fam is None:
+                fam = HistoricoFamilia(codigo=codigo)
+                session.add(fam)
+                actuales[codigo] = fam
+            fam.descripcion = _texto(r.get("DESFAM"), 255)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        logger.info("historico: familias sin guardar (%s)", type(exc).__name__)
+        return 0
     return len(filas)
 
 
@@ -272,6 +293,18 @@ def cargar(
 
 
 # --- consultas -------------------------------------------------------------------------
+
+
+def _iso_utc(d: datetime | None) -> str | None:
+    """Las horas se guardan en UTC sin zona: se dicen como UTC (con `Z`)."""
+    return f"{d.isoformat()}Z" if d else None
+
+
+def _like(q: str) -> str:
+    """`%texto%` con los comodines del usuario escapados (`50%`, `1390_A`).
+    Escape `/` (no la barra invertida, que MySQL trata aparte en literales)."""
+    q = q.replace("/", "//").replace("%", "/%").replace("_", "/_")
+    return f"%{q}%"
 
 
 #: Una carga «cargando» desde hace más que esto se murió por el camino.
@@ -290,8 +323,8 @@ def estado_ejercicios(session: Session, en_curso: str) -> list[dict[str, Any]]:
         out.append({
             "ejercicio": e,
             "estado": estado,
-            "cargado_at": f.cargado_at.isoformat() if f and f.cargado_at else None,
-            "intento_at": f.intento_at.isoformat() if f and f.intento_at else None,
+            "cargado_at": _iso_utc(f.cargado_at) if f else None,
+            "intento_at": _iso_utc(f.intento_at) if f else None,
             "detalle": detalle,
             "facturas": f.facturas if f else 0, "albaranes": f.albaranes if f else 0,
             "lineas": f.lineas if f else 0, "lineas_producto": f.lineas_producto if f else 0,
@@ -346,7 +379,7 @@ def buscar_articulos(session: Session, q: str, limit: int = 20) -> list[dict[str
         select(HistoricoArticulo.codart, HistoricoArticulo.descripcion,
                HistoricoArticulo.familia, HistoricoArticulo.ejercicio)
         .where(or_(HistoricoArticulo.codart == q,
-                   HistoricoArticulo.descripcion.ilike(f"%{q}%")))
+                   HistoricoArticulo.descripcion.ilike(_like(q), escape="/")))
         .order_by(HistoricoArticulo.ejercicio.desc())
     ).all()
     por_codigo: dict[str, dict[str, Any]] = {}
@@ -390,7 +423,8 @@ def compradores(
     if codart:
         stmt = stmt.where(lin.codart == codart)
     if q:
-        stmt = stmt.where(or_(lin.codart == q.strip(), art.descripcion.ilike(f"%{q.strip()}%")))
+        stmt = stmt.where(or_(lin.codart == q.strip(),
+                              art.descripcion.ilike(_like(q.strip()), escape="/")))
     if familia:
         stmt = stmt.where(art.familia == familia)
     if desde:
@@ -405,13 +439,14 @@ def compradores(
          art_desc, _familia, lin_desc) in session.execute(stmt):
         clave = codcli or f"sin-codigo:{nombre or ''}"
         cl = clientes.setdefault(clave, {
-            "codcli": codcli, "nombre": nombre, "unidades_factura": 0.0,
-            "unidades_albaran": 0.0, "compras": set(), "articulos": {},
+            "codcli": codcli, "nombre": nombre, "por_articulo": {}, "articulos": {},
             "ultima": None, "_orden": None,
         })
-        unidades = float(cant or 0)
-        cl["unidades_factura" if tipo == TIPO_FACTURA else "unidades_albaran"] += unidades
-        cl["compras"].add((ej, tipo, serie, codigo))
+        # Por artículo y tipo: unidades y documentos (se elige al final).
+        pa = cl["por_articulo"].setdefault(c_art, {
+            TIPO_FACTURA: [0.0, set()], TIPO_ALBARAN: [0.0, set()]})
+        pa[tipo][0] += float(cant or 0)
+        pa[tipo][1].add((ej, tipo, serie, codigo))
         cl["articulos"][c_art] = art_desc or lin_desc
         # La más reciente: por la fecha si es de verdad; si no, por el ejercicio.
         orden = (fecha or date(int(ej), 1, 1), ej, codigo)
@@ -430,14 +465,19 @@ def compradores(
     } if codigos else {}
     out = []
     for cl in clientes.values():
-        # Facturas primero: un albarán facturado y su factura son la misma venta.
-        unidades = cl["unidades_factura"] or cl["unidades_albaran"]
+        # Por artículo, las facturas; los albaranes solo si de ese artículo
+        # no hay ninguna: un albarán facturado y su factura son la misma venta.
+        unidades, docs = 0.0, set()
+        for pa in cl["por_articulo"].values():
+            unid, ds = pa[TIPO_FACTURA] if pa[TIPO_FACTURA][1] else pa[TIPO_ALBARAN]
+            unidades += unid
+            docs |= ds
         out.append({
             "codcli": cl["codcli"], "nombre": cl["nombre"],
             "empresa": empresas.get(cl["codcli"] or ""),
             "ultima_compra": cl["ultima"],
             "unidades": round(unidades, 3),
-            "compras": len(cl["compras"]),
+            "compras": len(docs),
             "articulos": [{"codart": k, "descripcion": v}
                           for k, v in sorted(cl["articulos"].items())],
             "_orden": cl["_orden"],

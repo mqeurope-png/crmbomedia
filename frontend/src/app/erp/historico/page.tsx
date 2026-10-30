@@ -176,6 +176,8 @@ function CompradoresPanel({
     items: HistoricoComprador[]; total: number; sin_empresa: number;
   } | null>(null);
   const [buscando, setBuscando] = useState(false);
+  // El filtro de lo que se está viendo: el CSV exporta eso, no el formulario.
+  const [buscado, setBuscado] = useState<HistoricoFiltro | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const anios = useMemo(() => {
@@ -213,6 +215,7 @@ function CompradoresPanel({
     setError(null);
     try {
       setResultado(await getHistoricoCompradores(filtro));
+      setBuscado(filtro);
     } catch (err) {
       setError(extractErrorMessage(err, "No se ha podido buscar."));
     } finally {
@@ -222,7 +225,7 @@ function CompradoresPanel({
 
   async function exportar() {
     try {
-      saveBlob(await downloadHistoricoCompradoresCsv(filtro), "quien_compro.csv");
+      if (buscado) saveBlob(await downloadHistoricoCompradoresCsv(buscado), "quien_compro.csv");
     } catch (err) {
       setError(extractErrorMessage(err, "No se ha podido exportar."));
     }
@@ -300,7 +303,7 @@ function CompradoresPanel({
           <button
             type="button"
             className="button small secondary"
-            disabled={!hayCriterio || !resultado?.total}
+            disabled={!buscado || !resultado?.total}
             onClick={() => void exportar()}
           >
             Exportar CSV

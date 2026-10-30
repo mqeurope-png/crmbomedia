@@ -396,3 +396,137 @@ def test_carga_atascada_se_ve_como_interrumpida(session_factory) -> None:
         s.commit()
         e = {x["ejercicio"]: x for x in historico.estado_ejercicios(s, "2026")}["2020"]
     assert e["estado"] == "error" and "interrumpió" in e["detalle"]
+
+
+# --- lo que encontró la revisión ---------------------------------------------------------
+
+
+def test_un_fallo_al_guardar_no_para_a_los_demas_ni_borra_lo_volcado(cargado,
+                                                                       monkeypatch) -> None:
+    real = historico._sustituir
+
+    def rompe_2017(session, ejercicio, *a, **k):
+        if ejercicio == "2017":
+            real(session, ejercicio, *a, **k)   # borra y escribe a medias…
+            raise RuntimeError("Talleres Figurante S.L. 4101")   # …y falla
+        return real(session, ejercicio, *a, **k)
+
+    monkeypatch.setattr(historico, "_sustituir", rompe_2017)
+    with cargado() as s:
+        out = historico.cargar(s, FactusolFalso(datos_figurantes()), ["2017", "2026"],
+                               en_curso="2026")
+        assert [r["estado"] for r in out] == ["error", "cargado"]
+        fila = s.get(HistoricoEjercicio, "2017")
+        assert fila.detalle == "No se ha podido guardar en BoHub (RuntimeError)."
+        # Lo de 2017 que ya había sigue entero.
+        assert s.scalar(select(func.count(HistoricoLinea.id))
+                        .where(HistoricoLinea.ejercicio == "2017")) == 4
+
+
+def test_unidades_por_articulo_factura_o_albaran(session_factory) -> None:
+    datos = datos_figurantes()
+    # 4102 tiene la tinta FACTURADA y, además, un albarán sin facturar de la
+    # máquina 9060 (otro artículo de la misma familia): cuentan los dos.
+    datos["2026"]["F_ART"].append(_art("1713", "Láser Figurante 9060", "LAS"))
+    datos["2026"]["F_ALB"].append(_alb(26003, CLI_ROTULOS, "Rótulos de Ejemplo S.C.",
+                                       "2026-07-01T00:00:00"))
+    datos["2026"]["F_LAL"].append(_lal(26003, 1, "1713", "Láser Figurante 9060", 1))
+    with session_factory() as s:
+        historico.cargar_ejercicio(s, FactusolFalso(datos), "2026")
+        out = {c["codcli"]: c for c in historico.compradores(s, familia="LAS")}
+    # 1712: 1 facturada (su albarán 26001 no suma); 1713: 1 por albarán.
+    assert out[CLI_ROTULOS]["unidades"] == 2
+    # Documentos: la factura 260002 (1712) y el albarán 26003 (1713).
+    assert out[CLI_ROTULOS]["compras"] == 2
+
+
+def test_los_comodines_del_usuario_no_son_comodines(cargado) -> None:
+    with cargado() as s:
+        assert historico.buscar_articulos(s, "L_ser") == []
+        assert historico.compradores(s, q="%") == []
+        assert historico.buscar_articulos(s, "Láser Figurante")[0]["codart"] == MAQUINA
+
+
+def test_en_enero_el_tic_recarga_tambien_el_ejercicio_recien_cerrado() -> None:
+    from datetime import date
+
+    assert historico_job.ejercicios_del_tic("2027", date(2027, 1, 15)) == ["2027", "2026"]
+    assert historico_job.ejercicios_del_tic("2027", date(2027, 2, 1)) == ["2027"]
+    assert historico_job.ejercicios_del_tic("2014", date(2014, 1, 2)) == ["2014"]
+
+
+class RedisFalso:
+    def __init__(self) -> None:
+        self.claves: dict[str, str] = {}
+
+    def set(self, k: str, v: str, nx: bool = False, ex: int | None = None) -> bool:
+        if nx and k in self.claves:
+            return False
+        self.claves[k] = v
+        return True
+
+    def eval(self, _script: str, _n: int, k: str, ficha: str) -> int:
+        if self.claves.get(k) == ficha:
+            del self.claves[k]
+            return 1
+        return 0
+
+    def delete(self, k: str) -> None:
+        self.claves.pop(k, None)
+
+
+def test_encolar_marca_cargando_antes_y_el_cerrojo_solo_lo_suelta_su_duenio(
+    session_factory, monkeypatch,
+) -> None:
+    import rq
+
+    redis = RedisFalso()
+    vistos: list[tuple[str, tuple]] = []
+
+    class ColaFalsa:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def enqueue(self, fn: Any, *args: Any) -> None:
+            with session_factory() as s2:
+                vistos.append((s2.get(HistoricoEjercicio, "2017").estado, args))
+
+    monkeypatch.setattr(historico_job, "_redis", lambda: redis)
+    monkeypatch.setattr(rq, "Queue", ColaFalsa)
+    with session_factory() as s:
+        assert historico_job.encolar_carga(s, ["2017"]) == "encolada"
+        assert historico_job.encolar_carga(s, ["2018"]) == "ocupada"
+    (estado, (ejercicios, ficha)), = vistos
+    assert (estado, ejercicios) == ("cargando", ["2017"])
+    # Una carga que se pasó de plazo no suelta el cerrojo de otra.
+    redis.claves[historico_job.CARGA_KEY] = "de-otra-carga"
+    historico_job._soltar_carga(ficha)
+    assert redis.claves[historico_job.CARGA_KEY] == "de-otra-carga"
+    historico_job._soltar_carga("de-otra-carga")
+    assert historico_job.CARGA_KEY not in redis.claves
+
+
+def test_el_tic_con_una_carga_en_marcha_se_reintenta(monkeypatch) -> None:
+    import rq
+
+    redis = RedisFalso()
+    redis.claves[historico_job.CARGA_KEY] = "carga-de-la-pantalla"
+    reintentos: list[tuple] = []
+
+    class ColaFalsa:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def enqueue_in(self, espera: Any, fn: Any, *args: Any) -> None:
+            reintentos.append((espera, fn, args))
+
+    monkeypatch.setattr(historico_job, "_redis", lambda: redis)
+    monkeypatch.setattr(rq, "Queue", ColaFalsa)
+    historico_job._tic()
+    assert reintentos == [(historico_job.REINTENTO_TIC, historico_job._tic_reintento, (1,))]
+
+
+def test_la_hora_de_la_carga_va_en_utc(cargado) -> None:
+    with cargado() as s:
+        e = historico.estado_ejercicios(s, "2026")[0]
+    assert e["cargado_at"].endswith("Z")

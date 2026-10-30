@@ -115,8 +115,12 @@ test("buscar un artículo enseña compradores, última compra, unidades y quién
   expect(within(rotulos).getByText(/2017 \(fecha no válida\)/)).toBeInTheDocument();
   expect(within(rotulos).getByText("3")).toBeInTheDocument();
 
+  // El CSV es de lo que se ve, aunque luego se toque el formulario sin buscar.
+  await user.selectOptions(screen.getByLabelText("Desde"), "2020");
   await user.click(screen.getByRole("button", { name: "Exportar CSV" }));
   await waitFor(() => expect(api().saveBlob).toHaveBeenCalledWith(expect.any(Blob), "quien_compro.csv"));
+  expect(api().downloadHistoricoCompradoresCsv).toHaveBeenCalledWith(
+    expect.objectContaining({ codart: "1712", desde: undefined }));
 });
 
 test("filtra por familia y por años", async () => {
