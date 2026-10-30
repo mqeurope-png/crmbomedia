@@ -193,7 +193,7 @@ Errores, siempre `{"detail": {"code": "...", "detail": "mensaje legible", "order
 | Puerta | Con un pedido traído a mano |
 |---|---|
 | Aprobar (`pending_review → in_queue`, `/approve`, en bloque, «Añadir a mano a la Cola SAT», enviar al SAT) | Pasa: nunca miró el pago. |
-| «Empezar preparación» (`in_queue → preparing`, `GUARD_PAYMENT_OK`) | **Pasa.** `sample_orders.payment_not_required(order)` = muestra **o** traído a mano. |
+| «Empezar preparación» (`in_queue → preparing`) | **Pasa.** Desde el 30/10/2026 no hay guard de pago para ningún pedido (traído o no). |
 | Embalar, crear envío / etiqueta, recogida | Pasan: solo dependían de la preparación. |
 | Entrada automática en la Cola SAT (`enqueue_paid_order`) | No al traerlo (queda en «Por revisar»). Sí cuando llega el cobro, si sigue sin aprobar. |
 | Emitir factura FACTUSOL | Pasa: nunca miró el pago. Necesita el pedido de cliente de FesteWeb (por REFPCL); «cobrada al emitir» solo si el pedido ya está `paid`. |

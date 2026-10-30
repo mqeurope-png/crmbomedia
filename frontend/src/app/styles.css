@@ -16039,3 +16039,22 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 
 /* Parque y compras en la ficha de empresa */
 .erp-compras-anio { display: inline-flex; flex-direction: column; gap: 4px; margin: 0 12px 12px 0; }
+
+/* «Mandar a SAT» (30/10/2026) */
+.erp-mandar-sat-resumen { margin: 12px 0; }
+.erp-mandar-sat-resumen > div {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 16px;
+  padding: 4px 0;
+}
+.erp-mandar-sat-resumen dt { font-size: var(--fs-label); color: var(--muted); }
+.erp-mandar-sat-resumen dd { margin: 0; }
+.erp-mandar-sat-resumen ul { margin: 0; padding-left: 18px; }
+.erp-mandar-sat-correo {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0 12px;
+}
+.erp-vincular-albaran { margin-bottom: 12px; }

@@ -613,6 +613,34 @@ después.
 > serie**, la ficha lo avisa en rojo (*«Falta la serie de la factura …»*) y
 > esas tres acciones no se hacen: el mismo número existe en varias series, así
 > que BoHub no busca la factura solo por el número. Hay que completar la serie.
+- **«Mandar a SAT»** (pedidos creados desde una **proforma, un albarán o una
+  factura**, 30/10/2026) — en vez de «Aprobar»: el pedido ya está decidido, lo
+  que falta es que el taller lo prepare y lo envíe. Abre **«Mandar a SAT para
+  su preparación y envío»** con lo que se manda a la vista (cliente, líneas,
+  albarán) y, con una sola confirmación, el pedido **entra en la Cola SAT**.
+  - La casilla **«Avisar al taller por correo»** despliega ahí mismo el correo
+    de siempre al taller (destinatario, asunto, mensaje, remitente, albarán):
+    al confirmar, **entra en la cola y sale el correo**. Viene **marcada**
+    cuando hay dirección del taller en Ajustes ERP; sin marcar, no sale nada.
+    Va **sin factura**, como siempre.
+  - Si el correo **no sale** (Gmail caído…), el pedido **sigue en la cola**: la
+    ficha avisa *«el correo al taller no salió»* con **«Reintentar»** (el mismo
+    correo, sin volver a escribirlo).
+  - Si el albarán aún hay que crearlo (proforma), se crea como siempre y el
+    correo sale **en cuanto el albarán esté** (si cierras la ficha antes, queda
+    *«El correo al taller espera al albarán»* con **«Enviar ahora»**).
+  - En la línea de vida el paso se llama **«Mandado al SAT»**.
+- **El albarán de un pedido creado desde una factura** — **nunca se crea uno
+  nuevo**: la factura salió de un albarán que ya existe. BoHub lo busca en las
+  líneas de la factura (cada línea apunta al albarán que se facturó) y lo
+  vincula solo. Si la factura no lo apunta, el pedido se queda **sin albarán**
+  y la ficha lo dice: vincúlalo a mano.
+- **«Vincular un albarán que ya existe»** (bloque FACTUSOL de la ficha, si el
+  pedido no tiene albarán) — propone los albaranes **del cliente que no están
+  en otro pedido**, los más recientes primero (el de su factura delante), cada
+  uno con **de qué documento sale** («Proforma 1-000500»); y un **buscador por
+  número** para el resto. Si te equivocas, **«Desvincular»** en el mismo bloque.
+  No escribe nada en FACTUSOL.
 - **«Enviar a SAT»** — manda el pedido (con su albarán) por email al taller y,
   a la vez, lo **mete en la Cola SAT** (si ya estaba, no se duplica). Abre
   **«Enviar pedido por email»** para elegir destinatarios, adjuntos e idioma.
@@ -701,6 +729,11 @@ después.
   cobro»** de un clic (envío de cortesía: ni se factura ni se cobra, y sale de
   «Por facturar» / «Por cobrar»). No se genera el albarán dejando el pago «en
   el aire».
+- **El cobro no frena el envío** (30/10/2026, decisión de Bart): un pedido
+  **sin cobrar** —también **un pedido web sin pagar**— entra en la Cola SAT y
+  se prepara, embala y envía. El cobro se registra igual que siempre, cuando
+  toque. Lo que evita que una venta se quede sin cobrar es la cola **«Por
+  cobrar»** de la Bandeja: revísala.
 - **Tras «Aprobar»** — la ficha ofrece, sin obligar, los siguientes pasos:
   **«Enviar a SAT»** y **«Generar albarán»** (que decide el pago / sin cobro).
   Se descartan con la ×.

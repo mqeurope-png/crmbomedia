@@ -73,8 +73,9 @@ def is_billable(order: Any) -> bool:
 
 def payment_not_required(order: Any) -> bool:
     """¿Este pedido puede prepararse, embalarse y enviarse sin esperar el cobro?
-    Es la puerta de «Empezar preparación» (`GUARD_PAYMENT_OK`) y el orden de la
-    bandeja (va con los que pueden avanzar). Dos casos:
+    Fue la puerta de «Empezar preparación» hasta el 30/10/2026 (el cobro ya no
+    condiciona el envío); hoy da el orden de la bandeja (va con los que pueden
+    avanzar). Dos casos:
 
     - Una MUESTRA no se cobra (14/10/2026): nada puede esperar su pago, ningún
       aviso la da por «pendiente de cobro» y no cuenta en lo que mide dinero.

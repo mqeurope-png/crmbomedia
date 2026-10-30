@@ -125,21 +125,20 @@ def test_invalid_transition_rejected_when_arc_not_defined(session_factory):
 # --- guards (mutación adversarial: violar la precondición DEBE fallar) ------
 
 
-def test_guard_preparation_requires_payment_ok(session_factory):
+def _v_payment(order) -> str:
+    return getattr(order.payment_status, "value", order.payment_status)
+
+
+def test_un_pedido_sin_cobrar_se_prepara(session_factory):
+    """30/10/2026: el cobro ya no condiciona el envío (decisión de Bart)."""
     with session_factory() as s:
         sat = _user(s, UserRole.SAT)
         pedidos = _user(s, UserRole.PEDIDOS)
         order = _mk_order(s)  # payment aún pending
         _t(s, order, StatusDomain.PREPARATION, "in_queue", pedidos)
-        with pytest.raises(TransitionError) as exc:
-            _t(s, order, StatusDomain.PREPARATION, "preparing", sat)
-        assert exc.value.code == "guard_failed"
-        assert "payment_ok_for_preparation" in str(exc.value)
-        # credit_approved TAMBIÉN desbloquea (B2B).
-        admin = _user(s, UserRole.ADMIN)
-        _t(s, order, StatusDomain.PAYMENT, "credit_approved", admin)
         _t(s, order, StatusDomain.PREPARATION, "preparing", sat)
         assert order.preparation_status == "preparing"
+        assert _v_payment(order) == "pending"
 
 
 def test_guard_label_requires_packed(session_factory):

@@ -87,6 +87,7 @@ ACTION_LABELS: dict[str, str] = {
     # `_next_action_label`), misma acción y mismo sitio (la ficha).
     "crear_envio": "Subir etiqueta",
     "enviar_sat": "Enviar a SAT",
+    "mandar_sat": "Mandar a SAT",
     "marcar_completado": "Marcar completado",
     "vincular_empresa": "Vincular empresa a FACTUSOL",
     "vincular_cliente": "Vincular empresa al pedido",
@@ -150,6 +151,15 @@ def is_cobrada(order: Order) -> bool:
 
 def is_web_order(order: Order) -> bool:
     return _v(order.external_source) == "woocommerce"
+
+
+#: Creado desde un documento de FACTUSOL (proforma, pedido, albarán, factura).
+_DESDE_DOCUMENTO = {"factusol_proforma", "factusol_pedido", "factusol_albaran",
+                    "factusol_factura"}
+
+
+def is_from_document(order: Order) -> bool:
+    return _v(order.external_source) in _DESDE_DOCUMENTO
 
 
 # --- datos del cliente de un pedido web ----------------------------------------
@@ -486,6 +496,14 @@ def _next_step(order: Order, *, factura_enviada: bool = False) -> tuple[str, str
             )
         return (QUEUE_LISTO, "ninguna", "Muestra enviada.")
     if not is_approved(order):
+        if is_from_document(order):
+            # Creado desde una proforma, un albarán o una factura: ya está
+            # decidido; lo que falta es que el taller lo prepare y lo envíe.
+            return (
+                QUEUE_POR_REVISAR, "mandar_sat",
+                "Sale de un documento de FACTUSOL: mándalo al SAT para su "
+                "preparación y envío.",
+            )
         return (
             QUEUE_POR_REVISAR, "aprobar",
             "Revisa el pedido y apruébalo para que pase al taller.",
@@ -914,8 +932,12 @@ def order_steps(
             now_set = True
         else:
             state = "pending"
+        label = STEP_LABELS[key]
+        if key == "aprobado" and is_from_document(order):
+            # Desde un documento no se «aprueba»: se manda al SAT.
+            label = "Mandado al SAT"
         steps.append({
-            "key": key, "label": STEP_LABELS[key], "state": state,
+            "key": key, "label": label, "state": state,
             "detail": detail or None, "optional": False,
         })
     return steps

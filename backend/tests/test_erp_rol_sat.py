@@ -340,7 +340,7 @@ def test_legacy_user_sigue_sin_poder_completar(http, session_factory):
 # --- 6 / 8 · el cobro y la Cola SAT --------------------------------------------
 
 
-def test_muestra_sin_cobrar_avanza_y_pedido_normal_sin_cobrar_sigue_bloqueado(session_factory):
+def test_muestra_sin_cobrar_avanza_y_pedido_normal_sin_cobrar_tambien(session_factory):
     with session_factory() as s:
         sat = s.scalar(select(User).where(User.email == "sat@example.com"))
         muestra = Order(order_number="MUESTRA-000900", order_kind="sample",
@@ -382,11 +382,10 @@ def test_muestra_sin_cobrar_avanza_y_pedido_normal_sin_cobrar_sigue_bloqueado(se
                              to_status="paid", actor=None)
         assert exc.value.code == "invalid_transition"
 
-        # El pedido normal sin cobrar se queda donde estaba (guard de pago).
-        with pytest.raises(TransitionError) as exc:
-            apply_transition(s, order=normal, domain=StatusDomain.PREPARATION,
-                             to_status="preparing", actor=sat)
-        assert exc.value.code == "guard_failed"
+        # El pedido normal sin cobrar también se prepara (30/10/2026: el
+        # cobro ya no condiciona el envío).
+        apply_transition(s, order=normal, domain=StatusDomain.PREPARATION,
+                         to_status="preparing", actor=sat)
         # Y desbloquear un pedido normal sigue siendo de la oficina.
         normal.preparation_status = "blocked"
         s.flush()
