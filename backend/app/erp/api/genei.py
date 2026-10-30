@@ -93,10 +93,16 @@ def build_client(carrier: Carrier) -> GeneiClient:
 # --- helpers ----------------------------------------------------------------
 
 
-def _get_order(session: Session, order_id: str) -> Order:
+def _get_order(session: Session, order_id: str, user: User) -> Order:
+    """El pedido, si `user` puede verlo: un pedido WEB no existe para quien
+    no ve pedidos web (Comercial), igual que en la ficha (auditoría
+    30/10/2026, F-3: antes creaba, pagaba y borraba envíos de pedidos web)."""
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
     order = session.get(Order, order_id)
     if order is None:
         raise HTTPException(404, {"code": "order_not_found", "detail": "Pedido no encontrado."})
+    order_web_or_403(order, user)
     return order
 
 
@@ -394,7 +400,7 @@ def genei_prefill(
     del pedido), bulto por defecto, origen y estado actual del envío si ya
     existe. `missing` avisa de los campos que el operario debe completar."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     carrier = get_genei_carrier(session)
     cfg = _config_of(carrier)
     campos, fuentes = resolve_shipping_destination(session, order, completar=completar)
@@ -431,7 +437,7 @@ def genei_prices(
     Propone por defecto el courier preferido factible más barato del país de
     destino (entrega a domicilio salvo que se pida oficina)."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     carrier = _require_carrier(session)
     cfg = _config_of(carrier)
     dest = payload.destination
@@ -481,7 +487,7 @@ def genei_create_shipment(
     """Crea el envío en Genei (nace en estado 7, pendiente de pago). Enlaza con
     el nº de pedido (`externalShippingCode`) y guarda el `shipmentCode` + estado
     en el pedido. NO paga (eso es una acción humana, PR-2)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if shipment_code_of_order(order):
         raise HTTPException(409, {
             "code": "shipment_exists",
@@ -795,7 +801,7 @@ def genei_link_shipment(
     Trae transportista, seguimiento y etiqueta, y el pedido entra en la cola de
     seguimiento y en el aviso al cliente como cualquier otro. No crea nada en
     Genei."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if shipment_code_of_order(order):
         raise HTTPException(409, {
             "code": "shipment_exists",
@@ -831,7 +837,7 @@ def genei_pay(
     MUEVE DINERO REAL: SIEMPRE lo dispara una persona con este botón, nunca
     automático. Si no hay saldo o Genei rechaza el pago, el error se propaga
     (502) con el mensaje de Genei — no falla en silencio."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     state = genei_state_of(order)
     code = shipment_code_of_order(order)
     if not code:
@@ -899,7 +905,7 @@ def genei_fetch_label(
     `label_created` (como el flujo manual)."""
     from app.erp.api.shipping import _store_new_file, _transition_on_etiqueta  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     code = shipment_code_of_order(order)
     if not code:
         raise HTTPException(409, {
@@ -972,7 +978,7 @@ def genei_refresh(
         safe_tracking,
     )
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     code = shipment_code_of_order(order)
     if not code:
         raise HTTPException(409, {
@@ -1002,7 +1008,7 @@ def genei_delete_shipment(
 ) -> dict[str, Any]:
     """Elimina/cancela el envío en Genei (mientras no esté en tránsito) y limpia
     el estado del pedido."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     code = shipment_code_of_order(order)
     if not code:
         raise HTTPException(409, {
@@ -1073,7 +1079,7 @@ def genei_customer_email_preview(
     """El aviso de envío tal como saldría (a quién, desde dónde, idioma,
     asunto, cuerpo) y su estado (enviado / pendiente / error). No envía."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     _require_any_shipment(order)
     return build_shipment_email(session, order, lang=lang)
 
@@ -1087,7 +1093,7 @@ def genei_customer_email_send(
 ) -> dict[str, Any]:
     """Enviar (o REENVIAR) a mano el aviso de envío al cliente, con el nº de
     seguimiento y el enlace, en su idioma. Queda en el timeline del pedido."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     _require_any_shipment(order)
     body = payload or CustomerEmailIn()
     to = (body.to or "").strip() or None

@@ -16,7 +16,7 @@ from fastapi import Depends
 
 from app.core.auth import get_current_user
 from app.core.errors import forbidden
-from app.erp.capabilities import Cap, has_capability
+from app.erp.capabilities import CAPS_TRANSICIONES, Cap, has_capability
 from app.models.crm import User, UserRole
 
 # --- conjuntos de roles legacy (respaldo; ya no son la fuente de verdad) ------
@@ -103,6 +103,11 @@ require_office_view = require_capability(Cap.OFFICE_VIEW)
 #: cualquiera; el taller, sus muestras. La comprobación por pedido la hace
 #: `can_manage_order` en el endpoint.
 require_order_manage = require_any_capability(Cap.ORDERS_CREATE, Cap.SAMPLES_CREATE)
+
+#: Disparar transiciones de estado: quien TRABAJA pedidos (oficina, muestras o
+#: taller). Ver el ERP no basta: el Responsable/Usuario del CRM, que solo lo
+#: ven, no cambian pago, transporte ni factura (auditoría 30/10/2026, F-4).
+require_order_transitions = require_any_capability(*CAPS_TRANSICIONES)
 
 # --- legacy (respaldo): «edición de oficina» = quien puede crear pedidos
 # (admin, pedidos, comercial), seguro para multi-rol. Los endpoints sensibles

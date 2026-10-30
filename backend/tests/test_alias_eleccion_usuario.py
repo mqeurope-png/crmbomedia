@@ -326,9 +326,22 @@ def test_la_api_registra_la_eleccion_y_el_sync_la_respeta(
         _item(BART, False), _item(STREAMTEC, True, True), _item(ARTISJET, True),
         _item(MQEUROPE, True), _item(INFO_BOMEDIA, False), _item(NORMA, False),
     ]}
+    # Desde «mi cuenta» no se encienden remitentes que el admin no ha dado
+    # (#570; auditoría 30/10/2026, F-2): 403 y nada cambia.
     with patch.object(gmail_service, "_client_for", return_value=_gmail(*TODOS)):
         r = http.put("/api/emails/aliases/preferences", json=cuerpo,
                      headers=auth_headers(http, "manager"))
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "remitente_no_concedido"
+    with session_factory() as s:
+        assert _prefs(s, _uid(s, UserRole.MANAGER))[ARTISJET].is_allowed is False
+
+    # La misma elección la hace el admin desde Usuarios, y queda registrada.
+    with session_factory() as s:
+        bart_id = _uid(s, UserRole.MANAGER)
+    with patch.object(gmail_service, "_client_for", return_value=_gmail(*TODOS)):
+        r = http.put(f"/api/users/{bart_id}/senders", json=cuerpo,
+                     headers=auth_headers(http, "admin"))
     assert r.status_code == 200, r.text
     por_email = {a["send_as_email"]: a for a in r.json()}
     assert por_email[BART]["user_pref_allowed"] is False

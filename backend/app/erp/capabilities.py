@@ -171,6 +171,18 @@ def can_view_web_orders(user: Any) -> bool:
     return has_capability(user, Cap.ORDERS_VIEW_WEB)
 
 
+#: Quien TRABAJA pedidos y por tanto puede disparar transiciones de estado:
+#: la oficina, las muestras o el taller. Ver el ERP no basta (F-4, 30/10/2026).
+CAPS_TRANSICIONES = (
+    Cap.ORDERS_CREATE, Cap.SAMPLES_CREATE, Cap.SAT_PREPARE, Cap.SAT_SHIPPING,
+    Cap.SAT_TRACKING,
+)
+
+
+def can_fire_transitions(user: Any) -> bool:
+    return any(has_capability(user, c) for c in CAPS_TRANSICIONES)
+
+
 def can_manage_order(user: Any, order: Any) -> bool:
     """¿Puede gestionar ESTE pedido (completarlo, anularlo, resolver sus
     incidencias)? La oficina (`erp.orders.create`), cualquiera; quien solo da

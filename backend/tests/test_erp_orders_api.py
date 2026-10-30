@@ -377,7 +377,7 @@ def test_transition_endpoint_maps_engine_errors_to_http(client):
     r_role = _fire(client, oid, "payment", "paid", role="user")
     assert r_role.status_code == 403
     # evidencia faltante → 422 (reembolso sin motivo).
-    _fire(client, oid, "payment", "paid", role="manager")
+    _fire(client, oid, "payment", "paid", role="pedidos")
     r_ev = _fire(client, oid, "payment", "refunded", role="admin")
     assert r_ev.status_code == 422
     # dominio inválido → 400.
@@ -390,7 +390,7 @@ def test_transition_endpoint_maps_engine_errors_to_http(client):
 
 def test_full_flow_via_api_and_available_transitions(client):
     oid = _create(client)["id"]
-    _fire(client, oid, "payment", "paid", role="manager")
+    _fire(client, oid, "payment", "paid", role="pedidos")
     client.post(f"/api/erp/orders/{oid}/approve",
                 headers=auth_headers(client, "pedidos"))
     _fire(client, oid, "preparation", "preparing", role="sat")
@@ -418,7 +418,7 @@ def test_timeline_unifies_status_and_exceptions_sorted_desc(
     client, session_factory
 ):
     oid = _create(client)["id"]
-    _fire(client, oid, "payment", "paid", role="manager")
+    _fire(client, oid, "payment", "paid", role="pedidos")
     with session_factory() as s:
         s.add(ErpException(
             type=ExceptionType.STOCK_SHORTAGE, subtype="eta_set", order_id=oid,

@@ -313,10 +313,12 @@ def download_shipping_file(
     el diálogo del navegador — no hay impresora térmica en el taller). Con
     `thumb=1` y una foto, una miniatura JPEG pequeña (tarjetas de la Cola SAT y
     ficha: no se descargan fotos de varios MB solo para pintarlas)."""
-    _ = current_user
     f = session.get(ShipmentFile, file_id)
     if f is None or f.order_id != order_id:
         raise not_found("ShipmentFile")
+    # Como el listado de ficheros: no se descargan los de un pedido web que
+    # el usuario no puede ver (F-3).
+    _get_order(session, order_id, current_user)
     try:
         data = get_shipping_storage().read(f.storage_path)
     except (StorageError, NotImplementedError) as exc:

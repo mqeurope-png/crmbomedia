@@ -880,6 +880,37 @@ def _step_move_opportunity_stage(
 EMAIL_DAILY_CAP = 400  # margen sobre Gmail 500/día
 
 
+def _remitente_fijo_permitido(session, run, alias: str | None) -> bool:
+    """Un remitente «fijo» solo vale si el autor del workflow puede usarlo:
+    los globales los crea el admin (cualquiera vale); en uno privado, el
+    autor no admin solo envía desde los remitentes que el admin le ha
+    concedido o desde su propia dirección (auditoría 30/10/2026, F-2: si
+    no, un workflow propio enviaba como cualquier compañero)."""
+    from app.models.crm import UserEmailAliasPref, UserRole  # noqa: PLC0415
+    from app.models.workflows import Workflow  # noqa: PLC0415
+
+    workflow = session.get(Workflow, run.workflow_id)
+    if workflow is None or workflow.owner_user_id is None:
+        return True
+    autor = session.get(User, workflow.owner_user_id)
+    if autor is None:
+        return False
+    if autor.role == UserRole.ADMIN:
+        return True
+    clave = (alias or "").strip().lower()
+    if not clave:
+        return False
+    if clave == (autor.email or "").strip().lower():
+        return True
+    concedidos = session.scalars(
+        select(UserEmailAliasPref.alias_email).where(
+            UserEmailAliasPref.user_id == autor.id,
+            UserEmailAliasPref.is_allowed.is_(True),
+        )
+    )
+    return any(a.strip().lower() == clave for a in concedidos)
+
+
 def _resolve_workflow_from_alias(
     *,
     session,
@@ -1105,6 +1136,16 @@ def _step_send_email(session, run, step, contact) -> StepResult:
                 f"El propietario {owner_label} no tiene aliases "
                 f"configurados en /account"
             )[:500],
+        )
+    if alias_mode == "fixed" and not _remitente_fijo_permitido(
+        session, run, from_alias_resolved,
+    ):
+        return StepResult(
+            status="failed",
+            error=(
+                "El remitente fijo no está entre los que el administrador ha "
+                "concedido al autor del workflow."
+            ),
         )
     if alias_warning:
         log.warning("workflows alias_warning %s", alias_warning)

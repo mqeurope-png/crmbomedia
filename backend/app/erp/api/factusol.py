@@ -633,6 +633,10 @@ def link_document_to_order(
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "order_not_found", "detail": "El pedido no existe en BoHub.",
         })
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
+    # Un pedido web no se toca si no se puede ver (Comercial; F-3).
+    order_web_or_403(order, current_user)
     from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
 
     if is_sample_order(order):

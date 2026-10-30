@@ -801,25 +801,27 @@ def sat_history(
     anulados/quitados: es un registro de lo que pasó, y enseña el estado
     actual de cada pedido.
     """
-    _ = current_user
+    from app.erp.api.orders import sin_web_si_no_puede  # noqa: PLC0415
+
     filters = {"desde": desde, "hasta": hasta, "store_slug": store_slug, "q": q}
 
     email_rows = session.execute(
         _apply_filters(
-            select(AuditLog, Order).join(Order, Order.id == AuditLog.target_id).where(
+            sin_web_si_no_puede(select(AuditLog, Order).join(
+                Order, Order.id == AuditLog.target_id).where(
                 AuditLog.action == "erp.order_emailed",
                 AuditLog.target_type == "order",
-            ), **filters,
+            ), current_user), **filters,
         ).order_by(AuditLog.created_at.desc()).limit(limit)
     ).all()
     approval_rows = session.execute(
         _apply_filters(
-            select(OrderStatusHistory, Order).join(
+            sin_web_si_no_puede(select(OrderStatusHistory, Order).join(
                 Order, Order.id == OrderStatusHistory.order_id,
             ).where(
                 OrderStatusHistory.domain == StatusDomain.PREPARATION,
                 OrderStatusHistory.to_status == PreparationStatus.IN_QUEUE.value,
-            ), **filters,
+            ), current_user), **filters,
         ).order_by(OrderStatusHistory.changed_at.desc()).limit(limit)
     ).all()
 
@@ -945,15 +947,14 @@ def sat_incidencias(
     Distingue el `tipo` para que el operario sepa qué resolver. «Resolver» de
     envío devuelve a «en tránsito»; el de pedido cierra la excepción (endpoint
     de excepciones)."""
-    _ = current_user
-    from app.erp.api.orders import customer_names  # noqa: PLC0415
+    from app.erp.api.orders import customer_names, sin_web_si_no_puede  # noqa: PLC0415
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
     from app.erp.seguimiento import EXCEPTION_TYPE_LABELS, _exception_motivo  # noqa: PLC0415
 
     filters = {"desde": desde, "hasta": hasta, "store_slug": store_slug, "q": q}
-    envio_orders = list(session.scalars(_apply_filters(
-        select(Order).where(Order.transport_status == TransportStatus.INCIDENT), **filters,
-    )))
+    envio_orders = list(session.scalars(_apply_filters(sin_web_si_no_puede(
+        select(Order).where(Order.transport_status == TransportStatus.INCIDENT), current_user,
+    ), **filters)))
     excs = list(session.scalars(
         select(ErpException).where(
             ErpException.status.in_([ExceptionStatus.OPEN, ExceptionStatus.IN_PROGRESS]),
@@ -962,9 +963,9 @@ def sat_incidencias(
     exc_by_order: dict[str, ErpException] = {}
     for e in excs:
         exc_by_order.setdefault(e.order_id, e)      # la más reciente por pedido
-    pedido_orders = list(session.scalars(_apply_filters(
-        select(Order).where(Order.id.in_(set(exc_by_order))), **filters,
-    ))) if exc_by_order else []
+    pedido_orders = list(session.scalars(_apply_filters(sin_web_si_no_puede(
+        select(Order).where(Order.id.in_(set(exc_by_order))), current_user,
+    ), **filters))) if exc_by_order else []
 
     todos = list({o.id: o for o in (*envio_orders, *pedido_orders)}.values())
     names = customer_names(session, todos)
@@ -1018,9 +1019,12 @@ def sat_resolve_shipping_incidencia(
     """Marca resuelta una incidencia de ENVÍO: el transporte vuelve a «en
     tránsito» y el pedido sale de «Incidencias» → «Enviados». El SAT puede
     hacerlo desde la Cola SAT (el arco `incident → in_transit` se abrió a SAT)."""
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
     order = session.get(Order, order_id)
     if order is None:
         raise not_found("Pedido")
+    order_web_or_403(order, current_user)
     current = getattr(order.transport_status, "value", order.transport_status)
     if current != TransportStatus.INCIDENT.value:
         raise HTTPException(409, {
@@ -1051,10 +1055,12 @@ def sat_find_order(
     """Resuelve un nº de pedido (exacto, sin distinguir mayúsculas) a su id,
     para «Añadir pedido a la cola». Devuelve también en qué situación está
     (ya en cola / anulado / quitado) para que la UI avise antes de intentar."""
-    _ = current_user
+    from app.erp.api.orders import sin_web_si_no_puede  # noqa: PLC0415
+
     wanted = number.strip().lower()
     order = session.scalar(
-        select(Order).where(func.lower(Order.order_number) == wanted)
+        sin_web_si_no_puede(select(Order).where(func.lower(Order.order_number) == wanted),
+                            current_user)
         .order_by(Order.created_at.desc()).limit(1)
     )
     if order is None:
