@@ -162,6 +162,14 @@ def is_from_document(order: Order) -> bool:
     return _v(order.external_source) in _DESDE_DOCUMENTO
 
 
+def se_manda_al_sat(order: Order) -> bool:
+    """¿Va al taller con «Mandar a SAT» (modal con confirmación) en vez de con
+    «Aprobar» a secas? Los creados desde un documento de FACTUSOL (#587) y los
+    pedidos web traídos a mano desde «en espera» (31/10/2026: van al taller
+    cuando lo decide Bart, y nunca de un clic sin preguntar)."""
+    return is_from_document(order) or getattr(order, "manual_web_import_at", None) is not None
+
+
 # --- datos del cliente de un pedido web ----------------------------------------
 
 #: Lo que puede faltarle a un pedido web para saber a quién se factura.
@@ -496,13 +504,14 @@ def _next_step(order: Order, *, factura_enviada: bool = False) -> tuple[str, str
             )
         return (QUEUE_LISTO, "ninguna", "Muestra enviada.")
     if not is_approved(order):
-        if is_from_document(order):
-            # Creado desde una proforma, un albarán o una factura: ya está
-            # decidido; lo que falta es que el taller lo prepare y lo envíe.
+        if se_manda_al_sat(order):
+            # Creado desde una proforma, un albarán o una factura (ya está
+            # decidido), o web traído a mano: lo que falta es mandarlo al
+            # taller, con su modal.
             return (
                 QUEUE_POR_REVISAR, "mandar_sat",
-                "Sale de un documento de FACTUSOL: mándalo al SAT para su "
-                "preparación y envío.",
+                "Mándalo al SAT para su preparación y envío (se confirma en "
+                "una ventana con lo que se manda).",
             )
         return (
             QUEUE_POR_REVISAR, "aprobar",
@@ -628,6 +637,9 @@ def order_workflow(
         # Pasos de la línea de vida, todos obligatorios: … → Factura →
         # Factura enviada → Cobro. El SAT/«Enviado» no es un paso.
         "steps": order_steps(order, invoice_emailed_at=invoice_sent_at),
+        # El pago es un hecho que se enseña, no una etapa (31/10/2026, decisión
+        # de Bart): distintivo junto a la línea de vida, fuera de los pasos.
+        "pago": pago_distintivo(order),
         "regime": company_regime(company, issuer_iso2=emisor),
         # Cliente del pedido: lo que la ficha enseña en cabecera (país +
         # régimen) y en el bloque FACTUSOL (nº de cliente o «sin vincular»).
@@ -855,17 +867,17 @@ def _company_of(
 #: SAT/«Enviado» no es un paso (hay pedidos que no pasan por el taller): vive en
 #: la sección «Envío y seguimiento» de la ficha y en la Cola SAT.
 STEP_KEYS: tuple[str, ...] = (
-    "creado", "pagado", "aprobado", "albaran", "factura", "factura_enviada", "cobro",
+    "creado", "aprobado", "albaran", "factura", "factura_enviada", "cobro",
 )
 #: Pasos que NO APLICAN en una muestra / envío no facturable: no se cobra ni se
 #: factura, así que su ciclo es «Creado → (Preparación) → Enviado». Se pintan
 #: en gris igual que el albarán de un pedido web. «Aprobado» NO está aquí: la
 #: muestra entra a la Cola SAT al crearse, así que ese paso se cumple de verdad.
 SAMPLE_SKIPPED_STEPS: frozenset[str] = frozenset(
-    {"pagado", "albaran", "factura", "factura_enviada", "cobro"}
+    {"albaran", "factura", "factura_enviada", "cobro"}
 )
 STEP_LABELS: dict[str, str] = {
-    "creado": "Creado", "pagado": "Pagado", "aprobado": "Aprobado",
+    "creado": "Creado", "aprobado": "Aprobado",
     "albaran": "Albarán", "factura": "Factura", "cobro": "Cobro",
     "factura_enviada": "Factura enviada",
 }
@@ -888,13 +900,40 @@ def _factura_detail(order: Order) -> str:
     return label
 
 
+#: La acción del «siguiente paso» → el paso de la línea de vida que es.
+PASO_DE_LA_ACCION: dict[str, str] = {
+    "aprobar": "aprobado", "mandar_sat": "aprobado", "crear_albaran": "albaran",
+    "emitir_factura": "factura", "enviar_factura": "factura_enviada",
+    "registrar_cobro": "cobro",
+}
+
+
+def pago_distintivo(order: Order) -> dict[str, Any]:
+    """«Pagado» / «Sin pagar», con el importe y la forma de pago (la de la
+    tienda, la apuntada al pagar o la del documento de origen). Una muestra no
+    se cobra."""
+    from app.erp.factusol_albaran import packing_of, payment_intent  # noqa: PLC0415
+
+    intent = payment_intent(order) or {}
+    src = packing_of(order).get("factusol_source")
+    forma = (order.payment_method_title or intent.get("forma_pago_nombre")
+             or (src.get("forma_pago_nombre") if isinstance(src, dict) else None))
+    return {
+        "no_se_cobra": is_sample_order(order) or is_no_charge(order),
+        "pagado": is_paid(order),
+        "estado": _v(order.payment_status) or None,
+        "importe": _importe(order),
+        "forma": forma or None,
+    }
+
+
 def order_steps(
     order: Order, *, invoice_emailed_at: str | None = None,
 ) -> list[dict[str, Any]]:
     """Estado de cada paso de la línea de vida: `done` (hecho, con su detalle),
     `now` (el primero pendiente), `pending` o `skipped`.
 
-    Pasos: Creado → Pagado → Aprobado → Albarán → Factura → Factura enviada →
+    Pasos: Creado → Aprobado → Albarán → Factura → Factura enviada →
     Cobro. El albarán es opcional en un pedido WEB (lo crea WooCommerce, no
     BoHub): si no hay número se marca `skipped` («no aplica») y nunca es el
     paso actual. «Factura enviada» (`invoice_emailed_at`: por email desde
@@ -903,7 +942,6 @@ def order_steps(
     sección «Envío y seguimiento»."""
     done: dict[str, tuple[bool, str]] = {
         "creado": (True, _fecha(order.placed_at or order.created_at)),
-        "pagado": (is_paid(order), "" if not is_paid(order) else _importe(order)),
         "aprobado": (is_approved(order), _fecha(order.approved_at)),
         "albaran": (
             bool(order.factusol_albaran_number),
@@ -913,6 +951,12 @@ def order_steps(
         "factura_enviada": (bool(invoice_emailed_at), _fecha_iso(invoice_emailed_at)),
         "cobro": (is_cobrada(order), "cobrada" if is_cobrada(order) else ""),
     }
+    # El paso actual y la acción ofrecida no pueden ser pasos distintos: si la
+    # acción es la de un paso de la línea, ese es el actual.
+    _, accion, _ = _next_step(order, factura_enviada=bool(invoice_emailed_at))
+    paso_de_la_accion = PASO_DE_LA_ACCION.get(accion)
+    if paso_de_la_accion is not None and done.get(paso_de_la_accion, (False,))[0]:
+        paso_de_la_accion = None
     steps: list[dict[str, Any]] = []
     now_set = False
     for key in STEP_KEYS:
@@ -927,13 +971,18 @@ def order_steps(
             # facturar. Su ciclo es corto (creado → preparación → enviado).
             state = "skipped"
             detail = "no facturable"
+        elif paso_de_la_accion is not None and key != paso_de_la_accion:
+            # El paso actual es el de la acción que se ofrece; uno anterior sin
+            # hacer (p. ej. el albarán mientras toca emitir la factura) se ve
+            # pendiente, no como actual.
+            state = "pending"
         elif not now_set:
             state = "now"
             now_set = True
         else:
             state = "pending"
         label = STEP_LABELS[key]
-        if key == "aprobado" and is_from_document(order):
+        if key == "aprobado" and se_manda_al_sat(order):
             # Desde un documento no se «aprueba»: se manda al SAT.
             label = "Mandado al SAT"
         steps.append({

@@ -110,6 +110,16 @@ export type WorkflowStep = {
   optional?: boolean;
 };
 
+/** «Pagado» / «Sin pagar», con importe y forma de pago (31/10/2026: el pago
+ *  es un hecho que se enseña, no una etapa de la línea de vida). */
+export type WorkflowPago = {
+  no_se_cobra: boolean;
+  pagado: boolean;
+  estado: string | null;
+  importe: string;
+  forma: string | null;
+};
+
 export type WorkflowCompany = {
   id: string;
   name: string;
@@ -128,6 +138,8 @@ export type OrderWorkflow = {
   alerts: WorkflowAlert[];
   blocked: boolean;
   steps: WorkflowStep[];
+  /** El pago, como distintivo junto a la línea de vida (no es un paso). */
+  pago?: WorkflowPago;
   /** Régimen de IVA del cliente: nacional / intracomunitario / exportacion. */
   regime: string | null;
   company: WorkflowCompany | null;
@@ -3885,7 +3897,7 @@ export type OrderEmailSendPayload = {
 /** El correo al taller pedido en «Mandar a SAT»: enviado, fallido (se
  *  reintenta) o esperando a que exista el albarán. */
 export type SatCorreoEstado = {
-  estado: "enviado" | "fallido" | "pendiente_albaran" | "enviando";
+  estado: "enviado" | "fallido" | "pendiente_albaran" | "enviando" | "cancelado";
   detalle: string | null;
   at: string | null;
 };
@@ -3899,6 +3911,10 @@ export type MandarSatInfo = {
   factura_sin_albaran: boolean;
   /** Desde una factura o un albarán y sin albarán: solo se vincula. */
   albaran_solo_vincular?: boolean;
+  /** Pedido web: el albarán lo crea WooCommerce. */
+  es_web?: boolean;
+  /** En la Cola SAT y el taller aún no ha empezado: se puede deshacer. */
+  deshacible?: boolean;
   correo: SatCorreoEstado | null;
 };
 
@@ -3920,6 +3936,16 @@ export async function mandarASat(
 ): Promise<MandarSatResult> {
   return apiFetch(`/api/erp/orders/${orderId}/mandar-sat`, {
     method: "POST", body: JSON.stringify({ confirm: true, correo }),
+  });
+}
+
+/** «Deshacer envío al SAT»: vuelve a «Por revisar» si el taller no ha
+ *  empezado (409 con el motivo si ya prepara o lo ha embalado). */
+export async function deshacerEnvioSat(
+  orderId: string, motivo?: string,
+): Promise<{ aviso_correo: string | null; order: OrderDetail }> {
+  return apiFetch(`/api/erp/orders/${orderId}/deshacer-sat`, {
+    method: "POST", body: JSON.stringify({ confirm: true, motivo: motivo ?? null }),
   });
 }
 

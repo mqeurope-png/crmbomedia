@@ -100,10 +100,12 @@ def test_workflow_por_revisar(session_factory) -> None:
     assert wf["queue"] == "por_revisar" and wf["next_action"] == "aprobar"
     assert wf["next_action_label"] == "Aprobar"
     assert wf["blocked"] is False
-    # Stepper: creado y pagado hechos, aprobado es el paso ACTUAL.
+    # Stepper: creado hecho, aprobado es el paso ACTUAL; el pago va aparte,
+    # como distintivo (31/10/2026).
     states = {s["key"]: s["state"] for s in wf["steps"]}
-    assert states["creado"] == "done" and states["pagado"] == "done"
+    assert states["creado"] == "done" and "pagado" not in states
     assert states["aprobado"] == "now" and states["factura"] == "pending"
+    assert wf["pago"]["pagado"] is True
 
 
 def test_workflow_por_facturar(session_factory) -> None:
@@ -347,7 +349,7 @@ def test_ficha_devuelve_el_mismo_workflow(http, session_factory) -> None:
     assert ficha["workflow"]["queue"] == en_bandeja["queue"]
     assert ficha["workflow"]["next_action"] == en_bandeja["next_action"]
     assert ficha["workflow"]["alerts"] == en_bandeja["alerts"]
-    assert len(ficha["workflow"]["steps"]) == 7
+    assert len(ficha["workflow"]["steps"]) == 6   # «Pagado» es distintivo, no paso
     # Cliente del pedido: lo que pinta la cabecera (país + régimen) y el
     # bloque FACTUSOL de la ficha (nº de cliente vinculado).
     assert ficha["workflow"]["company"] == {
@@ -408,7 +410,7 @@ def test_factura_enviada_es_el_paso_6_antes_del_cobro(session_factory) -> None:
                invoice_status="invoiced_by_erp", factusol_invoice_number="260070")
     wf = _wf(session_factory, "fe")
     keys = [st["key"] for st in wf["steps"]]
-    assert keys == ["creado", "pagado", "aprobado", "albaran", "factura",
+    assert keys == ["creado", "aprobado", "albaran", "factura",
                     "factura_enviada", "cobro"]
     assert "enviado" not in keys
     steps = {st["key"]: st for st in wf["steps"]}

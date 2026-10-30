@@ -1,5 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
-import { WorkflowProgress, WorkflowSteps, stepProgress } from "./WorkflowSteps";
+import { PagoDistintivo, WorkflowProgress, WorkflowSteps, stepProgress } from "./WorkflowSteps";
 import type { WorkflowStep } from "../../../lib/erpApi";
 
 /** Lote 2 · PR-2 — la «línea de vida»: el stepper horizontal de siempre y el
@@ -85,5 +85,20 @@ describe("WorkflowProgress", () => {
     expect(stepProgress(done)).toEqual({ current: null, label: null, total: 7, done: 7 });
     // 4 hechos: el albarán omitido no cuenta como hecho.
     expect(stepProgress(STEPS)).toEqual({ current: 6, label: "Cobro", total: 7, done: 4 });
+  });
+});
+
+describe("PagoDistintivo (31/10/2026: el pago fuera de los pasos)", () => {
+  it("dice si está pagado, con importe y forma de pago", () => {
+    const { rerender } = render(<PagoDistintivo pago={{
+      no_se_cobra: false, pagado: true, estado: "paid", importe: "121.00 EUR",
+      forma: "Transferencia" }} />);
+    expect(screen.getByLabelText("Pago")).toHaveTextContent("Pagado · 121.00 EUR · Transferencia");
+    rerender(<PagoDistintivo pago={{
+      no_se_cobra: false, pagado: false, estado: "pending", importe: "50.00 EUR", forma: null }} />);
+    expect(screen.getByLabelText("Pago")).toHaveTextContent("Sin pagar · 50.00 EUR");
+    rerender(<PagoDistintivo pago={{
+      no_se_cobra: true, pagado: false, estado: "pending", importe: "0.00 EUR", forma: null }} />);
+    expect(screen.getByLabelText("Pago")).toHaveTextContent("No se cobra");
   });
 });

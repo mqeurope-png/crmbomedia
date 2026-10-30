@@ -470,13 +470,18 @@ def test_traido_y_pagado_es_identico_al_que_entra_solo_al_pagarse(factory, fs):
             solo = s2.scalar(select(Order))
             assert es_traido_a_mano(traido) and not es_traido_a_mano(solo)
             a, b = _foto(s1, traido), _foto(s2, solo)
+            # La única diferencia (31/10/2026): el traído NO entra solo en la
+            # Cola SAT al cobrarse (va con «Mandar a SAT»); el otro sí.
+            assert a["columnas"].pop("preparation_status") == PreparationStatus.PENDING_REVIEW
+            assert b["columnas"].pop("preparation_status") == PreparationStatus.IN_QUEUE
             for clave in a:
+                if clave == "historia":
+                    continue      # el otro lleva la fila de su entrada automática
                 assert a[clave] == b[clave], clave
             # Y lo que se compara no es trivial.
             assert a["columnas"]["order_number"] == "FLUXLA-5873"
             assert a["columnas"]["payment_status"] == PaymentStatus.PAID
-            assert a["columnas"]["preparation_status"] == PreparationStatus.IN_QUEUE
-            assert len(a["lineas"]) == 4 and a["historia"]
+            assert len(a["lineas"]) == 4 and b["historia"] and not a["historia"]
     finally:
         Base.metadata.drop_all(engine2)
     assert fs.escrituras == []
@@ -497,11 +502,12 @@ def test_con_el_pedido_traido_el_webhook_de_pago_actualiza_y_no_duplica(factory)
         o = s.get(Order, r["order_id"])
         assert o.payment_status == PaymentStatus.PAID
         assert o.woo_status == "completed"
-        # Encolado como el automático: a la Cola SAT, con su fila de historial.
-        assert o.preparation_status == PreparationStatus.IN_QUEUE
+        # 31/10/2026: un traído a mano NO entra solo en la Cola SAT al cobrarse;
+        # va al taller cuando lo decide Bart, con «Mandar a SAT».
+        assert o.preparation_status == PreparationStatus.PENDING_REVIEW
         motivos = [h.reason for h in s.scalars(
             select(OrderStatusHistory).where(OrderStatusHistory.order_id == o.id))]
-        assert motivos == [AUTO_ENQUEUE_REASON]
+        assert AUTO_ENQUEUE_REASON not in motivos
         assert es_traido_a_mano(o)
         assert _packing(o)["traido_a_mano"]["diferencias"] is None
 
@@ -735,7 +741,7 @@ def test_traido_con_el_pedido_cambiado_al_pagarse_deja_constancia(factory, clien
                                                  OrderLine.product_sku == "PMP-12002"))
         assert float(linea.quantity) == 1.0
         assert o.payment_status == PaymentStatus.PAID
-        assert o.preparation_status == PreparationStatus.IN_QUEUE
+        assert o.preparation_status == PreparationStatus.PENDING_REVIEW
         # El veredicto de FACTUSOL sigue ahí.
         assert _packing(o)["traido_a_mano"]["factusol"]["codigo"] == "enlazado"
 

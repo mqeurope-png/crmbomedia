@@ -232,7 +232,9 @@ def test_traido_sin_cobrar_se_aprueba_prepara_embala_y_envia(factory, http):
     with factory() as s:
         oid = _pedido(s, _store(s)).id
 
-    r = http.post(f"/api/erp/orders/{oid}/approve", headers=auth_headers(http, "pedidos"))
+    # Se manda al taller con «Mandar a SAT» (31/10/2026), no con «Aprobar».
+    r = http.post(f"/api/erp/orders/{oid}/mandar-sat", json={"confirm": True},
+                  headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     # «Empezar preparación»: la puerta de pago no le aplica (traerlo autorizó).
     r = _transicion(http, oid, "sat", "preparation", "preparing")
@@ -435,7 +437,8 @@ def test_pagados_que_faltan_refresca_el_traido_que_la_tienda_cobro_sin_webhook(f
         o = s.get(Order, traido_id)
         assert o.payment_status == PaymentStatus.PAID
         assert o.woo_status == "processing"
-        assert o.preparation_status == PreparationStatus.IN_QUEUE     # como el automático
+        # No entra solo en la Cola SAT al cobrarse (31/10/2026): «Mandar a SAT».
+        assert o.preparation_status == PreparationStatus.PENDING_REVIEW
         assert o.manual_web_import_at is not None                     # sigue siendo traído
         normal = s.get(Order, normal_id)
         assert normal.payment_status == PaymentStatus.PENDING          # no se refresca

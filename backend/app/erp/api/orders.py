@@ -57,7 +57,7 @@ from app.erp.sample_orders import (
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
 from app.erp.woo_status import is_refunded
-from app.erp.workflow import order_workflow
+from app.erp.workflow import order_workflow, se_manda_al_sat
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
@@ -404,6 +404,10 @@ def _mandar_sat_info(session: Session, o: Order) -> dict[str, Any]:
         "albaran_lo_crea_bohub": (not o.factusol_albaran_number
                                   and albaran_blocker(o, session) is None),
         "factura_sin_albaran": is_factura_source(o) and not o.factusol_albaran_number,
+        # Web: el albarán lo crea WooCommerce, no BoHub.
+        "es_web": _status_value(o.external_source) == "woocommerce",
+        # «Deshacer envío al SAT»: solo mientras el taller no ha empezado.
+        "deshacible": _status_value(o.preparation_status) == "in_queue",
         # Desde factura o albarán: su albarán ya existe; nunca se crea otro.
         "albaran_solo_vincular": (not o.factusol_albaran_number and (
             albaran_blocker(o, session) or ("",))[0] == "factura_source_no_albaran"),
@@ -2039,8 +2043,15 @@ def approve_order(
     current_user: User = Depends(require_erp_approve),
 ) -> dict[str, Any]:
     """Cola PEDIDOS: valida que no hay bloqueos, marca approved_at y pasa
-    preparation pending_review → in_queue (vía engine)."""
+    preparation pending_review → in_queue (vía engine). Los que van con
+    «Mandar a SAT» (desde un documento, web traídos a mano) no se aprueban a
+    secas: 409 `mandar_sat`."""
     order = _get_order(session, order_id, current_user)
+    if se_manda_al_sat(order) and _status_value(order.preparation_status) == "pending_review":
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "mandar_sat",
+            "detail": "Este pedido se manda al SAT desde su ficha, con «Mandar a SAT».",
+        })
     blockers = _blockers(session, order)
     if blockers:
         raise HTTPException(
@@ -2921,6 +2932,14 @@ def bulk_approve_orders(
             if _status_value(order.preparation_status) != "pending_review":
                 # Ya aprobado (o más allá): idempotente, se cuenta aparte.
                 already.append(order.id)
+                continue
+            if se_manda_al_sat(order):
+                # Desde un documento o web traído a mano: van al taller con
+                # «Mandar a SAT» y su ventana, no en bloque sin preguntar.
+                failed.append({
+                    "order_id": order_id, "code": "mandar_sat",
+                    "error": "Se manda al SAT desde su ficha («Mandar a SAT»).",
+                })
                 continue
             blockers = _blockers(session, order)
             if blockers:
@@ -4817,8 +4836,8 @@ def mandar_a_sat(
     albaran["crear"] = crear
     estado_correo = None
     previo = sat_correo.bloque(order) or {}
-    if correo is not None and previo.get("estado") in ("enviado", "enviando",
-                                                       "pendiente_albaran"):
+    if correo is not None and cola != "entrado" and previo.get("estado") in (
+            "enviado", "enviando", "pendiente_albaran"):
         # Ya pedido (p. ej. un segundo clic tras un corte): no se manda otra vez.
         estado_correo = sat_correo.publico(order)
     elif correo is not None:
@@ -4880,6 +4899,102 @@ def reenviar_correo_sat(
             "detail": "El correo al taller se está enviando ahora mismo: espera un momento."})
     estado = _intentar_correo_sat(session, order_id, correo, current_user)
     return {"correo": estado,
+            "order": _serialise_detail(session, _get_order(session, order_id, current_user),
+                                       current_user)}
+
+
+class DeshacerSatIn(BaseModel):
+    confirm: bool = False
+    motivo: str | None = Field(default=None, max_length=255)
+
+
+#: `packing_json`: se sacó a mano de la Cola SAT (no vuelve a entrar sola).
+SAT_DESHECHO_KEY = "sat_deshecho"
+
+
+@router.post("/{order_id}/deshacer-sat")
+def deshacer_mandar_a_sat(
+    order_id: str,
+    payload: DeshacerSatIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_approve),
+) -> dict[str, Any]:
+    """Deshace el envío al SAT (31/10/2026): el pedido sale de la Cola SAT y
+    vuelve a «Por revisar», con la aprobación quitada, SOLO si el taller aún no
+    ha empezado (`in_queue`). Preparando, embalado o más adelante: 409 y se
+    dice. Vale para cualquier pedido (documento, web, manual). No toca
+    FACTUSOL ni el cobro; el albarán, si lo tiene, se queda vinculado. Si el
+    correo al taller ya salió, se avisa (no se puede «desenviar»); si estaba
+    pendiente, no sale."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp import sat_correo  # noqa: PLC0415
+    from app.erp.factusol_albaran import packing_of, save_packing  # noqa: PLC0415
+    from app.erp.models import PreparationStatus  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required", "detail": "Deshacer requiere confirmación."})
+    _get_order(session, order_id, current_user)   # existe y se puede ver
+    # Bloqueado mientras se mira: el taller puede estar pulsando «Empezar».
+    order = session.scalars(select(Order).where(Order.id == order_id).with_for_update()
+                            .execution_options(populate_existing=True)).one()
+    if is_sample_order(order) or order.cancelled_at is not None or order.completed_at:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_deshacible",
+            "detail": "Una muestra, un pedido anulado o completado no vuelve a revisión."})
+    if (_status_value(order.transport_status) != "not_shipped"
+            or packing_of(order).get("shipment_code")):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_deshacible",
+            "detail": ("Ya tiene etiqueta o envío: no se puede deshacer el envío al SAT. "
+                       "Habla con el taller.")})
+    prep = _status_value(order.preparation_status)
+    if prep != PreparationStatus.IN_QUEUE.value:
+        detalle = {
+            PreparationStatus.PENDING_REVIEW.value: "El pedido no está en la Cola SAT.",
+            PreparationStatus.PREPARING.value:
+                "El taller ya está preparándolo: no se puede deshacer. Habla con el taller.",
+            PreparationStatus.PACKED.value:
+                "El taller ya lo ha embalado: no se puede deshacer. Habla con el taller.",
+            PreparationStatus.BLOCKED.value:
+                "Está bloqueado en el taller: resuélvelo allí antes.",
+        }.get(prep, "El pedido ya no está en la Cola SAT: no se puede deshacer.")
+        raise HTTPException(status.HTTP_409_CONFLICT, {"code": "no_deshacible",
+                                                       "detail": detalle})
+    motivo = (payload.motivo or "").strip() or "deshecho el envío al SAT"
+    session.add(OrderStatusHistory(
+        order_id=order.id, domain=StatusDomain.PREPARATION,
+        from_status=prep, to_status=PreparationStatus.PENDING_REVIEW.value,
+        changed_at=datetime.now(UTC), changed_by_user_id=current_user.id,
+        reason=f"Deshecho el envío al SAT: {motivo}"[:255],
+        metadata_json=json.dumps({"event": "sat_deshecho", "motivo": motivo}),
+    ))
+    order.preparation_status = PreparationStatus.PENDING_REVIEW.value
+    order.approved_at = None
+    order.approved_by_user_id = None
+    packing = packing_of(order)
+    packing[SAT_DESHECHO_KEY] = {"at": datetime.now(UTC).isoformat(),
+                                 "por": current_user.id, "motivo": motivo}
+    save_packing(order, packing)
+    aviso_correo = None
+    b = sat_correo.bloque(order)
+    if b and b.get("estado") in ("enviado", "enviando"):
+        aviso_correo = ("El correo al taller ya había salido: avísales de que el "
+                        "pedido vuelve a revisión.")
+    elif b:
+        # Pendiente o fallido: ya no tiene que salir.
+        sat_correo.guardar(order, "cancelado", detalle="Se deshizo el envío al SAT.")
+    record_event(
+        session, action="erp.order_status_changed", target_type="order",
+        target_id=order.id, actor=current_user,
+        metadata={"domain": StatusDomain.PREPARATION.value, "from": prep,
+                  "to": PreparationStatus.PENDING_REVIEW.value,
+                  "label": "Deshacer envío al SAT", "reason": motivo,
+                  "order_number": order.order_number},
+    )
+    session.commit()
+    return {"aviso_correo": aviso_correo,
             "order": _serialise_detail(session, _get_order(session, order_id, current_user),
                                        current_user)}
 
