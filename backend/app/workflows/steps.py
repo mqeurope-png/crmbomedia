@@ -1137,7 +1137,9 @@ def _step_send_email(session, run, step, contact) -> StepResult:
                 f"configurados en /account"
             )[:500],
         )
-    if alias_mode == "fixed" and not _remitente_fijo_permitido(
+    # Cualquier modo que no sea «del propietario» se resuelve como fijo (también
+    # los desconocidos o mal escritos), así que se comprueba igual.
+    if alias_mode not in ("owner_default", "owner_specific") and not _remitente_fijo_permitido(
         session, run, from_alias_resolved,
     ):
         return StepResult(

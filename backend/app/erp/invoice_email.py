@@ -456,8 +456,10 @@ def check_sender_alias(session: Session, user: Any, alias: str) -> dict[str, Any
     Criterio:
       1. Alias en las preferencias PERMITIDAS del usuario → ok (`preferencia`).
       2. Alias que es un send-as VERIFICADO de la cuenta de Gmail (lista en
-         vivo) → ok (`gmail`); se refresca el espejo local sin cambiar su
-         visibilidad en el compositor.
+         vivo) Y, si el usuario no es admin, además un remitente de Ajustes
+         ERP (tienda/serie) o su propia dirección → ok (`gmail`); se refresca
+         el espejo local sin cambiar su visibilidad en el compositor. Otro
+         verificado → no (`no_concedido`, F-2 de la auditoría 30/10/2026).
       3. Si Gmail no responde, solo se admite un remitente configurado en
          Ajustes ERP del que ya haya espejo local (lo puso el sync) → ok
          (`gmail_cache`).
@@ -493,6 +495,16 @@ def check_sender_alias(session: Session, user: Any, alias: str) -> dict[str, Any
     found = verified.get(key)
     if found is None:
         return {"ok": False, "source": None, "reason": "not_in_gmail"}
+    # Verificado en Gmail no basta para un no-admin: solo los remitentes que
+    # el ERP propone (tienda/serie, Ajustes ERP) o los suyos (criterio 1).
+    # Si no, un comercial enviaba la factura como cualquier compañero
+    # (#570; auditoría 30/10/2026, F-2).
+    from app.models.crm import UserRole  # noqa: PLC0415
+
+    if (getattr(user, "role", None) != UserRole.ADMIN
+            and key not in erp_configured_senders(session)
+            and key != (getattr(user, "email", "") or "").strip().lower()):
+        return {"ok": False, "source": None, "reason": "no_concedido"}
     # Espejo local al día (fila oculta si no existía: la visibilidad en el
     # compositor sigue siendo decisión del usuario / del sync).
     display = found.get("display_name") or None
@@ -577,6 +589,10 @@ def build_invoice_email_preview(
         fop_names=fop_names,
     )
     order = _order_for(session, order_id, serie=serie, codigo=codigo, data=data)
+    # Un pedido web no se enseña ni se anota a quien no ve web (F-3).
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
+    order_web_or_403(order, current_user)
     suggestion = suggest_pdf_language(session, "facturas", data, order=order)
     lang = lang_override if lang_override in SUPPORTED_LANGS else suggestion["lang"]
     source = "selector" if lang_override in SUPPORTED_LANGS else suggestion["source"]
@@ -722,6 +738,10 @@ def send_invoice_email(
     )
     # Antes de generar nada: el pedido (verificado si viene de la ficha).
     order = _order_for(session, order_id, serie=serie, codigo=codigo, data=data)
+    # Un pedido web no se enseña ni se anota a quien no ve web (F-3).
+    from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
+    order_web_or_403(order, current_user)
     company = company if company is not None else company_for_serie(session, serie)
     pdf = generate_document_pdf(
         data, company=company, lang=lang,

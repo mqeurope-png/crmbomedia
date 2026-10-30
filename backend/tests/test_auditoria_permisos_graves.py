@@ -198,3 +198,93 @@ def test_f4_el_responsable_sin_rol_erp_no_cambia_el_estado(client, session_facto
         m.erp_roles = '["pedidos"]'
         s.commit()
     assert _fire(client, oid, "payment", "paid", role="manager").status_code == 200
+
+
+# --- lo que encontró la revisión -------------------------------------------------------
+
+
+def test_f2_un_modo_de_remitente_desconocido_tambien_se_comprueba(session_factory) -> None:  # noqa: F811
+    """`_resolve_workflow_from_alias` trata un modo desconocido como fijo:
+    la comprobación del remitente tiene que cubrirlo igual."""
+    from app.workflows import steps
+
+    with session_factory() as s:
+        uid = _uid(s, UserRole.USER)
+        s.add(UserEmailAliasPref(user_id=uid, alias_email="ventas@figurante.example",
+                                 is_allowed=True))
+        s.commit()
+        alias, _ = steps._resolve_workflow_from_alias(
+            session=s, owner_id=uid, mode="fijo", fixed_alias="otro@figurante.example",
+            wanted_display_name=None)
+    assert alias == "otro@figurante.example"     # se comporta como fijo…
+    import inspect
+
+    # …y el paso comprueba todo lo que no sea «del propietario».
+    assert 'alias_mode not in ("owner_default", "owner_specific")' in inspect.getsource(
+        steps._step_send_email)
+
+
+def test_f2_el_erp_no_acepta_cualquier_remitente_verificado(
+    session_factory, monkeypatch,  # noqa: F811
+) -> None:
+    from app.erp import invoice_email
+    from app.integrations.gmail import service as gmail_service
+
+    monkeypatch.setattr(gmail_service, "list_aliases", lambda s, uid: [
+        {"send_as_email": "direccion@figurante.example"},
+        {"send_as_email": "tienda@figurante.example"}])
+    monkeypatch.setattr(invoice_email, "erp_configured_senders",
+                        lambda s: {"tienda@figurante.example"})
+    with session_factory() as s:
+        comercial = s.get(User, _uid(s, UserRole.COMERCIAL))
+        admin = s.get(User, _uid(s, UserRole.ADMIN))
+        ver = invoice_email.check_sender_alias
+        assert ver(s, comercial, "direccion@figurante.example")["ok"] is False
+        assert ver(s, comercial, "tienda@figurante.example")["ok"] is True
+        assert ver(s, admin, "direccion@figurante.example")["ok"] is True
+
+
+def test_f2_un_remitente_concedido_pendiente_de_gmail_no_da_403(
+    client, session_factory,  # noqa: F811
+) -> None:
+    with session_factory() as s:
+        uid = _uid(s, UserRole.USER)
+        # El admin lo eligió; Gmail aún no lo tenía: queda apagado y elegido.
+        s.add(UserEmailAliasPref(user_id=uid, alias_email="nuevo@figurante.example",
+                                 is_allowed=False, user_opted_in=True))
+        s.commit()
+    r = client.put("/api/emails/aliases/preferences", headers=auth_headers(client, "user"),
+                   json={"preferences": [{"alias_email": "nuevo@figurante.example",
+                                          "is_allowed": True, "is_default": True}]})
+    assert r.status_code == 200, r.text
+
+
+def test_f3_los_candidatos_a_vincular_no_traen_pedidos_web(
+    client, session_factory, monkeypatch,  # noqa: F811
+) -> None:
+    from app.erp.api import factusol as api_factusol
+
+    web = _pedido_web(client, session_factory)
+    manual = _create(client, order_number="FIG-2")["id"]
+    monkeypatch.setattr(api_factusol, "_link_doc_or_404", lambda *a, **k: {
+        "referencia": "", "cliente_codigo": "", "numero": "1-1"})
+    monkeypatch.setattr(api_factusol, "_orders_linked_to_document", lambda *a, **k: [])
+
+    def ids(rol: str) -> set[str]:
+        r = client.get("/api/erp/factusol/documents/facturas/1/1/link-candidates",
+                       params={"q": "-"}, headers=auth_headers(client, rol))
+        assert r.status_code == 200, r.text
+        return {c["id"] for c in r.json()["candidates"]}
+
+    assert ids("comercial") == {manual}
+    assert ids("pedidos") == {web, manual}
+
+
+def test_f4_el_credito_b2b_es_solo_del_admin(client, session_factory) -> None:  # noqa: F811
+    oid = _create(client)["id"]
+    with session_factory() as s:
+        m = s.get(User, _uid(s, UserRole.MANAGER))
+        m.erp_roles = '["comercial"]'
+        s.commit()
+    assert _fire(client, oid, "payment", "credit_approved", role="manager").status_code == 403
+    assert _fire(client, oid, "payment", "credit_approved", role="admin").status_code == 200

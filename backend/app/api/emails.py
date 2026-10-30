@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import Action, record_event
@@ -259,7 +259,10 @@ def _solo_remitentes_concedidos(
         a.strip().lower() for a in session.scalars(
             select(UserEmailAliasPref.alias_email).where(
                 UserEmailAliasPref.user_id == user.id,
-                UserEmailAliasPref.is_allowed.is_(True),
+                # Concedido = encendido, o elegido por el admin aunque Gmail
+                # aún no lo tuviera (queda apagado hasta el sync).
+                or_(UserEmailAliasPref.is_allowed.is_(True),
+                    UserEmailAliasPref.user_opted_in.is_(True)),
             )
         )
     }

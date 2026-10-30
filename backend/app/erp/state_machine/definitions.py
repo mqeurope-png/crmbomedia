@@ -103,7 +103,9 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
     TransitionDef(
         StatusDomain.PAYMENT, PaymentStatus.PENDING.value,
         PaymentStatus.CREDIT_APPROVED.value,
-        "Crédito B2B aprobado", frozenset({_ADMIN, _MANAGER}),
+        # Solo admin (auditoría 30/10/2026, F-4): el Responsable es un rol del
+        # CRM; con un rol ERP añadido tampoco aprueba crédito (Pedidos no puede).
+        "Crédito B2B aprobado", frozenset({_ADMIN}),
     ),
     TransitionDef(
         StatusDomain.PAYMENT, PaymentStatus.PENDING.value, PaymentStatus.FAILED.value,

@@ -514,17 +514,22 @@ def document_link_candidates(
 
     Los pedidos anulados no se sugieren. `linked_orders` trae los pedidos que
     YA apuntan a este documento (la UI avisa antes de duplicar)."""
-    _ = current_user
-    from sqlalchemy import or_, select  # noqa: PLC0415
+    from sqlalchemy import and_, or_, select  # noqa: PLC0415
 
+    from app.erp.api.orders import web_oculto  # noqa: PLC0415
+    from app.erp.capabilities import can_view_web_orders  # noqa: PLC0415
     from app.erp.factusol_pdf import order_composed_ref  # noqa: PLC0415
     from app.erp.models import Order  # noqa: PLC0415
+    from app.erp.models.orders import OrderSource  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
 
     doc = _link_doc_or_404(session, doc_type, serie, codigo)
     ref = str(doc.get("referencia") or "").strip().upper()
     codcli = str(doc.get("cliente_codigo") or "").strip()
     alive = Order.cancelled_at.is_(None)
+    if not can_view_web_orders(current_user):
+        # Quien no ve pedidos web (Comercial) no los ve como candidatos (F-3).
+        alive = and_(alive, Order.external_source != OrderSource.WOOCOMMERCE.value)
 
     by_ref: list[Any] = []
     if ref and "-" in ref:
@@ -591,6 +596,7 @@ def document_link_candidates(
         "linked_orders": [
             {"id": o.id, "order_number": o.order_number}
             for o in _orders_linked_to_document(session, doc_type, doc)
+            if not web_oculto(o, current_user)
         ],
         "candidates": candidates,
         "q": term or None,

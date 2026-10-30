@@ -926,23 +926,26 @@ def test_send_rejects_erp_sender_not_verified_in_gmail(http, session_factory) ->
     mock_send.assert_not_called()
 
 
-def test_send_accepts_any_verified_sendas_even_if_unconfigured(http, session_factory) -> None:
-    """Cualquier «enviar como» VERIFICADO de la cuenta de Gmail vale como
-    remitente, aunque no esté mapeado a una tienda/serie ni en las preferencias
-    del usuario: el operador puede elegir cualquiera del selector «Enviar desde»."""
+def test_send_rejects_a_verified_sendas_not_granted_nor_configured(http, session_factory) -> None:
+    """Un «enviar como» VERIFICADO en Gmail no basta: un no-admin solo envía
+    desde sus remitentes (los concede el admin, #570) o desde los de Ajustes
+    ERP (tienda/serie). Antes valía cualquiera del selector, y así se enviaba
+    como un compañero (auditoría 30/10/2026, F-2). El admin, cualquiera."""
     with session_factory() as s:
         _seed_order(s)
         _seed_alias(s, alias="ventas@bomedia.net")
     send_patch, _ = _patch_send()
+    cuerpo = {"confirm": True, "to": ["client@example.fr"], "subject": "s",
+              "body_text": "b", "lang": "fr", "from_alias": "bart@bomedia.net"}
     with (_patched_factusol(), _gmail_aliases("bart@bomedia.net"),
           send_patch as mock_send):
-        r = http.post(
-            "/api/erp/factusol/documents/facturas/5/260063/email",
-            json={"confirm": True, "to": ["client@example.fr"],
-                  "subject": "s", "body_text": "b", "lang": "fr",
-                  "from_alias": "bart@bomedia.net"},
-            headers=auth_headers(http, "pedidos"),
-        )
+        r = http.post("/api/erp/factusol/documents/facturas/5/260063/email",
+                      json=cuerpo, headers=auth_headers(http, "pedidos"))
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["reason"] == "no_concedido"
+        assert mock_send.call_count == 0
+        r = http.post("/api/erp/factusol/documents/facturas/5/260063/email",
+                      json=cuerpo, headers=auth_headers(http, "admin"))
     assert r.status_code == 201, r.text
     assert mock_send.call_args.kwargs["from_alias"] == "bart@bomedia.net"
 
