@@ -162,6 +162,17 @@ COMPANY_FIELD_SPECS: dict[str, FieldSpec] = {
         default_visible=True,
         grouped_under="Origen",
     ),
+    # 1/11/2026: para acotar las tandas de sector a los clientes de verdad
+    # (los que tienen código de cliente de FACTUSOL).
+    "factusol_company_id": FieldSpec(
+        key="factusol_company_id",
+        label="Código de cliente FACTUSOL",
+        type="string",
+        comparators=("is_not_null", "is_null", "eq"),
+        column=Company.factusol_company_id,
+        sortable=True,
+        grouped_under="Origen",
+    ),
     "is_active": FieldSpec(
         key="is_active",
         label="Activa",

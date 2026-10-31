@@ -120,7 +120,7 @@ def test_bulk_change_sector_requires_payload(client: TestClient) -> None:
         json={
             "company_ids": ids,
             "action": "change_sector",
-            "payload": {"sector": "Automoción"},
+            "payload": {"sector": "Industria y fabricación"},
         },
         headers=headers,
     )
@@ -128,7 +128,7 @@ def test_bulk_change_sector_requires_payload(client: TestClient) -> None:
     assert res.json()["affected_count"] == 2
     with factory() as session:
         rows = list(session.scalars(select(Company)))
-    assert all(r.sector == "Automoción" for r in rows)
+    assert all(r.sector == "Industria y fabricación" for r in rows)
 
 
 def test_bulk_action_viewer_forbidden(client: TestClient) -> None:
@@ -155,3 +155,82 @@ def test_bulk_action_unknown_action_returns_422(client: TestClient) -> None:
     )
     # Pydantic Literal rechaza valores no listados → 422.
     assert res.status_code == 422
+
+
+# --- el sector es una lista (1/11/2026) ---------------------------------------------------
+
+
+def _con_sector(factory: sessionmaker, sectores: list[str | None]) -> list[str]:
+    ids: list[str] = []
+    with factory() as session:
+        for i, sec in enumerate(sectores):
+            row = Company(name=f"Figurante {i}", source="manual", is_active=True, sector=sec)
+            session.add(row)
+            session.flush()
+            ids.append(row.id)
+        session.commit()
+    return ids
+
+
+def test_el_sector_en_tanda_no_pisa_el_que_ya_tenian(client: TestClient) -> None:
+    factory = client._factory  # type: ignore[attr-defined]
+    ids = _con_sector(factory, [None, "", "Vending", "Fabricante figurante de palas", None])
+    headers = auth_headers(client, "user")
+    res = client.post("/api/companies/bulk-action", headers=headers, json={
+        "company_ids": ids, "action": "change_sector",
+        "payload": {"sector": "centro educativo"}})       # sin importar mayúsculas
+    assert res.status_code == 200, res.text
+    assert (res.json()["affected_count"], res.json()["skipped_count"]) == (3, 2)
+    with factory() as session:
+        por_id = {r.id: r.sector for r in session.scalars(select(Company))}
+    assert [por_id[i] for i in ids] == ["Centro educativo", "Centro educativo", "Vending",
+                                        "Fabricante figurante de palas", "Centro educativo"]
+    # Pidiéndolo, sí sustituye.
+    res = client.post("/api/companies/bulk-action", headers=headers, json={
+        "company_ids": ids, "action": "change_sector",
+        "payload": {"sector": "Vending", "sobrescribir": True}})
+    assert res.json()["affected_count"] == 4
+
+
+def test_un_sector_que_no_es_de_la_lista_no_entra(client: TestClient) -> None:
+    factory = client._factory  # type: ignore[attr-defined]
+    ids = _con_sector(factory, [None])
+    res = client.post("/api/companies/bulk-action", headers=auth_headers(client, "user"), json={
+        "company_ids": ids, "action": "change_sector", "payload": {"sector": "Automoción"}})
+    assert res.status_code == 422
+
+
+def test_la_ficha_conserva_el_texto_anterior_y_no_admite_uno_nuevo(client: TestClient) -> None:
+    factory = client._factory  # type: ignore[attr-defined]
+    [cid] = _con_sector(factory, ["Fabricante figurante de palas"])
+    headers = auth_headers(client, "user")
+    ficha = client.get(f"/api/companies/{cid}", headers=headers).json()
+    cuerpo = {k: ficha.get(k) for k in ("name", "website", "domain", "tax_id", "vat", "country",
+                                         "region", "state", "city", "address_line",
+                                         "postal_code", "sector", "size_category", "notes",
+                                         "language", "source")}
+    # Cambiar otro campo con el sector de antes: se conserva.
+    res = client.put(f"/api/companies/{cid}", headers=headers, json={**cuerpo, "city": "Figurante"})
+    assert res.status_code == 200, res.text
+    assert res.json()["sector"] == "Fabricante figurante de palas"
+    # Un texto nuevo que no es de la lista: no.
+    res = client.put(f"/api/companies/{cid}", headers=headers,
+                     json={**cuerpo, "sector": "Otra cosa inventada"})
+    assert res.status_code == 422
+    # Uno de la lista: sí.
+    res = client.put(f"/api/companies/{cid}", headers=headers,
+                     json={**cuerpo, "sector": "Industria y fabricación"})
+    assert res.json()["sector"] == "Industria y fabricación"
+
+
+def test_tanda_corrige_grafia_y_sobrescribir_texto_falso_no_pisa(client: TestClient) -> None:
+    factory = client._factory  # type: ignore[attr-defined]
+    ids = _con_sector(factory, ["vending", " Vending ", "Vending", "Otro"])
+    headers = auth_headers(client, "user")
+    res = client.post("/api/companies/bulk-action", headers=headers, json={
+        "company_ids": ids, "action": "change_sector",
+        "payload": {"sector": "Vending", "sobrescribir": "false"}})
+    assert (res.json()["affected_count"], res.json()["skipped_count"]) == (2, 1)
+    with factory() as session:
+        por_id = {r.id: r.sector for r in session.scalars(select(Company))}
+    assert [por_id[i] for i in ids] == ["Vending", "Vending", "Vending", "Otro"]

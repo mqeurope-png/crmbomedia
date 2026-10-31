@@ -523,3 +523,24 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3 · Lote 2 PR-2)", () => {
     confirmSpy.mockRestore();
   });
 });
+
+describe("Sector de la empresa (lista, 1/11/2026)", () => {
+  it("es un desplegable de la lista y conserva el texto que tuviera antes", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({ ...COMPANY, sector: "Fabricante figurante de palas" });
+    render(<CompanyDetailPage />);
+    const sector = (await screen.findByLabelText("Sector")) as HTMLSelectElement;
+    expect(sector.value).toBe("Fabricante figurante de palas");
+    const opciones = Array.from(sector.options).map((o) => o.textContent);
+    expect(opciones).toContain("Centro educativo");
+    expect(opciones).toContain("Vending");
+    expect(opciones).toContain("Fabricante figurante de palas (texto anterior)");
+  });
+
+  it("un sector de la lista con otra grafía sale como el de la lista, no como «Sin sector»", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({ ...COMPANY, sector: " vending" });
+    render(<CompanyDetailPage />);
+    const sector = (await screen.findByLabelText("Sector")) as HTMLSelectElement;
+    expect(sector.value).toBe("Vending");
+    expect(Array.from(sector.options).map((o) => o.textContent)).not.toContain(" vending (texto anterior)");
+  });
+});
