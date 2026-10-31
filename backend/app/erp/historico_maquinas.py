@@ -54,6 +54,21 @@ PISTAS_INICIALES = (
     "ESPEJO", "LID", "TAPA", "HOSE", "PLATFORM", "DONGLE", "PROBE", "COVER",
 )
 
+#: Lo que el nombre dice que SÍ es una máquina (31/10/2026: la propuesta exige
+#: evidencia positiva). La 0159 las siembra.
+PISTAS_MAQUINA = (
+    "IMPRESORA", "PRINTER", "DUPLICADORA", "ENCELOFANADORA", "BEAMO", "BEAMBOX", "HEXA",
+    "ADOR", "SPEEDSTAR", "CELOPACK", "MBO", "ARTIS", "OMNIPRINTER", "EPSON PP",
+)
+#: Negativas que añade la 0159, de los artículos que la primera propuesta
+#: daba por máquina sin serlo (placa, motor, ventilador…).
+PISTAS_NO_0159 = (
+    "MAINBOARD", "MOTOR", "STEPPER", "FAN", "POWER SUPPLY", "CLAMP", "DUCT", "SENSOR",
+    "LUBRICANT", "CUCHILLA", "LAMINA", "PLATO", "MESA", "RASPBERRY",
+)
+PISTA_SI, PISTA_NO = "maquina", "no_maquina"
+PROPUESTA_SI, PROPUESTA_NO, PROPUESTA_DUDOSA = "maquina", "no_maquina", "dudoso"
+
 #: Estado de un artículo de una familia de máquinas.
 MARCADA = "maquina"          # marcada como máquina
 NO_MAQUINA = "no_maquina"    # revisada: no es máquina (o tiene otra clase propia)
@@ -138,23 +153,30 @@ def _plano(texto: str | None) -> str:
     return " ".join(t.upper().split())
 
 
+def _regla(r: HistoricoReglaArticulo) -> dict[str, Any]:
+    return {"id": r.id, "patron": r.patron, "orden": r.orden, "tipo": r.tipo}
+
+
 def reglas(session: Session) -> list[dict[str, Any]]:
-    return [{"id": r.id, "patron": r.patron, "orden": r.orden} for r in session.scalars(
-        select(HistoricoReglaArticulo).order_by(HistoricoReglaArticulo.orden,
+    return [_regla(r) for r in session.scalars(
+        select(HistoricoReglaArticulo).order_by(HistoricoReglaArticulo.tipo,
+                                                HistoricoReglaArticulo.orden,
                                                 HistoricoReglaArticulo.patron))]
 
 
-def guardar_regla(session: Session, patron: str) -> dict[str, Any]:
+def guardar_regla(session: Session, patron: str, tipo: str = PISTA_NO) -> dict[str, Any]:
+    """Una pista: `maquina` (el nombre dice que es una máquina) o
+    `no_maquina` (delata un recambio, accesorio…)."""
     patron = " ".join((patron or "").split())[:64]
-    if not patron:
+    if not patron or tipo not in (PISTA_SI, PISTA_NO):
         raise ValueError("pista")
     if _plano(patron) in {_plano(r.patron) for r in session.scalars(
             select(HistoricoReglaArticulo))}:
         raise ValueError("pista_existe")
-    r = HistoricoReglaArticulo(patron=patron, orden=100)
+    r = HistoricoReglaArticulo(patron=patron, orden=100, tipo=tipo)
     session.add(r)
     session.commit()
-    return {"id": r.id, "patron": r.patron, "orden": r.orden}
+    return _regla(r)
 
 
 def borrar_regla(session: Session, regla_id: int) -> None:
@@ -173,7 +195,7 @@ def _compilar(patrones: list[str]) -> list[tuple[str, re.Pattern[str]]]:
 
 
 def pista(descripcion: str | None, compiladas: list[tuple[str, re.Pattern[str]]]) -> str | None:
-    """La primera pista que delata que NO es una máquina, o None."""
+    """La primera de esas pistas que aparece en la descripción, o None."""
     texto = _plano(descripcion)
     for patron, rx in compiladas:
         if rx.search(texto):
@@ -181,23 +203,53 @@ def pista(descripcion: str | None, compiladas: list[tuple[str, re.Pattern[str]]]
     return None
 
 
+def proponer(descripcion: str | None, si: list[tuple[str, re.Pattern[str]]],
+             no: list[tuple[str, re.Pattern[str]]]) -> dict[str, Any]:
+    """La propuesta EXIGE evidencia positiva (31/10/2026): «máquina» solo si
+    el nombre lo dice (IMPRESORA, BEAMBOX, HEXA…). Las pistas negativas van
+    después:
+
+    - positiva y ninguna negativa → `maquina`;
+    - positiva y negativa (MAINBOARD BEAMBOX, CUCHILLA SPEEDSTAR, pero
+      también SPEEDSTAR 2 ENCELOFANADORA MANUAL) → `dudoso`: sin propuesta,
+      lo decide Bart;
+    - solo negativa → `no_maquina`;
+    - ninguna → sin propuesta (`None`): no se propone como máquina."""
+    a_favor, en_contra = pista(descripcion, si), pista(descripcion, no)
+    if a_favor and not en_contra:
+        propuesta = PROPUESTA_SI
+    elif a_favor:
+        propuesta = PROPUESTA_DUDOSA
+    elif en_contra:
+        propuesta = PROPUESTA_NO
+    else:
+        propuesta = None
+    return {"propuesta": propuesta, "pista_si": a_favor, "pista_no": en_contra}
+
+
 # --- los artículos de las familias de máquinas -------------------------------------------
 
 
 def articulos(session: Session) -> dict[str, Any]:
-    """Los artículos vendidos que hay que mirar: los de familias de clase
-    máquina (en el catálogo de algún año) y los marcados como máquina en
-    cualquier familia. Por familia y por líneas vendidas (de las series que
-    cuentan), con la propuesta y el estado. Y el recuento: «104 de 230»."""
+    """Los artículos vendidos que hay que mirar: los que HOY (en el catálogo
+    más reciente que los tiene) están en una familia de clase máquina, y los
+    ya marcados como máquina en cualquier familia (para poder desmarcarlos).
+    Una familia que fue de máquinas en un catálogo antiguo no cuenta: manda
+    la clasificación actual. Por familia y por líneas vendidas (de las series
+    que cuentan), con la propuesta y el estado. Y el recuento."""
     art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
     propia = HistoricoArticuloClase
     fuera = series_excluidas(session)
-    # Primero los artículos a mirar (pocos: los del catálogo en familias de
-    # máquinas y los marcados), luego sus líneas: sin un OR entre dos tablas
-    # que impida usar índices sobre todas las líneas.
-    candidatos = set(session.scalars(
-        select(art.codart).join(fam, fam.codigo == art.familia)
-        .where(fam.clase == CLASE_MAQUINA).distinct()))
+    familias = {f.codigo: f for f in session.scalars(select(fam))}
+    # La familia de cada artículo es la de su catálogo más reciente.
+    ultimo = select(art.codart, func.max(art.ejercicio).label("ej")).group_by(
+        art.codart).subquery()
+    candidatos = {
+        codart for codart, familia in session.execute(
+            select(art.codart, art.familia).join(
+                ultimo, (ultimo.c.codart == art.codart) & (ultimo.c.ej == art.ejercicio)))
+        if familia in familias and familias[familia].clase == CLASE_MAQUINA
+    }
     candidatos |= set(session.scalars(select(propia.codart).where(
         propia.clase == CLASE_MAQUINA)))
     if not candidatos:
@@ -219,10 +271,11 @@ def articulos(session: Session) -> dict[str, Any]:
     for a in session.scalars(select(art).where(art.codart.in_(list(vendidos)))
                              .order_by(art.ejercicio)):
         catalogo[a.codart] = a
-    familias = {f.codigo: f for f in session.scalars(select(fam))}
     propias = {p.codart: p.clase for p in session.scalars(
         select(propia).where(propia.codart.in_(list(vendidos))))}
-    compiladas = _compilar([r["patron"] for r in reglas(session)])
+    todas = reglas(session)
+    si = _compilar([r["patron"] for r in todas if r["tipo"] == PISTA_SI])
+    no = _compilar([r["patron"] for r in todas if r["tipo"] == PISTA_NO])
     items = []
     for codart, n in vendidos.items():
         a = catalogo.get(codart)
@@ -230,20 +283,23 @@ def articulos(session: Session) -> dict[str, Any]:
         clase = propias.get(codart)
         estado = (MARCADA if clase == CLASE_MAQUINA else
                   SIN_REVISAR if clase is None else NO_MAQUINA)
-        delata = pista(a.descripcion if a else None, compiladas)
         items.append({
             "codart": codart, "descripcion": a.descripcion if a else None,
             "familia": a.familia if a else None,
             "familia_nombre": f.descripcion if f else None, "gama": f.gama if f else None,
+            "familia_clase": f.clase if f else None,
             "lineas": int(n), "estado": estado, "clase_propia": clase,
-            "propuesta": "no_maquina" if delata else "maquina", "pista": delata,
+            **proponer(a.descripcion if a else None, si, no),
         })
     items.sort(key=lambda i: (i["familia"] or "~", -i["lineas"], i["codart"]))
     return {
         "items": items,
         "marcadas": sum(1 for i in items if i["estado"] == MARCADA),
         "total": len(items),
-        "propuestas": sum(1 for i in items if i["estado"] == SIN_REVISAR),
+        "sin_revisar": sum(1 for i in items if i["estado"] == SIN_REVISAR),
+        # Lo que «Aceptar todas» aplicaría: sin revisar Y con propuesta clara.
+        "propuestas": sum(1 for i in items if i["estado"] == SIN_REVISAR
+                          and i["propuesta"] in (PROPUESTA_SI, PROPUESTA_NO)),
     }
 
 
@@ -270,17 +326,21 @@ def marcar(session: Session, codart: str, es_maquina: bool, *, por: str) -> None
 
 
 def aceptar_todas(session: Session, *, por: str) -> dict[str, int]:
-    """Aplica la propuesta a lo que NADIE ha revisado. Lo marcado o
-    desmarcado a mano no se toca."""
+    """Aplica las propuestas CLARAS (máquina o no máquina) a lo que NADIE ha
+    revisado. Lo dudoso y lo que no tiene propuesta se queda sin revisar
+    (fuera del parque) para que lo decida Bart; lo marcado o desmarcado a mano
+    no se toca. Queda apuntado que fue «aceptar todas»."""
     hechas = {"maquina": 0, "no_maquina": 0}
     for i in articulos(session)["items"]:
+        if i["estado"] != SIN_REVISAR or i["propuesta"] not in (PROPUESTA_SI, PROPUESTA_NO):
+            continue
         # Releído: alguien pudo marcarlo mientras tanto (no se pisa ni choca).
-        if i["estado"] != SIN_REVISAR or session.get(HistoricoArticuloClase, i["codart"]):
+        if session.get(HistoricoArticuloClase, i["codart"]):
             continue
         session.add(HistoricoArticuloClase(
             codart=i["codart"],
-            clase=CLASE_MAQUINA if i["propuesta"] == "maquina" else CLASE_NO_MAQUINA,
-            por=por, at=_ahora()))
+            clase=CLASE_MAQUINA if i["propuesta"] == PROPUESTA_SI else CLASE_NO_MAQUINA,
+            por=f"{por} (aceptar todas)"[:255], at=_ahora()))
         hechas[i["propuesta"]] += 1
     session.commit()
     return hechas

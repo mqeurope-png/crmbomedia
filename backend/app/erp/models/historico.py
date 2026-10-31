@@ -205,15 +205,18 @@ class HistoricoArticuloClase(Base):
 
 
 class HistoricoReglaArticulo(Base):
-    """Una pista en la descripción de un artículo que delata que NO es una
-    máquina («FILTER», «LENS», «SPARE PARTS»…). Propone; no decide. Datos
-    editables (0158)."""
+    """Una pista en la descripción de un artículo: que SÍ es una máquina
+    («BEAMBOX», «IMPRESORA»…) o que NO lo es («FILTER», «LENS»…). Propone; no
+    decide. Datos editables (0158, positivas desde la 0159)."""
 
     __tablename__ = "historico_reglas_articulo"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     patron: Mapped[str] = mapped_column(String(64), nullable=False)
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    #: `maquina` (el nombre dice que lo es) o `no_maquina` (delata que no). La
+    #: propuesta exige una positiva (0159).
+    tipo: Mapped[str] = mapped_column(String(16), nullable=False, default="no_maquina")
 
 
 class HistoricoSerie(Base):

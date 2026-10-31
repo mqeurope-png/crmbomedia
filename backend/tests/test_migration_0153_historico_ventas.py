@@ -127,3 +127,17 @@ def test_0158_reglas_de_articulo_sembradas_y_series(alembic_setup):
     command.downgrade(cfg, "20261030_0157")
     assert not {"historico_reglas_articulo", "historico_series"} & set(
         inspect(engine).get_table_names())
+
+
+def test_0159_pistas_con_tipo_y_positivas(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261031_0159")
+    with engine.connect() as c:
+        tipos = dict(c.exec_driver_sql(
+            "SELECT tipo, COUNT(*) FROM historico_reglas_articulo GROUP BY tipo").all())
+    assert tipos == {"maquina": 14, "no_maquina": 30 + 14}
+    command.downgrade(cfg, "20261031_0158")
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT COUNT(*) FROM historico_reglas_articulo").scalar() == 30

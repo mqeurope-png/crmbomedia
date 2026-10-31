@@ -1044,9 +1044,12 @@ En la ficha de una empresa, bajo «Actividad reciente»:
     familia sea de clase «Máquina» ya no basta. Se marcan en **Histórico →
     Familias → «Máquinas, artículo a artículo»**: una casilla «es máquina»
     por artículo, por líneas vendidas, con la **propuesta** de BoHub por la
-    descripción (si dice FILTER, LENS, SPARE PARTS… propone que no). Pulsa
-    **«Aceptar todas las propuestas»** y corrige las pocas que fallen; lo que
-    ya marcaste a mano no se toca. El recuento dice cuántas llevas («104 de
+    descripción: propone «máquina» **solo si el nombre lo dice** (IMPRESORA,
+    BEAMBOX, HEXA, SPEEDSTAR…); si también dice algo de recambio (MAINBOARD,
+    CUCHILLA…), «dudosa»; si solo dice recambio, «no»; si no dice nada, sin
+    propuesta. **«Aceptar todas las propuestas»** aplica solo lo claro; lo
+    dudoso y lo que no tiene propuesta lo marcas tú. Lo que ya marcaste a mano
+    no se toca. El recuento dice cuántas llevas («104 de
     230 marcadas como máquina»). Las pistas se editan ahí mismo.
   - **«Series que cuentan como venta»** (mismo sitio): quita la casilla de
     una serie que no sea de venta y sus documentos salen del parque y de

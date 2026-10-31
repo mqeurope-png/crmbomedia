@@ -319,6 +319,8 @@ class ReglaArticuloIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     patron: str = Field(min_length=1, max_length=64)
+    #: `maquina` (el nombre dice que lo es) o `no_maquina` (delata que no).
+    tipo: str = Field(default="no_maquina", pattern="^(maquina|no_maquina)$")
 
 
 class SerieCuentaIn(BaseModel):
@@ -383,7 +385,7 @@ def crear_regla_articulo(
     from app.erp import historico_maquinas  # noqa: PLC0415
 
     try:
-        historico_maquinas.guardar_regla(session, body.patron)
+        historico_maquinas.guardar_regla(session, body.patron, body.tipo)
     except ValueError as exc:
         raise _no_valido(exc) from exc
     return _maquinas(session)

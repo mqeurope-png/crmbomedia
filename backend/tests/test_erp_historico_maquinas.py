@@ -60,8 +60,10 @@ def _preparar(session_factory, datos=None) -> dict[str, str]:  # noqa: F811
     with session_factory() as s:
         historico.cargar(s, FactusolFalso(datos or _datos()), ["2026"], en_curso="2026")
         cl.clasificar(s, "FLX", {"clase": "maquina"}, por="x")
-        for p in hm.PISTAS_INICIALES:
+        for p in hm.PISTAS_INICIALES + hm.PISTAS_NO_0159:
             hm.guardar_regla(s, p)
+        for p in hm.PISTAS_MAQUINA:
+            hm.guardar_regla(s, p, hm.PISTA_SI)
         a = Company(name="Láseres Figurante", factusol_company_id=CLI)
         b = Company(name="Otro Cliente Figurante", factusol_company_id=OTRO)
         s.add_all([a, b])
@@ -98,8 +100,8 @@ def test_la_propuesta_por_texto(session_factory) -> None:  # noqa: F811
     _preparar(session_factory)
     with session_factory() as s:
         items = {i["codart"]: i for i in hm.articulos(s)["items"]}
-    assert items[BEAMBOX]["propuesta"] == "maquina"
-    assert (items[LENTE]["propuesta"], items[LENTE]["pista"]) == ("no_maquina", "LENS")
+    assert (items[BEAMBOX]["propuesta"], items[BEAMBOX]["pista_si"]) == ("maquina", "BEAMBOX")
+    assert (items[LENTE]["propuesta"], items[LENTE]["pista_no"]) == ("no_maquina", "LENS")
     assert items[CARTUCHO]["propuesta"] == "no_maquina"
     # Palabra entera: «LID» no casa con «SOLID».
     regla = hm._compilar(["LID"])
@@ -115,6 +117,7 @@ def test_aceptar_todas_no_pisa_lo_marcado_a_mano(session_factory) -> None:  # no
         hm.marcar(s, LENTE, True, por="bart")
         hechas = hm.aceptar_todas(s, por="x")
         assert hechas == {"maquina": 0, "no_maquina": 1}     # solo el cartucho
+        assert s.get(HistoricoArticuloClase, CARTUCHO).por == "x (aceptar todas)"
         clases = {p.codart: p.clase for p in s.scalars(select(HistoricoArticuloClase))}
         assert clases[BEAMBOX] == "no_maquina" and clases[LENTE] == "maquina"
         assert clases[CARTUCHO] == "no_maquina"
@@ -238,3 +241,77 @@ def test_el_aviso_no_apunta_a_la_factura_del_propio_albaran(session_factory) -> 
         s.commit()
         suelto = next(m for m in parque.parque(s, empresa)["maquinas"] if m["origen"] == "albaran")
     assert suelto["cantidad"] == 1 and suelto["posible_misma_venta"] is None
+
+
+
+# --- la propuesta exige evidencia positiva (31/10/2026) ------------------------------------
+
+
+def _propuesta(desc: str) -> str | None:
+    si = hm._compilar(list(hm.PISTAS_MAQUINA))
+    no = hm._compilar(list(hm.PISTAS_INICIALES + hm.PISTAS_NO_0159))
+    return hm.proponer(desc, si, no)["propuesta"]
+
+
+def test_sin_evidencia_positiva_no_se_propone_como_maquina() -> None:
+    # Los que la primera propuesta daba por máquina (lista de Bart).
+    for desc in ("Raspberry Pi 3", "X Axis Stepper Motor", "Mainboard Beambox",
+                 "12V10A POWER SUPPLY", "FLUX FAN", "DUCT CLAMP", "FLOW SENSOR",
+                 "LASER CUTTER LUBRICANT", "CUCHILLA SPEEDSTAR", "LÁMINA SILICONADA A4",
+                 "PLATO 18X38CM PANTALON", "MESA TRABAJO 6090D", "Werksgeprüfter Laser.",
+                 "FLUX HX AF Sensor (3D touch)"):
+        assert _propuesta(desc) != "maquina", desc
+    # Sin ninguna pista: sin propuesta, no «máquina».
+    assert _propuesta("Werksgeprüfter Laser.") is None
+    assert _propuesta("Raspberry Pi 3") == "no_maquina"
+
+
+def test_las_maquinas_por_su_nombre_y_la_duda_no_se_decide_sola() -> None:
+    for desc in ("FLUX BEAMBOX PRO 50W", "IMPRESORA UV LED FIGURANTE", "FLUX HEXA 60W",
+                 "EPSON PP-100III", "CELOPACK 300"):
+        assert _propuesta(desc) == "maquina", desc
+    # Positiva y negativa a la vez: sin propuesta, lo decide Bart (antes
+    # salía «no · MANUAL», y es una máquina).
+    assert _propuesta("SPEEDSTAR 2 ENCELOFANADORA MANUAL") == "dudoso"
+    assert _propuesta("FLUX FOCUSING LENS") == "no_maquina"
+
+
+def test_aceptar_todas_no_toca_lo_dudoso_ni_lo_que_no_tiene_propuesta(session_factory) -> None:  # noqa: F811
+    d = _datos()
+    d["2026"]["F_ART"] += [_art("5005", "SPEEDSTAR 2 ENCELOFANADORA MANUAL", "FLX"),
+                           _art("5006", "Werksgeprüfter Laser.", "FLX")]
+    d["2026"]["F_LFA"] += [_lfa(260101, 5, "5005", "X", 1, 1), _lfa(260101, 6, "5006", "X", 1, 1)]
+    _preparar(session_factory, d)
+    with session_factory() as s:
+        hm.aceptar_todas(s, por="x")
+        clases = {p.codart: p.clase for p in s.scalars(select(HistoricoArticuloClase))}
+    assert clases[BEAMBOX] == "maquina" and clases[LENTE] == "no_maquina"
+    assert "5005" not in clases and "5006" not in clases     # siguen sin revisar
+
+
+def test_la_lista_es_de_las_familias_de_maquina_de_hoy(session_factory) -> None:  # noqa: F811
+    # Un artículo que en 2017 estaba en la familia de máquinas y hoy en una de
+    # accesorios no sale (salvo que esté marcado como máquina).
+    d = _datos()
+    d["2017"] = {"F_FAC": [], "F_LFA": [], "F_ALB": [], "F_LAL": [],
+                 "F_ART": [_art("5007", "SOPORTE FIGURANTE", "FLX")]}
+    d["2026"]["F_ART"].append(_art("5007", "SOPORTE FIGURANTE", "ACX"))
+    d["2026"]["F_FAM"].append({"CODFAM": "ACX", "DESFAM": "Accesorios figurante"})
+    d["2026"]["F_LFA"].append(_lfa(260101, 7, "5007", "SOPORTE", 1, 10))
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026", "2017"], en_curso="2026")
+        cl.clasificar(s, "FLX", {"clase": "maquina"}, por="x")
+        cl.clasificar(s, "ACX", {"clase": "accesorio"}, por="x")
+        assert "5007" not in {i["codart"] for i in hm.articulos(s)["items"]}
+        hm.marcar(s, "5007", True, por="x")
+        fila = next(i for i in hm.articulos(s)["items"] if i["codart"] == "5007")
+        assert (fila["familia"], fila["familia_clase"]) == ("ACX", "accesorio")
+
+
+def test_la_migracion_0159_siembra_las_positivas() -> None:
+    ruta = next(Path(__file__).resolve().parents[1].glob(
+        "alembic/versions/20261031_0159_*.py"))
+    spec = importlib.util.spec_from_file_location("m0159", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    assert modulo.POSITIVAS == hm.PISTAS_MAQUINA and modulo.NEGATIVAS == hm.PISTAS_NO_0159

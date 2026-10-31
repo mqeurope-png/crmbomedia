@@ -7784,17 +7784,23 @@ export type MaquinaArticulo = {
   lineas: number;
   estado: "maquina" | "no_maquina" | "sin_revisar";
   clase_propia: string | null;
-  propuesta: "maquina" | "no_maquina";
-  /** La pista de la descripción que delata que no es máquina. */
-  pista: string | null;
+  /** Clase de su familia hoy (la marcada como máquina puede ser de otra). */
+  familia_clase?: string | null;
+  /** Exige evidencia positiva: «máquina» solo si el nombre lo dice; «dudoso»
+   *  si hay pista a favor y en contra; null sin pistas. */
+  propuesta: "maquina" | "no_maquina" | "dudoso" | null;
+  pista_si: string | null;
+  pista_no: string | null;
 };
 
 export type MaquinasResumen = {
   items: MaquinaArticulo[];
   marcadas: number;
   total: number;
+  sin_revisar: number;
+  /** Las que «Aceptar todas» aplicaría (sin revisar y con propuesta clara). */
   propuestas: number;
-  reglas: { id: number; patron: string; orden: number }[];
+  reglas: { id: number; patron: string; orden: number; tipo: "maquina" | "no_maquina" }[];
   aplicadas?: { maquina: number; no_maquina: number };
 };
 
@@ -7814,9 +7820,11 @@ export async function aceptarPropuestasMaquinas(): Promise<MaquinasResumen> {
   return apiFetch("/api/erp/historico/maquinas/aceptar-propuestas", { method: "POST" });
 }
 
-export async function crearPistaArticulo(patron: string): Promise<MaquinasResumen> {
+export async function crearPistaArticulo(
+  patron: string, tipo: "maquina" | "no_maquina",
+): Promise<MaquinasResumen> {
   return apiFetch("/api/erp/historico/reglas-articulo", {
-    method: "POST", body: JSON.stringify({ patron }),
+    method: "POST", body: JSON.stringify({ patron, tipo }),
   });
 }
 
