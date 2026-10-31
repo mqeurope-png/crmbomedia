@@ -94,13 +94,17 @@ def _ahora() -> datetime:
 
 
 def codigos_cliente(codcli: str | None) -> list[str]:
-    """El código FACTUSOL tal cual y sin ceros a la izquierda (`00412`/`412`)."""
+    """El código FACTUSOL tal cual, sin ceros a la izquierda y con ellos
+    (`412`, `0412`, `00412`…)."""
     if not codcli or not codcli.strip():
         return []
     c = codcli.strip()
     out = {c}
     if c.isdigit():
-        out.add(str(int(c)))
+        # Todas las formas con ceros a la izquierda (hasta 10 cifras): «412»,
+        # «0412», «00412»… son el mismo cliente, como en `clave_cliente`.
+        sin = str(int(c))
+        out |= {sin.zfill(n) for n in range(len(sin), 11)}
     return sorted(out)
 
 

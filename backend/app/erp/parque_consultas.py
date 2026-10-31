@@ -30,9 +30,10 @@ import io
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from app.erp import historico_equivalencias as equivalencias
 from app.erp import parque
 from app.erp.historico_maquinas import clase_efectiva_py, series_excluidas
 from app.erp.models.historico import (
@@ -85,6 +86,13 @@ def guardar_ajustes(session: Session, cambios: dict[str, int | None]) -> dict[st
     return ajustes(session)
 
 
+def _hace_un_anio(d: date) -> date:
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:      # 29 de febrero
+        return d.replace(year=d.year - 1, day=28)
+
+
 def _meses(desde: date | None, hasta: date) -> int | None:
     if desde is None:
         return None
@@ -133,21 +141,31 @@ def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]
     lin, doc, art, fam = HistoricoLinea, HistoricoDocumento, HistoricoArticulo, HistoricoFamilia
     propia = HistoricoArticuloClase
     stmt = (
-        select(doc.codcli, doc.tipo, doc.fecha, lin.ejercicio, lin.total, fam.clase, fam.gama,
-               propia.clase)
+        select(doc.codcli, doc.tipo, doc.fecha, lin.ejercicio, lin.total, lin.cantidad,
+               lin.codart, fam.clase, fam.gama, propia.clase)
         .join(doc, doc.id == lin.documento_id)
         .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
         .join(fam, fam.codigo == art.familia)
         .outerjoin(propia, propia.codart == lin.codart)
-        .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA), fam.gama.is_not(None))
+        .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA), fam.gama.is_not(None),
+               # Solo lo que puede ser consumible o recambio (por la familia o
+               # por la clase propia): no se traen máquinas ni accesorios.
+               or_(fam.clase.in_((CONSUMIBLE, RECAMBIO)),
+                   propia.clase.in_((CONSUMIBLE, RECAMBIO))))
     )
+    # Un código equivalente de una máquina marcada es máquina (va con su
+    # grupo), aunque su familia diga consumible: no cuenta como compra.
+    maquinas = parque._codigos_maquina(session, equivalencias.cargar(session))
     if fuera := series_excluidas(session):
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
     out: dict[tuple[str, str], dict[str, Any]] = {}
-    for (codcli, tipo, fecha, ejercicio, total, clase_fam, gama,
+    for (codcli, tipo, fecha, ejercicio, total, cantidad, codart, clase_fam, gama,
          clase_propia) in session.execute(stmt):
         clase = clase_efectiva_py(clase_propia, clase_fam)
         if clase not in (CONSUMIBLE, RECAMBIO):
+            continue
+        # Un abono (devolución) no es una compra.
+        if (cantidad or 0) <= 0 or equivalencias.clave(codart) in maquinas:
             continue
         cli = parque.clave_cliente(codcli)
         if not cli:
@@ -234,7 +252,7 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
             meses = _meses(referencia, hoy)
             if meses is None or meses < umbral:
                 continue
-            desde = date(ultima.year - 1, ultima.month, min(ultima.day, 28))
+            desde = _hace_un_anio(ultima)
             compraba = sum(t for f, t in c["facturado"] if desde < f <= ultima)
             resumen["dormidos"] += 1
             dormidos.append({**base, "ultima_compra": ultima.isoformat(),

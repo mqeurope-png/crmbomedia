@@ -57,9 +57,10 @@ def _datos() -> dict[str, Any]:
     }
 
 
-def _preparar(session_factory) -> None:  # noqa: F811
+def _preparar(session_factory, datos: dict[str, Any] | None = None) -> None:  # noqa: F811
+    datos = datos or _datos()
     with session_factory() as s:
-        historico.cargar(s, FactusolFalso(_datos()), list(_datos()), en_curso="2026")
+        historico.cargar(s, FactusolFalso(datos), list(datos), en_curso="2026")
         for g in ("Láser", "UV LED"):
             if not any(x["nombre"] == g for x in cl.gamas(s)):
                 cl.crear_gama(s, g)
@@ -136,3 +137,22 @@ def test_el_umbral_se_cambia_sin_tocar_codigo_y_el_csv(http, session_factory) ->
     r = http.get("/api/erp/historico/parque/huecos.csv", headers=h)
     assert r.status_code == 200 and "Compra recambios pero no consumibles" in r.text
     assert http.get("/api/erp/historico/parque/otra.csv", headers=h).status_code == 422
+
+
+# --- lo que encontró la revisión -------------------------------------------------------
+
+
+def test_una_devolucion_de_filtro_no_es_una_compra(session_factory) -> None:  # noqa: F811
+    d = _datos()
+    lfa = _lfa(260009, 1, FILTRO, FILTRO, -1, 300)
+    d["2026"]["F_FAC"].append(_fac(260009, DORMIDO, "Cliente Figurante", "2026-06-01T00:00:00"))
+    d["2026"]["F_LFA"].append(lfa)
+    _preparar(session_factory, d)
+    with session_factory() as s:
+        dormidos = _por(pc.informe(s, hoy=HOY)["dormidos"])
+        assert dormidos[(DORMIDO, "laser")]["ultima_compra"] == "2022-09-15"
+
+
+def test_la_ficha_encuentra_al_cliente_con_ceros_delante() -> None:
+    assert {"412", "0412", "00412"} <= set(parque.codigos_cliente("412"))
+    assert {"412", "0412", "00412"} <= set(parque.codigos_cliente("00412"))
