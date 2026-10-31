@@ -138,15 +138,18 @@ def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]
     """Por (cliente, gama): la última compra de consumible o recambio, si ha
     comprado alguna vez consumible, y lo facturado en consumible y recambio
     por fecha (para «lo que compraba»)."""
+    from app.erp import historico_alias  # noqa: PLC0415
+
     lin, doc, art, fam = HistoricoLinea, HistoricoDocumento, HistoricoArticulo, HistoricoFamilia
     propia = HistoricoArticuloClase
+    al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
     stmt = (
         select(doc.codcli, doc.tipo, doc.fecha, lin.ejercicio, lin.total, lin.cantidad,
                lin.codart, fam.clase, fam.gama, propia.clase)
         .join(doc, doc.id == lin.documento_id)
-        .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
-        .join(fam, fam.codigo == art.familia)
-        .outerjoin(propia, propia.codart == lin.codart)
+        .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == al_art.expr(lin.codart)))
+        .join(fam, fam.codigo == al_fam.expr(art.familia))
+        .outerjoin(propia, propia.codart == art.codart)
         .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA), fam.gama.is_not(None),
                # Solo lo que puede ser consumible o recambio (por la familia o
                # por la clase propia): no se traen máquinas ni accesorios.
@@ -165,7 +168,7 @@ def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]
         if clase not in (CONSUMIBLE, RECAMBIO):
             continue
         # Un abono (devolución) no es una compra.
-        if (cantidad or 0) <= 0 or equivalencias.clave(codart) in maquinas:
+        if (cantidad or 0) <= 0 or equivalencias.clave(al_art.resuelve(codart)) in maquinas:
             continue
         cli = parque.clave_cliente(codcli)
         if not cli:

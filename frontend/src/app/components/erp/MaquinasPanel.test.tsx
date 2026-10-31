@@ -14,6 +14,8 @@ jest.mock("../../lib/erpApi", () => ({
   cambiarPalabraEnteraPista: jest.fn(),
   darPorRevisadasFamilia: jest.fn(),
   deshacerRevisadasFamilia: jest.fn(),
+  declararAliasArticulo: jest.fn(),
+  quitarAliasArticulo: jest.fn(),
 }));
 
 function api() {
@@ -146,4 +148,24 @@ test("los dos agujeros del catálogo, separados; los de ceros solo se enseñan",
   expect(within(screen.getByRole("list", { name: "Casarían quitando ceros" })).getByText("712"))
     .toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /juntar|aplicar/i })).not.toBeInTheDocument();
+});
+
+test("un código dudoso lo decide Bart con «Es este», y el alias se quita", async () => {
+  const user = userEvent.setup();
+  const sc = { articulos: 1, lineas: 108, items: [{ codart: "1", descripcion: null, lineas: 108 }],
+               con_ceros: [{ codart: "1", descripcion: null, lineas: 108, parecidos: ["00001", "0001"] }],
+               fundidas: [{ corta: "19", larga: "019" }],
+               avisos_familia: [{ corta: "77", largas: ["077"], motivo: "clase_puesta" }] };
+  api().getHistoricoMaquinas.mockResolvedValue({
+    ...DATOS, sin_catalogo: sc, alias_articulo: [{ codigo: "8", codart: "00008", por: "x" }] });
+  api().declararAliasArticulo.mockResolvedValue({
+    ...DATOS, sin_catalogo: sc, alias_articulo: [{ codigo: "8", codart: "00008", por: "x" }] });
+  api().quitarAliasArticulo.mockResolvedValue({ ...DATOS, sin_catalogo: sc });
+  render(<MaquinasPanel puedeEditar />);
+  expect(await screen.findByText(/19 → 019/)).toBeInTheDocument();
+  expect(screen.getByText(/77 \(sin nombre pero con clase puesta/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "1 es 0001" }));
+  expect(api().declararAliasArticulo).toHaveBeenCalledWith("1", "0001");
+  await user.click(screen.getByRole("button", { name: "Quitar el alias de 8" }));
+  expect(api().quitarAliasArticulo).toHaveBeenCalledWith("8");
 });

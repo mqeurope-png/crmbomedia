@@ -288,3 +288,30 @@ def test_0163_equivalencias_y_familias_que_faltan_sin_tocar_nada_de_bart(alembic
                             ("BT2EYB", "4173"), ("61403", "4174")])
     command.downgrade(cfg, "20261101_0162")
     assert foto() == antes
+
+
+def test_0164_alias_de_articulo_sin_tocar_nada_de_bart(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0163")
+    with engine.begin() as c:
+        c.exec_driver_sql("INSERT INTO historico_familias (codigo, descripcion, clase, clase_por) "
+                          "VALUES ('19', NULL, NULL, NULL), ('019', 'X', 'recambio', 'bart')")
+        c.exec_driver_sql("INSERT INTO historico_articulos_clase (codart, clase, por) "
+                          "VALUES ('53332', 'maquina', 'bart')")
+
+    def foto():
+        with engine.connect() as c:
+            return (sorted(c.exec_driver_sql(
+                        "SELECT codigo, descripcion, clase FROM historico_familias").all()),
+                    c.exec_driver_sql("SELECT codart, clase FROM historico_articulos_clase").all())
+
+    antes = foto()
+    command.upgrade(cfg, "20261101_0164")
+    assert foto() == antes
+    with engine.connect() as c:
+        n = c.exec_driver_sql("SELECT COUNT(*) FROM historico_alias_articulo").scalar()
+    assert n == 9
+    command.downgrade(cfg, "20261101_0163")
+    assert foto() == antes

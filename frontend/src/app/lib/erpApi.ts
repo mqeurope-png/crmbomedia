@@ -7818,6 +7818,7 @@ export type MaquinasResumen = {
   umbral?: number;
   /** Revisadas como no máquina que una regla propondría hoy. */
   colisiones?: number;
+  alias_articulo?: AliasArticulo[];
   /** Lo vendido cuyo código no está en ningún catálogo: no tiene familia, no
    *  sale en ninguna pantalla y no puede entrar en el parque. */
   sin_catalogo?: {
@@ -7825,6 +7826,10 @@ export type MaquinasResumen = {
     items: { codart: string; descripcion: string | null; lineas: number }[];
     /** Sin catálogo que casarían quitando ceros: solo para mirarlos. */
     con_ceros?: { codart: string; descripcion: string | null; lineas: number; parecidos: string[] }[];
+    /** Gemelas del cero fundidas (la corta, sin nombre ni clase, va con la larga). */
+    fundidas?: { corta: string; larga: string }[];
+    /** Gemelas que NO se funden y hay que mirar. */
+    avisos_familia?: { corta: string; largas: string[]; motivo: "clase_puesta" | "varias" }[];
     /** Con catálogo y sin familia que case, por familia. */
     sin_familia?: {
       articulos: number; lineas: number;
@@ -7835,6 +7840,21 @@ export type MaquinasResumen = {
   revisadas?: number;
   deshechas?: number;
 };
+
+/** El código con que se tecleó una línea → el artículo del catálogo. */
+export type AliasArticulo = { codigo: string; codart: string; por: string | null };
+
+export async function declararAliasArticulo(codigo: string, codart: string): Promise<MaquinasResumen> {
+  return apiFetch("/api/erp/historico/alias-articulo", {
+    method: "POST", body: JSON.stringify({ codigo, codart }),
+  });
+}
+
+export async function quitarAliasArticulo(codigo: string): Promise<MaquinasResumen> {
+  return apiFetch(`/api/erp/historico/alias-articulo/${encodeURIComponent(codigo)}`, {
+    method: "DELETE",
+  });
+}
 
 export async function getHistoricoMaquinas(): Promise<MaquinasResumen> {
   return apiFetch("/api/erp/historico/maquinas");

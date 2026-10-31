@@ -93,7 +93,8 @@ def _no_existe(exc: LookupError, que: str = "familia") -> HTTPException:
     detalle = {"familia": "Esa familia no está en el histórico.",
                "regla": "Esa regla ya no existe.",
                "articulo": "Ese artículo no está en ningún catálogo volcado.",
-               "equivalencia": "Ese código no tiene ninguna equivalencia declarada."}[que]
+               "equivalencia": "Ese código no tiene ninguna equivalencia declarada.",
+               "alias": "Ese código no tiene alias."}[que]
     return HTTPException(status.HTTP_404_NOT_FOUND, {"code": f"{que}_no_existe",
                                                      "detail": detalle})
 
@@ -115,6 +116,8 @@ _NO_VALIDO = {
     "sin_catalogo": "Los dos códigos tienen que estar en algún catálogo volcado.",
     "ya_declarado": "Esos dos códigos ya son equivalentes.",
     "ya_en_otro_grupo": "El segundo código ya va con otro grupo: quítalo de ahí primero.",
+    "codigo_en_catalogo": "Ese código ya está en el catálogo: no es un código perdido.",
+    "ya_tiene_alias": "Ese código ya tiene alias: quítalo primero.",
 }
 
 
@@ -340,10 +343,48 @@ class SerieCuentaIn(BaseModel):
 
 
 def _maquinas(session: Session) -> dict[str, Any]:
-    from app.erp import historico_maquinas  # noqa: PLC0415
+    from app.erp import historico_alias, historico_maquinas  # noqa: PLC0415
 
     return {**historico_maquinas.articulos(session, con_sin_catalogo=True),
-            "reglas": historico_maquinas.reglas(session)}
+            "reglas": historico_maquinas.reglas(session),
+            "alias_articulo": historico_alias.listar_articulos(session)}
+
+
+class AliasArticuloIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    codigo: str = Field(..., max_length=64)
+    codart: str = Field(..., max_length=64)
+
+
+@router.post("/alias-articulo")
+def declarar_alias_articulo(
+    body: AliasArticuloIn,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    try:
+        historico_alias.declarar_articulo(session, body.codigo, body.codart, por=_por(user))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    return _maquinas(session)
+
+
+@router.delete("/alias-articulo/{codigo:path}")
+def quitar_alias_articulo(
+    codigo: str = Path(..., max_length=64),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    try:
+        historico_alias.quitar_articulo(session, codigo)
+    except LookupError as exc:
+        raise _no_existe(exc, "alias") from exc
+    return _maquinas(session)
 
 
 @router.get("/maquinas")

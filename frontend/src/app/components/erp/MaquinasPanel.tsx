@@ -9,9 +9,12 @@ import {
   crearPistaArticulo,
   darPorRevisadasFamilia,
   deshacerRevisadasFamilia,
+  declararAliasArticulo,
   getHistoricoMaquinas,
+  quitarAliasArticulo,
   marcarHistoricoMaquina,
   type MaquinaArticulo,
+  type AliasArticulo,
   type MaquinasResumen,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -127,7 +130,16 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
             <strong>{datos.marcadas} de {datos.total}</strong> marcadas como máquina
             {datos.sin_revisar > 0 ? <span className="muted"> · {datos.sin_revisar} sin revisar</span> : null}
           </p>
-          {datos.sin_catalogo ? <AgujerosDelCatalogo datos={datos.sin_catalogo} /> : null}
+          {datos.sin_catalogo ? (
+            <AgujerosDelCatalogo
+              datos={datos.sin_catalogo} alias={datos.alias_articulo ?? []}
+              puedeEditar={puedeEditar} ocupado={ocupado}
+              onAlias={(codigo, codart) => void hacer(() => declararAliasArticulo(codigo, codart),
+                "No se ha podido guardar.")}
+              onQuitarAlias={(codigo) => void hacer(() => quitarAliasArticulo(codigo),
+                "No se ha podido quitar.")}
+            />
+          ) : null}
           <div className="erp-historico-acciones">
             <label className="field">
               <span>Familia</span>
@@ -343,10 +355,32 @@ const MOTIVO_FAMILIA: Record<string, string> = {
 
 /** Lo que no puede entrar en el parque por el catálogo, en dos números
  *  separados (1/11/2026). Solo se enseña: no se aplica nada. */
-function AgujerosDelCatalogo({ datos }: { datos: NonNullable<MaquinasResumen["sin_catalogo"]> }) {
+function AgujerosDelCatalogo({
+  datos, alias, puedeEditar, ocupado, onAlias, onQuitarAlias,
+}: {
+  datos: NonNullable<MaquinasResumen["sin_catalogo"]>;
+  alias: AliasArticulo[];
+  puedeEditar: boolean;
+  ocupado: boolean;
+  onAlias: (codigo: string, codart: string) => void;
+  onQuitarAlias: (codigo: string) => void;
+}) {
   const sf = datos.sin_familia;
   return (
     <div className="erp-maquinas-sin-catalogo">
+      {datos.fundidas && datos.fundidas.length > 0 ? (
+        <p className="muted small">
+          Familias fundidas (la corta, sin nombre ni clase, era la larga con el cero perdido):{" "}
+          {datos.fundidas.map((f) => `${f.corta} → ${f.larga}`).join(" · ")}.
+        </p>
+      ) : null}
+      {datos.avisos_familia && datos.avisos_familia.length > 0 ? (
+        <p className="form-hint" role="note">
+          No se funden, míralas:{" "}
+          {datos.avisos_familia.map((a) => `${a.corta} (${a.motivo === "clase_puesta"
+            ? "sin nombre pero con clase puesta" : "varias gemelas"}: ${a.largas.join(", ") || "—"})`).join(" · ")}.
+        </p>
+      ) : null}
       {datos.articulos > 0 ? (
         <details>
           <summary>
@@ -362,14 +396,26 @@ function AgujerosDelCatalogo({ datos }: { datos: NonNullable<MaquinasResumen["si
             <>
               <p className="form-hint">
                 Estos casarían con un código del catálogo quitando ceros a la izquierda. No se
-                juntan solos: puede ser otro artículo. Míralos uno a uno.
+                juntan solos: puede ser otro artículo. Míralos uno a uno y, si es ese, pulsa
+                «Es este».
               </p>
               <ul className="small" aria-label="Casarían quitando ceros">
                 {datos.con_ceros.map((x) => (
                   <li key={x.codart}>
                     <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
                     <span className="muted">· {x.lineas} {x.lineas === 1 ? "línea" : "líneas"} →</span>{" "}
-                    {x.parecidos.map((p) => <span key={p} className="mono">{p} </span>)}
+                    {x.parecidos.map((p) => (
+                      <span key={p}>
+                        <span className="mono">{p}</span>{" "}
+                        {puedeEditar ? (
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  aria-label={`${x.codart} es ${p}`}
+                                  onClick={() => onAlias(x.codart, p)}>
+                            Es este
+                          </button>
+                        ) : null}{" "}
+                      </span>
+                    ))}
                   </li>
                 ))}
               </ul>
@@ -381,6 +427,25 @@ function AgujerosDelCatalogo({ datos }: { datos: NonNullable<MaquinasResumen["si
               <li key={x.codart}>
                 <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
                 <span className="muted">· {x.lineas} {x.lineas === 1 ? "línea" : "líneas"}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {alias.length > 0 ? (
+        <details>
+          <summary className="small">Códigos de línea que son otro artículo del catálogo ({alias.length})</summary>
+          <ul className="small" aria-label="Alias de código">
+            {alias.map((a) => (
+              <li key={a.codigo}>
+                <span className="mono">{a.codigo}</span> → <span className="mono">{a.codart}</span>{" "}
+                {puedeEditar ? (
+                  <button type="button" className="button small secondary" disabled={ocupado}
+                          aria-label={`Quitar el alias de ${a.codigo}`}
+                          onClick={() => onQuitarAlias(a.codigo)}>
+                    Quitar
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>

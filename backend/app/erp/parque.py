@@ -229,10 +229,17 @@ def _pedidas_en_proformas(session: Session, filas: list[Any], canon: Any = None,
 def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list[Any]:
     """Las líneas de máquina (marcadas) de factura y albarán de esos clientes
     (o de todos, con `codigos` None), de las series que cuentan."""
+    from app.erp import historico_alias  # noqa: PLC0415
+
     art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
     maquinas = _codigos_maquina(session, eq)
     if not maquinas:
         return []
+    # Los códigos de línea con alias del catálogo (1/11/2026) y la familia
+    # sin mayúsculas ni el fantasma del cero.
+    al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
+    maquinas = maquinas | {equivalencias.clave(c) for c, d in al_art.crudo.items()
+                           if equivalencias.clave(d) in maquinas}
     filas = session.execute(
         select(doc.codcli, lin.ejercicio, doc.tipo, doc.serie, doc.codigo, doc.fecha,
                doc.fecha_original, doc.estado, lin.posicion, lin.codart,
@@ -240,8 +247,8 @@ def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list
                lin.cantidad, art.descripcion.label("art_desc"), art.familia, fam.gama,
                lin.origen_tipo, lin.origen_serie, lin.origen_codigo)
         .join(doc, doc.id == lin.documento_id)
-        .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
-        .outerjoin(fam, fam.codigo == art.familia)
+        .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == al_art.expr(lin.codart)))
+        .outerjoin(fam, fam.codigo == al_fam.expr(art.familia))
         .where(*([doc.codcli.in_(codigos)] if codigos is not None else []),
                doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
                lin.es_producto.is_(True),
@@ -256,8 +263,15 @@ def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list
 
 
 def _contexto(session: Session, filas: list[Any], eq: Any) -> dict[str, Any]:
-    return {"canon": eq.canonico,
-            "proformas": _pedidas_en_proformas(session, filas, eq.canonico),
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_art = historico_alias.articulos(session)
+
+    def canon(c: str | None) -> str:
+        return eq.canonico(al_art.resuelve(c))
+
+    return {"canon": canon,
+            "proformas": _pedidas_en_proformas(session, filas, canon),
             "enlazados": set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
                 HistoricoEjercicio.con_enlaces.is_(True))))}
 

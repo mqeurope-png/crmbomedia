@@ -247,6 +247,19 @@ class HistoricoEquivalencia(Base):
     at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class HistoricoAliasArticulo(Base):
+    """El código con que se tecleó una línea, que es un artículo del catálogo
+    con otro código (0164): `053332` es `53332`, `8` es `00008`. Lo decide
+    Bart caso a caso; no reescribe ni la línea ni el catálogo."""
+
+    __tablename__ = "historico_alias_articulo"
+
+    codigo: Mapped[str] = mapped_column(String(64), primary_key=True)
+    codart: Mapped[str] = mapped_column(String(64), nullable=False)
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class HistoricoSerie(Base):
     """Si una serie de FACTUSOL cuenta como venta (0158). Sin fila, cuenta.
     Las que no cuentan quedan fuera del parque y de «Quién compró qué»."""

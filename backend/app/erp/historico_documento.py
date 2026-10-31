@@ -101,24 +101,34 @@ def _pedido(
 
 
 def _clasificacion(session: Session, ejercicio: str, codarts: set[str]) -> dict[str, dict]:
-    """Nombre del catálogo de su año, familia, clase y gama de cada artículo."""
+    """Nombre del catálogo de su año, familia, clase y gama de cada artículo
+    (por el código de la línea; con su alias del catálogo si lo tiene, y la
+    familia comparada sin mayúsculas ni el fantasma del cero, 1/11/2026)."""
     if not codarts:
         return {}
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
+    destino = {c: al_art.resuelve(c) or c for c in codarts}
     filas = session.execute(
         select(HistoricoArticulo.codart, HistoricoArticulo.descripcion,
                HistoricoArticulo.familia,
                HistoricoArticuloClase.clase, HistoricoFamilia.clase,
                HistoricoFamilia.gama)
-        .outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == HistoricoArticulo.familia)
+        .outerjoin(HistoricoFamilia,
+                   HistoricoFamilia.codigo == al_fam.expr(HistoricoArticulo.familia))
         .outerjoin(HistoricoArticuloClase,
                    HistoricoArticuloClase.codart == HistoricoArticulo.codart)
         .where(HistoricoArticulo.ejercicio == ejercicio,
-               HistoricoArticulo.codart.in_(sorted(codarts)))
+               HistoricoArticulo.codart.in_(sorted(set(destino.values()))))
     ).all()
     from app.erp.historico_maquinas import clase_efectiva_py  # noqa: PLC0415
 
-    return {c: {"nombre": d, "familia": f, "clase": clase_efectiva_py(propia, cl), "gama": g}
-            for c, d, f, propia, cl, g in filas}
+    por_catalogo = {c.strip().upper(): {"nombre": d, "familia": al_fam.resuelve(f),
+                                        "clase": clase_efectiva_py(propia, cl), "gama": g}
+                    for c, d, f, propia, cl, g in filas}
+    return {c: por_catalogo[d.strip().upper()] for c, d in destino.items()
+            if d.strip().upper() in por_catalogo}
 
 
 def _estado_label(tipo: str, raw: str | None) -> str | None:
