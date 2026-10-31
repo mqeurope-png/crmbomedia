@@ -128,8 +128,13 @@ export default function CompanyDetailPage() {
     && contacts.length === 0;
   useEffect(() => {
     if (!sinContactos) return;
-    getDespegueEmpresa(params.id).then(setDespegue).catch(() => setDespegue(null));
+    let vivo = true;          // al pasar a otra empresa, no se pinta el porqué de la anterior
+    getDespegueEmpresa(params.id)
+      .then((d) => { if (vivo) setDespegue(d); })
+      .catch(() => { if (vivo) setDespegue(null); });
+    return () => { vivo = false; };
   }, [sinContactos, params.id]);
+  const despegueVisible = sinContactos ? despegue : null;
 
   const [canSeeParque, setCanSeeParque] = useState(false);
   const [canEditParque, setCanEditParque] = useState(false);
@@ -454,10 +459,12 @@ export default function CompanyDetailPage() {
       {sinContactos ? (
         <p className="form-warning" role="status">
           Cliente de FACTUSOL sin ningún contacto: no hay a quién escribir.
-          {despegue && despegue.contactos > 0
-            ? ` Se le ${despegue.contactos === 1 ? "quitó" : "quitaron"} ${despegue.contactos} `
-              + `contacto${despegue.contactos === 1 ? "" : "s"} de ${despegue.dominios.join(", ")}`
-              + `${despegue.at ? ` el ${formatBackendDateTime(despegue.at)}` : ""}: el vínculo `
+          {despegueVisible && despegueVisible.contactos > 0
+            ? ` Se le ${despegueVisible.contactos === 1 ? "quitó" : "quitaron"} `
+              + `${despegueVisible.contactos} contacto${despegueVisible.contactos === 1 ? "" : "s"}`
+              + ` de ${despegueVisible.dominios.join(", ")}`
+              + `${despegueVisible.at ? ` el ${formatBackendDateTime(despegueVisible.at)}` : ""}`
+              + ": el vínculo "
               + "venía del dominio compartido, no de que fueran de aquí."
             : ""}{" "}
           Añade el contacto bueno desde la pestaña «Contactos» o desde su ficha.

@@ -73,7 +73,10 @@ def main(argv: list[str] | None = None) -> int:
 
     with Session(get_engine()) as s:
         lista = dc.cargar(s, refrescar=True)
-        codcli = {cid: (c or "").strip() or None for cid, c in s.execute(
+        from app.integrations.factusol.auditoria_iva import codcli_key
+
+        # El código normalizado: `4471` y `4471.0` son el mismo cliente.
+        codcli = {cid: codcli_key(c) or None for cid, c in s.execute(
             select(Company.id, Company.factusol_company_id))}
         por_dominio: dict[str, Counter] = defaultdict(Counter)
         empresas_de: dict[str, Counter] = defaultdict(Counter)
@@ -195,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nYA CLIENTE")
         yc = dd.ya_cliente(s)
         print(f"  Hoy: {yc['contactos']} contactos en {yc['empresas']} empresas")
-        correos = dd.correos_de_factusol(s, filas=f_cli) if f_cli else None
+        correos = dd.correos_de_factusol(s, filas=f_cli) if f_cli is not None else None
         if correos is None:
             print("  (sin leer F_CLI de FACTUSOL: la cuenta de abajo no descuenta a los que "
                   "tienen el correo de su cliente)")

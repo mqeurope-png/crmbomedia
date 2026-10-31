@@ -541,6 +541,9 @@ def test_la_ficha_sabe_por_que_un_cliente_se_quedo_sin_contactos(http, session_f
                  headers=auth_headers(http, "user"))
     assert r.status_code == 200
     assert r.json()["contactos"] == 1 and r.json()["dominios"] == ["xtec.cat"]
+    # Quien ve la ficha (también un viewer) ve el porqué.
+    assert http.get(f"/api/crm/despegue-dominios/empresa/{solo_id}",
+                    headers=auth_headers(http, "viewer")).status_code == 200
     r = http.get(f"/api/crm/despegue-dominios/empresa/{esc['propia']}",
                  headers=auth_headers(http, "user"))
     assert r.json() == {"contactos": 0, "dominios": [], "at": None}

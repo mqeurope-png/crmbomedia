@@ -68,7 +68,8 @@ def upgrade() -> None:
     tabla = sa.table("dominios_compartidos", sa.column("dominio", sa.String),
                      sa.column("tipo", sa.String), sa.column("nota", sa.String),
                      sa.column("por", sa.String), sa.column("at", sa.DateTime))
-    ya = {r[0] for r in conn.execute(sa.select(tabla.c.dominio))}
+    # Sin mayúsculas: en MySQL la clave primaria no las distingue.
+    ya = {(r[0] or "").strip().lower() for r in conn.execute(sa.select(tabla.c.dominio))}
     nuevas = [f for f in filas() if f["dominio"] not in ya]
     if nuevas:
         op.bulk_insert(tabla, nuevas)
