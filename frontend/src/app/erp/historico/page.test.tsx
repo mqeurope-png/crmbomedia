@@ -249,3 +249,40 @@ test("sin permiso de configuración, la clase se ve pero no se cambia", async ()
   expect(await screen.findByText("Consumible")).toBeInTheDocument();
   expect(screen.queryByLabelText("Clase de LAS")).not.toBeInTheDocument();
 });
+
+test("sin permiso, la tabla dice por qué no se puede editar", async () => {
+  (jest.requireMock("../../lib/api") as Record<string, jest.Mock>)
+    .getCurrentUser.mockResolvedValue({ id: "u2", role: "pedidos", capabilities: ["erp.office.view"] });
+  const user = userEvent.setup();
+  render(<HistoricoPage />);
+  await user.click(screen.getByRole("button", { name: "Familias" }));
+  expect(await screen.findByRole("note")).toHaveTextContent(/Solo lectura: .*«Configuración ERP»/);
+});
+
+test("si no se puede leer el usuario, lo dice en vez de quedarse en texto plano", async () => {
+  (jest.requireMock("../../lib/api") as Record<string, jest.Mock>)
+    .getCurrentUser.mockRejectedValue(new Error("401"));
+  const user = userEvent.setup();
+  render(<HistoricoPage />);
+  await user.click(screen.getByRole("button", { name: "Familias" }));
+  expect(await screen.findByRole("note")).toHaveTextContent(/no se ha podido comprobar tu usuario/);
+  expect(screen.queryByLabelText("Clase de LAS")).not.toBeInTheDocument();
+});
+
+test("una propuesta que Bart descartó se puede aceptar después, y su clase sigue mandando", async () => {
+  const m = api();
+  m.getHistoricoFamilias.mockResolvedValue({
+    items: [{ codigo: "CDX", descripcion: "Figurante CD", clase: "accesorio", gama: "cd-dvd",
+              articulos: 4, ventas: 20,
+              propuesta: { clase: "recambio", gama: "cd-dvd", estado: "descartada" } }],
+    clases: ["maquina", "consumible", "recambio", "accesorio", "otro"],
+    gamas: [...GAMAS, { codigo: "cd-dvd", nombre: "CD-DVD" }],
+  });
+  const user = userEvent.setup();
+  render(<HistoricoPage />);
+  await user.click(screen.getByRole("button", { name: "Familias" }));
+  expect(await screen.findByLabelText("Clase de CDX")).toHaveValue("accesorio");
+  expect(screen.getByText("Se queda la suya")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Aceptar la propuesta de CDX" }));
+  expect(m.aceptarPropuestaFamilia).toHaveBeenCalledWith("CDX");
+});

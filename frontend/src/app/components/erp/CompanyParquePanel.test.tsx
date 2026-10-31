@@ -175,3 +175,21 @@ test("la factura enseña su albarán y un albarán suelto avisa de la factura ce
   expect(screen.getByText("1-123021").closest("a")).toHaveAttribute(
     "href", expect.stringContaining("/factura/2022/1/123021"));
 });
+
+test("la misma máquina con el código de FACTUSOL y el de la web sale avisada", async () => {
+  api().getParqueEmpresa.mockResolvedValue({
+    ...PARQUE, maquinas: [
+      MAQ({ codart: "34", articulo: "Beambox Figurante (40W)",
+            mismo_modelo: [{ codart: "60995", articulo: "FLUX BEAMBOX 40W", ejercicio: "2025",
+                             documento: { tipo: "factura", serie: "5", codigo: 250009, numero: "5-250009" } }] }),
+      MAQ({ codart: "60995", articulo: "FLUX BEAMBOX 40W", clave: "2025|factura|5|250009|1|60995",
+            mismo_modelo: [{ codart: "34", articulo: "Beambox Figurante (40W)", ejercicio: "2026",
+                             documento: { tipo: "factura", serie: "5", codigo: 260001, numero: "5-260001" } }] }),
+    ],
+  });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
+  const avisos = await screen.findAllByText(/¿La misma máquina que/);
+  expect(avisos).toHaveLength(2);
+  expect(within(avisos[0]).getByText("60995").closest("a")).toHaveAttribute(
+    "href", expect.stringContaining("/factura/2025/5/250009"));
+});

@@ -157,6 +157,21 @@ export function CompanyParquePanel({
                         </Link>
                       </div>
                     ))}
+                    {!m.baja ? m.mismo_modelo?.map((o) => (
+                      <div key={`mm-${o.codart}-${o.documento?.numero ?? ""}`}>
+                        <span className="badge warn"
+                              title="Mismo modelo con otro código de artículo (el de FACTUSOL y el de la web). Si es la misma máquina, da de baja una de las dos.">
+                          ¿La misma máquina que{" "}
+                          {o.documento ? (
+                            <Link href={fichaDocumentoHref(o.documento.tipo, o.ejercicio ?? "", o.documento.serie,
+                                                           o.documento.codigo)} prefetch={false}>
+                              <span className="mono">{o.codart}</span>
+                            </Link>
+                          ) : <span className="mono">{o.codart}</span>}
+                          {o.articulo ? ` (${o.articulo})` : ""}?
+                        </span>
+                      </div>
+                    )) : null}
                     {m.posible_misma_venta && !m.baja ? (
                       <div>
                         <span className="badge warn"

@@ -26,6 +26,13 @@ Un accesorio, un recambio o un consumible no son máquinas.
   marcado como máquina (`historico_articulos_clase`, ver
   `historico_maquinas`). La clase de la familia ya no basta: lo no marcado no
   entra. Y solo las series que cuentan como venta (`historico_series`).
+- **La misma máquina con dos códigos** (1/11/2026): el código interno de
+  FACTUSOL y el de la web (FLUX BEAMBOX 40W y «34 · Beambox … (40W)»). Si
+  los dos están marcados, el cliente que compró por los dos canales sale con
+  dos. No se juntan solas: el parque AVISA (`mismo_modelo`) cuando un
+  cliente tiene, en servicio, dos máquinas de códigos distintos con la misma
+  potencia y una palabra de modelo en común. Puede ser la misma máquina o dos
+  compras; lo decide Bart (dando de baja una).
 - **Incompleto a sabiendas.** Lo vendido antes de 2014, como línea de nota o
   en otro sitio no sale: se **añade a mano** (`ParqueMaquinaManual`). Lo que
   ya no está en servicio se **da de baja** y deja de contar en el parque
@@ -40,6 +47,8 @@ BoHub.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -68,6 +77,15 @@ ALBARAN_FACTURADO = "1"
 #: Un albarán y una factura del mismo artículo, sin enlace, a menos de esto:
 #: se avisa de que pueden ser la misma venta (no se casan solos).
 DIAS_MISMA_VENTA = 60
+
+
+#: Palabras que no distinguen un modelo de otro (marca, tipo, idioma).
+PALABRAS_GENERICAS = frozenset({
+    "FLUX", "LASER", "LASERS", "CORTADORA", "CORTADOR", "GRABADORA", "GRABADOR", "MAQUINA",
+    "IMPRESORA", "PRINTER", "CUTTER", "ENGRAVER", "SOBREMESA", "PORTATIL", "PROFESIONAL",
+    "DESKTOP", "PORTABLE", "CO2", "DIODO", "DIODE", "DE", "DEL", "LA", "EL", "LOS", "LAS",
+    "CON", "PARA", "AND", "THE", "FOR", "WITH",
+})
 
 
 def _ahora() -> datetime:
@@ -285,6 +303,43 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
     return out
 
 
+def _modelo(nombre: str | None) -> tuple[frozenset[str], frozenset[str]]:
+    """Potencias (`40W`) y palabras de modelo de un nombre de máquina, sin
+    tildes ni mayúsculas ni las palabras genéricas."""
+    t = unicodedata.normalize("NFKD", nombre or "").encode("ascii", "ignore").decode().upper()
+    potencias = frozenset(re.sub(r"[.,]0+$", "", p.replace(",", "."))
+                          for p in re.findall(r"(\d+(?:[.,]\d+)?)\s*W(?![A-Z])", t))
+    palabras = frozenset(w for w in re.findall(r"[A-Z][A-Z0-9]*", t)
+                         if len(w) >= 3 and w not in PALABRAS_GENERICAS
+                         and not re.fullmatch(r"\d+W", w))
+    return potencias, palabras
+
+
+def _mismo_modelo(a: str | None, b: str | None) -> bool:
+    pa, wa = _modelo(a)
+    pb, wb = _modelo(b)
+    return bool(pa) and pa == pb and bool(wa & wb)
+
+
+def avisar_mismo_modelo(rows: list[dict[str, Any]]) -> None:
+    """A cada máquina en servicio le apunta las otras del mismo cliente que
+    parecen el mismo modelo con OTRO código (la de FACTUSOL y la de la web)."""
+    activas = [r for r in rows if r["baja"] is None and r.get("codart")]
+    for r in rows:
+        r["mismo_modelo"] = []
+    for i, a in enumerate(activas):
+        for b in activas[i + 1:]:
+            if (a["codart"] or "").strip().upper() == (b["codart"] or "").strip().upper():
+                continue
+            if not _mismo_modelo(a["articulo"], b["articulo"]):
+                continue
+            for x, y in ((a, b), (b, a)):
+                x["mismo_modelo"].append({
+                    "codart": y["codart"], "articulo": y["articulo"],
+                    "documento": y.get("documento"), "ejercicio": y.get("ejercicio"),
+                })
+
+
 def parque(session: Session, company: Any) -> dict[str, Any]:
     """Las máquinas de una empresa: las volcadas y las añadidas a mano, con
     su baja, la gama con nombre y de dónde sale cada una."""
@@ -315,6 +370,7 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
     # Activas primero; dentro, las más recientes arriba.
     rows.sort(key=lambda r: (r["fecha"] or f"{r['ejercicio'] or '0000'}-00-00"), reverse=True)
     rows.sort(key=lambda r: r["baja"] is not None)
+    avisar_mismo_modelo(rows)
     activas = [r for r in rows if r["baja"] is None]
     return {
         "codcli": codcli,

@@ -7818,6 +7818,12 @@ export type MaquinasResumen = {
   umbral?: number;
   /** Revisadas como no máquina que una regla propondría hoy. */
   colisiones?: number;
+  /** Lo vendido cuyo código no está en ningún catálogo: no tiene familia, no
+   *  sale en ninguna pantalla y no puede entrar en el parque. */
+  sin_catalogo?: {
+    articulos: number; lineas: number;
+    items: { codart: string; descripcion: string | null; lineas: number }[];
+  };
   revisadas?: number;
   deshechas?: number;
 };
@@ -8176,6 +8182,12 @@ export type ParqueMaquina = {
   albaranes?: ParqueDocRef[];
   /** Albarán sin enlace con una factura del mismo artículo cerca: quizá la misma venta. */
   posible_misma_venta?: ParqueDocRef | null;
+  /** Otras máquinas en servicio del mismo cliente que parecen el mismo modelo
+   *  con OTRO código (el de FACTUSOL y el de la web): quizá la misma máquina. */
+  mismo_modelo?: {
+    codart: string | null; articulo: string | null; documento: ParqueDocRef | null;
+    ejercicio: string | null;
+  }[];
   nota?: string | null;
   baja: { at: string | null; motivo: string | null; por: string | null } | null;
 };

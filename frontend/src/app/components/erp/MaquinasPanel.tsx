@@ -127,6 +127,34 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
             <strong>{datos.marcadas} de {datos.total}</strong> marcadas como máquina
             {datos.sin_revisar > 0 ? <span className="muted"> · {datos.sin_revisar} sin revisar</span> : null}
           </p>
+          {datos.sin_catalogo && datos.sin_catalogo.articulos > 0 ? (
+            <details className="erp-maquinas-sin-catalogo">
+              <summary>
+                <span className="badge warn">
+                  {datos.sin_catalogo.articulos === 1
+                    ? "1 artículo vendido no está en ningún catálogo"
+                    : `${datos.sin_catalogo.articulos} artículos vendidos no están en ningún catálogo`}
+                </span>{" "}
+                <span className="muted small">
+                  ({datos.sin_catalogo.lineas} {datos.sin_catalogo.lineas === 1 ? "línea" : "líneas"}): sin familia, no salen en ninguna pantalla
+                  ni pueden entrar en el parque.
+                </span>
+              </summary>
+              <p className="form-hint">
+                El código de la línea no existe en los artículos de ningún año volcado (artículo
+                borrado o tecleado a mano). Si alguno es una máquina, añádela a mano en la ficha
+                del cliente. Los más vendidos:
+              </p>
+              <ul className="small">
+                {datos.sin_catalogo.items.map((x) => (
+                  <li key={x.codart}>
+                    <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
+                    <span className="muted">· {x.lineas} líneas</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
           <div className="erp-historico-acciones">
             <label className="field">
               <span>Familia</span>
