@@ -313,7 +313,7 @@ def clases_de_articulo(session: Session) -> list[dict[str, Any]]:
     out = []
     for p in propias:
         a = catalogo.get(p.codart)
-        fam = familias.get(al_fam.resuelve(a.familia)) if a and a.familia else None
+        fam = familias.get(al_fam.del_articulo(a.codart, a.familia) or "") if a else None
         # «Es máquina» / «no es máquina» en una familia de máquinas se lleva
         # en el panel de máquinas (31/10/2026); aquí, lo que va contra su
         # familia.

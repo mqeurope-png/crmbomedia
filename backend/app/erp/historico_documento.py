@@ -116,7 +116,7 @@ def _clasificacion(session: Session, ejercicio: str, codarts: set[str]) -> dict[
                HistoricoArticuloClase.clase, HistoricoFamilia.clase,
                HistoricoFamilia.gama)
         .outerjoin(HistoricoFamilia,
-                   HistoricoFamilia.codigo == al_fam.expr(HistoricoArticulo.familia))
+                   HistoricoFamilia.codigo == al_fam.expr_articulo(HistoricoArticulo))
         .outerjoin(HistoricoArticuloClase,
                    HistoricoArticuloClase.codart == HistoricoArticulo.codart)
         .where(HistoricoArticulo.ejercicio == ejercicio,
@@ -124,7 +124,7 @@ def _clasificacion(session: Session, ejercicio: str, codarts: set[str]) -> dict[
     ).all()
     from app.erp.historico_maquinas import clase_efectiva_py  # noqa: PLC0415
 
-    por_catalogo = {c.strip().upper(): {"nombre": d, "familia": al_fam.resuelve(f),
+    por_catalogo = {c.strip().upper(): {"nombre": d, "familia": al_fam.del_articulo(c, f),
                                         "clase": clase_efectiva_py(propia, cl), "gama": g}
                     for c, d, f, propia, cl, g in filas}
     return {c: por_catalogo[d.strip().upper()] for c, d in destino.items()

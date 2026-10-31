@@ -451,11 +451,35 @@ function AgujerosDelCatalogo({
           </ul>
         </details>
       ) : null}
+      {datos.familia_vacia && datos.familia_vacia.articulos > 0 ? (
+        <details>
+          <summary>
+            <span className="badge warn">
+              Sin familia: {datos.familia_vacia.articulos} {datos.familia_vacia.articulos === 1 ? "artículo" : "artículos"}
+            </span>{" "}
+            <span className="muted small">
+              ({datos.familia_vacia.lineas} líneas vendidas): la familia está vacía en el catálogo de
+              todos los años. No se inventa: míralos y ponles familia en FACTUSOL.
+              {datos.familia_vacia.recuperadas > 0
+                ? ` ${datos.familia_vacia.recuperadas} más la tenían vacía en su último año y se toma la de otro ejercicio.`
+                : ""}
+            </span>
+          </summary>
+          <ul className="small" aria-label="Sin familia">
+            {datos.familia_vacia.items.map((x) => (
+              <li key={x.codart}>
+                <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
+                <span className="muted">· {x.lineas} {x.lineas === 1 ? "línea" : "líneas"}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       {sf && sf.articulos > 0 ? (
         <details>
           <summary>
             <span className="badge warn">
-              Con catálogo y sin familia que case: {sf.articulos} {sf.articulos === 1 ? "artículo" : "artículos"}
+              Familia sin clasificar: {sf.articulos} {sf.articulos === 1 ? "artículo" : "artículos"}
             </span>{" "}
             <span className="muted small">
               ({sf.lineas} líneas vendidas): su familia no está en la tabla o está sin clasificar.
