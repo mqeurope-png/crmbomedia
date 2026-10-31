@@ -136,9 +136,14 @@ def nombres_de_serie(session: Session) -> dict[str, str]:
     cfg = series_config(session)
     out = {str(k): v for k, v in series_abbreviations_config(
         cfg.get("series_abbreviations")).items() if v}
+    from app.services.empresas_grupo import hay_bomedia  # noqa: PLC0415
+
     for k, comp in merge_companies(cfg.get("companies")).items():
         nombre = str((comp or {}).get("nombre") or "").strip()
-        if nombre:
+        # La serie 1 sigue a nombre de «Bomedia S.L.» en FACTUSOL (decisión de
+        # Bart, es el dato fiscal), pero esa marca no se escribe en nada nuevo:
+        # aquí no se usa. El nombre de la serie (Ajustes ERP) manda por encima.
+        if nombre and not hay_bomedia(nombre):
             out[str(k)] = nombre
     out.update({str(k): v for k, v in series_names(session).items()})
     return out
@@ -359,30 +364,76 @@ def _vendidas(session: Session, fuera: set[str], solo: set[str] | None = None,
             for c, n, p in session.execute(stmt) if c and c.strip()}
 
 
+def _sin_ceros(codart: str) -> str:
+    k = _k(codart)
+    return (k.lstrip("0") or "0") if k.isdigit() else k
+
+
 def sin_catalogo(session: Session,
                  vendidas: dict[str, tuple[int, float | None]] | None = None) -> dict[str, Any]:
-    """Lo vendido cuyo código no está en NINGÚN catálogo volcado (1/11/2026):
-    no tiene familia, así que no sale en «Máquinas, artículo a artículo» ni
-    en las búsquedas por familia, y no puede entrar en el parque. Se cuenta
-    para que se vea el agujero; las más vendidas, con el nombre de la línea."""
-    lin, doc = HistoricoLinea, HistoricoDocumento
+    """Lo que no puede entrar en el parque por el catálogo (1/11/2026), en dos
+    números separados:
+
+    - **sin catálogo**: lo vendido cuyo código no está en NINGÚN catálogo
+      volcado. Eso es FACTUSOL; aquí solo se cuenta. Los que casarían con un
+      código del catálogo quitando ceros a la izquierda se ENSEÑAN (`parecidos`)
+      y no se aplican: pueden ser otro artículo, como pasó con las familias;
+    - **con catálogo y sin familia que case**: artículos cuya familia del
+      catálogo más reciente no está en la tabla de familias o está sin
+      clasificar. Por familia, para que Bart clasifique lo que falte. Los
+      códigos de familia NO se normalizan: «014» y «14» son familias distintas."""
+    lin, doc, art = HistoricoLinea, HistoricoDocumento, HistoricoArticulo
     if vendidas is None:
         vendidas = _vendidas(session, series_excluidas(session))
-    conocidos = {_k(c) for c in session.scalars(select(HistoricoArticulo.codart).distinct())}
+    catalogo = list(session.execute(select(art.ejercicio, art.codart, art.familia)
+                                    .order_by(art.ejercicio)))
+    conocidos = {_k(c) for _, c, _ in catalogo}
+    por_ceros: dict[str, set[str]] = {}
+    for _, c, _ in catalogo:
+        por_ceros.setdefault(_sin_ceros(c), set()).add(c)
     faltan: dict[str, list[Any]] = {}
     for c, (n, _p) in vendidas.items():
         if _k(c) not in conocidos:
             fila = faltan.setdefault(_k(c), [c, 0])
             fila[1] += n
     top = sorted(faltan.values(), key=lambda x: (-x[1], x[0]))[:50]
+    parecidos = {c: sorted(por_ceros.get(_sin_ceros(c), ())) for c, _ in faltan.values()}
+    con_ceros = [(c, n) for c, n in faltan.values() if parecidos[c]]
+    mostrar = {c for c, _ in top} | {c for c, _ in con_ceros}
     nombres = dict(session.execute(
         select(lin.codart, func.max(lin.descripcion)).join(doc, doc.id == lin.documento_id)
-        .where(lin.codart.in_([c for c, _ in top]), doc.tipo.in_(TIPOS_VENTA))
-        .group_by(lin.codart)).all()) if top else {}
+        .where(lin.codart.in_(sorted(mostrar)), doc.tipo.in_(TIPOS_VENTA))
+        .group_by(lin.codart)).all()) if mostrar else {}
+
+    # Con catálogo y sin familia que case: por la familia de su catálogo más
+    # reciente, tal cual (sin quitar ceros).
+    familias = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
+    ultimo: dict[str, tuple[str, str | None]] = {}
+    for _, c, fam in catalogo:
+        ultimo[_k(c)] = (c, fam)
+    lineas = {_k(c): n for c, (n, _p) in vendidas.items()}
+    sin_fam: dict[str, dict[str, Any]] = {}
+    for kc, (c, fam) in ultimo.items():
+        f = familias.get(fam) if fam else None
+        if f is not None and f.clase:
+            continue
+        motivo = ("sin_familia" if not fam else "no_esta" if f is None else "sin_clase")
+        g = sin_fam.setdefault(fam or "", {"familia": fam, "motivo": motivo, "articulos": 0,
+                                           "lineas": 0, "ejemplos": []})
+        g["articulos"] += 1
+        g["lineas"] += lineas.get(kc, 0)
+        if len(g["ejemplos"]) < 5:
+            g["ejemplos"].append(c)
+    grupos = sorted(sin_fam.values(), key=lambda g: (-g["articulos"], g["familia"] or ""))
     return {
         "articulos": len(faltan),
         "lineas": sum(n for _, n in faltan.values()),
         "items": [{"codart": c, "descripcion": nombres.get(c), "lineas": n} for c, n in top],
+        "con_ceros": [{"codart": c, "descripcion": nombres.get(c), "lineas": n,
+                       "parecidos": parecidos[c]}
+                      for c, n in sorted(con_ceros, key=lambda x: (-x[1], x[0]))],
+        "sin_familia": {"articulos": sum(g["articulos"] for g in grupos),
+                        "lineas": sum(g["lineas"] for g in grupos), "familias": grupos},
     }
 
 

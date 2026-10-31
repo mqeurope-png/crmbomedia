@@ -127,34 +127,7 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
             <strong>{datos.marcadas} de {datos.total}</strong> marcadas como máquina
             {datos.sin_revisar > 0 ? <span className="muted"> · {datos.sin_revisar} sin revisar</span> : null}
           </p>
-          {datos.sin_catalogo && datos.sin_catalogo.articulos > 0 ? (
-            <details className="erp-maquinas-sin-catalogo">
-              <summary>
-                <span className="badge warn">
-                  {datos.sin_catalogo.articulos === 1
-                    ? "1 artículo vendido no está en ningún catálogo"
-                    : `${datos.sin_catalogo.articulos} artículos vendidos no están en ningún catálogo`}
-                </span>{" "}
-                <span className="muted small">
-                  ({datos.sin_catalogo.lineas} {datos.sin_catalogo.lineas === 1 ? "línea" : "líneas"}): sin familia, no salen en ninguna pantalla
-                  ni pueden entrar en el parque.
-                </span>
-              </summary>
-              <p className="form-hint">
-                El código de la línea no existe en los artículos de ningún año volcado (artículo
-                borrado o tecleado a mano). Si alguno es una máquina, añádela a mano en la ficha
-                del cliente. Los más vendidos:
-              </p>
-              <ul className="small">
-                {datos.sin_catalogo.items.map((x) => (
-                  <li key={x.codart}>
-                    <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
-                    <span className="muted">· {x.lineas} líneas</span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          ) : null}
+          {datos.sin_catalogo ? <AgujerosDelCatalogo datos={datos.sin_catalogo} /> : null}
           <div className="erp-historico-acciones">
             <label className="field">
               <span>Familia</span>
@@ -359,5 +332,90 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
         </>
       )}
     </section>
+  );
+}
+
+const MOTIVO_FAMILIA: Record<string, string> = {
+  no_esta: "no está en la tabla de familias",
+  sin_clase: "sin clasificar",
+  sin_familia: "el artículo no tiene familia",
+};
+
+/** Lo que no puede entrar en el parque por el catálogo, en dos números
+ *  separados (1/11/2026). Solo se enseña: no se aplica nada. */
+function AgujerosDelCatalogo({ datos }: { datos: NonNullable<MaquinasResumen["sin_catalogo"]> }) {
+  const sf = datos.sin_familia;
+  return (
+    <div className="erp-maquinas-sin-catalogo">
+      {datos.articulos > 0 ? (
+        <details>
+          <summary>
+            <span className="badge warn">
+              Sin catálogo: {datos.articulos} {datos.articulos === 1 ? "artículo vendido" : "artículos vendidos"}
+            </span>{" "}
+            <span className="muted small">
+              ({datos.lineas} {datos.lineas === 1 ? "línea" : "líneas"}): su código no está en el
+              catálogo de ningún año volcado. Eso es de FACTUSOL; no pueden entrar en el parque.
+            </span>
+          </summary>
+          {datos.con_ceros && datos.con_ceros.length > 0 ? (
+            <>
+              <p className="form-hint">
+                Estos casarían con un código del catálogo quitando ceros a la izquierda. No se
+                juntan solos: puede ser otro artículo. Míralos uno a uno.
+              </p>
+              <ul className="small" aria-label="Casarían quitando ceros">
+                {datos.con_ceros.map((x) => (
+                  <li key={x.codart}>
+                    <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
+                    <span className="muted">· {x.lineas} {x.lineas === 1 ? "línea" : "líneas"} →</span>{" "}
+                    {x.parecidos.map((p) => <span key={p} className="mono">{p} </span>)}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <p className="form-hint">Los más vendidos:</p>
+          <ul className="small">
+            {datos.items.map((x) => (
+              <li key={x.codart}>
+                <span className="mono">{x.codart}</span> {x.descripcion ?? ""}{" "}
+                <span className="muted">· {x.lineas} {x.lineas === 1 ? "línea" : "líneas"}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {sf && sf.articulos > 0 ? (
+        <details>
+          <summary>
+            <span className="badge warn">
+              Con catálogo y sin familia que case: {sf.articulos} {sf.articulos === 1 ? "artículo" : "artículos"}
+            </span>{" "}
+            <span className="muted small">
+              ({sf.lineas} líneas vendidas): su familia no está en la tabla o está sin clasificar.
+              Clasifica la familia arriba y entran.
+            </span>
+          </summary>
+          <table className="data-table data-table--responsive">
+            <thead>
+              <tr><th>Familia</th><th>Por qué</th><th className="num">Artículos</th>
+                <th className="num">Líneas</th><th>Por ejemplo</th></tr>
+            </thead>
+            <tbody>
+              {sf.familias.map((g) => (
+                <tr key={g.familia ?? "—"}>
+                  <td data-label="Familia" className="mono">{g.familia ?? "—"}</td>
+                  <td data-label="Por qué">{MOTIVO_FAMILIA[g.motivo] ?? g.motivo}</td>
+                  <td data-label="Artículos" className="num">{g.articulos}</td>
+                  <td data-label="Líneas" className="num">{g.lineas}</td>
+                  <td data-label="Por ejemplo" className="mono small">{g.ejemplos.join(" · ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      ) : null}
+    </div>
   );
 }

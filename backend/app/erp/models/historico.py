@@ -231,6 +231,22 @@ class HistoricoAjuste(Base):
     valor: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class HistoricoEquivalencia(Base):
+    """Dos códigos de artículo que son el MISMO modelo (0163): el interno de
+    FACTUSOL y el de la web (60995 y 34, la Beambox 40W). `codart` apunta a
+    su `canonico`; un grupo es el canónico más todos los que apuntan a él.
+    Se edita desde la pantalla. Sirve para emparejar un albarán y su factura
+    con códigos distintos, contar una máquina en el parque y encontrar las
+    ventas de los dos en «Quién compró qué»."""
+
+    __tablename__ = "historico_equivalencias"
+
+    codart: Mapped[str] = mapped_column(String(64), primary_key=True)
+    canonico: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class HistoricoSerie(Base):
     """Si una serie de FACTUSOL cuenta como venta (0158). Sin fila, cuenta.
     Las que no cuentan quedan fuera del parque y de «Quién compró qué»."""

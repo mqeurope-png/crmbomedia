@@ -147,7 +147,7 @@ const MAX_MENCION = 255;
 type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "ofertas" | "aviso_envio" | "series"
-  | "abreviaturas" | "sat" | "empresas" | "menciones" | "almacenes" | "contrapartidas"
+  | "abreviaturas" | "nombres_serie" | "sat" | "empresas" | "menciones" | "almacenes" | "contrapartidas"
   | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento"
   | "asistente";
 
@@ -171,6 +171,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
            "factusol_estfac_cobrada", "factusol_estfac_pendiente",
            "factusol_auto_mark_paid_when_order_paid"] },
   { id: "abreviaturas", title: "Abreviaturas de empresa", keys: ["factusol_series_abbreviations"] },
+  { id: "nombres_serie", title: "Nombre de cada serie", keys: ["factusol_series_names"] },
   { id: "sat", title: "Email del SAT / taller", keys: ["sat_email"] },
   { id: "empresas", title: "Empresas emisoras", keys: ["factusol_companies"] },
   { id: "menciones", title: "Menciones legales de factura",
@@ -992,6 +993,31 @@ export default function ErpSettingsPage() {
               },
             })}
           />
+        </SettingsSection>
+
+        {/* 1/11/2026 — el nombre de cada serie en las pantallas internas
+            (series del histórico, selector de serie). No es el dato fiscal:
+            ese va en «Empresas emisoras» y sale en las facturas. */}
+        <SettingsSection
+          {...sectionProps("nombres_serie")}
+          lead="Cómo se llama cada serie en las pantallas internas (las series del histórico, el selector de serie). No cambia nada fiscal: la empresa que sale en las facturas está en «Empresas emisoras». Vacío: se usa el nombre de la empresa emisora o la abreviatura."
+        >
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((serie) => (
+            <div className="erp-settings-row" key={serie}>
+              <span className="erp-settings-row-name">Serie {serie}</span>
+              <input
+                type="text" maxLength={64}
+                aria-label={`Nombre de la serie ${serie}`}
+                value={cfg.factusol_series_names?.[serie] ?? ""}
+                onChange={(e) => patch({
+                  factusol_series_names: {
+                    ...(cfg.factusol_series_names ?? {}),
+                    [serie]: e.target.value,
+                  },
+                })}
+              />
+            </div>
+          ))}
         </SettingsSection>
 
         {/* ERP — destinatario por defecto del envío del PEDIDO por email. */}

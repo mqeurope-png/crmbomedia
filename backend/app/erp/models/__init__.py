@@ -21,6 +21,7 @@ from app.erp.models.historico import (
     HistoricoArticuloClase,
     HistoricoDocumento,
     HistoricoEjercicio,
+    HistoricoEquivalencia,
     HistoricoFamilia,
     HistoricoGama,
     HistoricoLinea,
@@ -96,6 +97,7 @@ from app.erp.models.sku_mapping import ProductSkuMapping, SkuMatchedBy
 
 __all__ = [
     "HistoricoAjuste",
+    "HistoricoEquivalencia",
     "HistoricoArticulo",
     "HistoricoArticuloClase",
     "HistoricoDocumento",

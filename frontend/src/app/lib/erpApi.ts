@@ -7823,6 +7823,14 @@ export type MaquinasResumen = {
   sin_catalogo?: {
     articulos: number; lineas: number;
     items: { codart: string; descripcion: string | null; lineas: number }[];
+    /** Sin catálogo que casarían quitando ceros: solo para mirarlos. */
+    con_ceros?: { codart: string; descripcion: string | null; lineas: number; parecidos: string[] }[];
+    /** Con catálogo y sin familia que case, por familia. */
+    sin_familia?: {
+      articulos: number; lineas: number;
+      familias: { familia: string | null; motivo: string; articulos: number; lineas: number;
+                  ejemplos: string[] }[];
+    };
   };
   revisadas?: number;
   deshechas?: number;
@@ -7905,6 +7913,29 @@ export async function getHistoricoSeries(): Promise<SeriesVenta> {
 export async function marcarHistoricoSerie(serie: string, cuenta: boolean): Promise<SeriesVenta> {
   return apiFetch(`/api/erp/historico/series/${encodeURIComponent(serie)}`, {
     method: "PUT", body: JSON.stringify({ cuenta }),
+  });
+}
+
+/** Dos códigos de artículo que son el mismo modelo (el de FACTUSOL y el de la web). */
+export type Equivalencia = {
+  codart: string; descripcion: string | null;
+  canonico: string; canonico_descripcion: string | null;
+  por: string | null; at: string | null;
+};
+
+export async function getEquivalencias(): Promise<{ items: Equivalencia[] }> {
+  return apiFetch("/api/erp/historico/equivalencias");
+}
+
+export async function declararEquivalencia(canonico: string, codart: string): Promise<{ items: Equivalencia[] }> {
+  return apiFetch("/api/erp/historico/equivalencias", {
+    method: "POST", body: JSON.stringify({ canonico, codart }),
+  });
+}
+
+export async function quitarEquivalencia(codart: string): Promise<{ items: Equivalencia[] }> {
+  return apiFetch(`/api/erp/historico/equivalencias/${encodeURIComponent(codart)}`, {
+    method: "DELETE",
   });
 }
 
