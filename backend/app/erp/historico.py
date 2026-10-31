@@ -523,12 +523,14 @@ def compradores(
         # el código de la web o el interno, 1/11/2026).
         from app.erp import historico_equivalencias  # noqa: PLC0415
 
-        grupo = historico_equivalencias.cargar(session).grupo(codart)
-        stmt = stmt.where(func.upper(lin.codart).in_(
-            sorted({historico_equivalencias.clave(c) for c in grupo})) if len(grupo) > 1
-            else lin.codart == codart)
+        grupo = historico_equivalencias.cargar(session).grupo(al_art.resuelve(codart) or codart)
+        # Y las líneas tecleadas con un alias de cualquiera de ellos.
+        claves = {historico_equivalencias.clave(c) for c in grupo | {codart}}
+        claves |= {historico_equivalencias.clave(c) for c, d in al_art.crudo.items()
+                   if historico_equivalencias.clave(d) in claves}
+        stmt = stmt.where(func.upper(lin.codart).in_(sorted(claves)))
     if q:
-        stmt = stmt.where(or_(lin.codart == q.strip(),
+        stmt = stmt.where(or_(lin.codart == q.strip(), cod_lin == q.strip(),
                               art.descripcion.ilike(_like(q.strip()), escape="/")))
     if familia:
         stmt = stmt.where(fam_art == familia)
@@ -560,7 +562,11 @@ def compradores(
 
     from app.erp import historico_equivalencias as _eq  # noqa: PLC0415
 
-    modelo = _eq.cargar(session).canonico
+    _equiv = _eq.cargar(session)
+
+    def modelo(c: str | None) -> str:
+        # Por MODELO: el alias de la línea resuelto y el código equivalente.
+        return _equiv.canonico(al_art.resuelve(c))
     clientes: dict[str, dict[str, Any]] = {}
     for (c_art, cant, ej, tipo, serie, codigo, fecha, fecha_orig, codcli, nombre,
          art_desc, _familia, lin_desc) in session.execute(stmt):
@@ -576,7 +582,7 @@ def compradores(
             TIPO_FACTURA: [0.0, set()], TIPO_ALBARAN: [0.0, set()]})
         pa[tipo][0] += float(cant or 0)
         pa[tipo][1].add((ej, tipo, serie, codigo))
-        cl["articulos"][c_art] = art_desc or lin_desc
+        cl["articulos"][al_art.resuelve(c_art) or c_art] = art_desc or lin_desc
         # La más reciente: por la fecha si es de verdad; si no, por el ejercicio.
         orden = (fecha or date(int(ej), 1, 1), ej, codigo)
         if cl["_orden"] is None or orden > cl["_orden"]:

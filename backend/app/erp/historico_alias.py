@@ -30,7 +30,11 @@ from app.erp.models.historico import HistoricoArticulo, HistoricoFamilia
 
 
 def _k(codigo: str | None) -> str:
-    return (codigo or "").strip().upper()
+    """Sin mayúsculas, espacios ni tildes (como la colación de MySQL)."""
+    import unicodedata  # noqa: PLC0415
+
+    t = unicodedata.normalize("NFKD", codigo or "").encode("ascii", "ignore").decode()
+    return t.strip().upper()
 
 
 @dataclass
@@ -123,7 +127,16 @@ def articulos(session: Session) -> AliasArticulos:
     from app.erp.models.historico import HistoricoAliasArticulo  # noqa: PLC0415
 
     out = AliasArticulos()
-    for a in session.scalars(select(HistoricoAliasArticulo)):
+    filas = list(session.scalars(select(HistoricoAliasArticulo)))
+    if not filas:
+        return out
+    # Un alias solo vale mientras su código NO esté en el catálogo: si una
+    # recarga trae de verdad un artículo «8», manda el catálogo.
+    en_catalogo = {_k(c) for c in session.scalars(select(HistoricoArticulo.codart).where(
+        HistoricoArticulo.codart.in_([a.codigo for a in filas])))}
+    for a in filas:
+        if _k(a.codigo) in en_catalogo:
+            continue
         out.mapa[_k(a.codigo)] = a.codart
         out.crudo[a.codigo] = a.codart
     return out

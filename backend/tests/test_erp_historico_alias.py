@@ -143,3 +143,60 @@ def test_la_migracion_0164_siembra_los_nueve() -> None:
     assert dict(modulo.ALIAS) == {
         "053332": "53332", "8": "00008", "7": "00007", "80": "00080", "100": "00100",
         "020": "00020", "010": "00010", "030": "00030", "040": "00040"}
+
+
+# --- lo que encontró la revisión -------------------------------------------------------
+
+
+def _con_albaran_alias(session_factory) -> None:  # noqa: F811
+    """Albarán tecleado con el alias (053332) y su factura con el código del
+    catálogo (53332), enlazada al albarán."""
+    from tests.test_erp_historico import _alb, _lal
+    d = _datos()
+    d["2026"]["F_ALB"] = [_alb(260701, CLI, "Cliente Figurante", "2026-01-20T00:00:00")]
+    d["2026"]["F_LAL"] = [_lal(260701, 1, "053332", "MAQUINA", 1)]
+    lfa = _lfa(260802, 1, "53332", "MAQUINA", 1, 3000)
+    lfa.update({"DOCLFA": "A", "DTPLFA": "5", "DCOLFA": 260701})
+    d["2026"]["F_FAC"].append(_fac(260802, CLI, "Cliente Figurante", "2026-01-25T00:00:00"))
+    d["2026"]["F_LFA"] = [x for x in d["2026"]["F_LFA"] if x["ARTLFA"] != "053332"] + [lfa]
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026"], en_curso="2026")
+        cl.clasificar(s, "006", {"clase": "maquina"}, por="bart")
+        from app.erp.models import HistoricoAliasArticulo
+        s.add(HistoricoAliasArticulo(codigo="053332", codart="53332", por="x"))
+        s.add(Company(name="Cliente Figurante", factusol_company_id=CLI))
+        s.commit()
+        hm.marcar(s, "53332", True, por="bart")
+
+
+def test_el_albaran_con_alias_y_su_factura_son_una_venta(session_factory) -> None:  # noqa: F811
+    _con_albaran_alias(session_factory)
+    with session_factory() as s:
+        for kw in ({"familia": "006"}, {"codart": "53332"}, {"codart": "053332"}):
+            c = next(c for c in historico.compradores(s, **kw) if c["codcli"] == CLI)
+            assert (c["unidades"], c["compras"]) == (1, 1), kw
+        empresa = s.scalar(select(Company).where(Company.factusol_company_id == CLI))
+        maquinas = parque.parque(s, empresa)["maquinas"]
+        assert [(m["codart"], len(m["albaranes"])) for m in maquinas] == [("53332", 1)]
+        assert maquinas[0]["mismo_modelo"] == []
+
+
+def test_la_baja_del_albaran_con_alias_se_hereda(session_factory) -> None:  # noqa: F811
+    _con_albaran_alias(session_factory)
+    with session_factory() as s:
+        from app.erp.models import ParqueBaja
+        empresa = s.scalar(select(Company).where(Company.factusol_company_id == CLI))
+        m = parque.parque(s, empresa)["maquinas"][0]
+        clave_alb = m["albaranes"][0]["clave"]
+        s.add(ParqueBaja(clave=clave_alb, company_id=empresa.id, motivo="vendida", por="bart"))
+        s.commit()
+        assert parque.parque(s, empresa)["activas"] == 0
+
+
+def test_un_alias_no_vale_si_el_codigo_esta_en_el_catalogo(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        from app.erp.models import HistoricoAliasArticulo
+        s.add(HistoricoAliasArticulo(codigo="R1", codart="53332", por="x"))
+        s.commit()
+        assert al.articulos(s).resuelve("R1") == "R1"
