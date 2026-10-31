@@ -110,12 +110,18 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
   documento (enlace a su ficha).
   - **Marcar las máquinas** (Histórico → Familias → «Máquinas, artículo a
     artículo»): los artículos de familias de máquinas por líneas vendidas,
-    con una casilla «es máquina» y la **propuesta por la descripción**: las
-    pistas de `historico_reglas_articulo` (editables; la 0158 siembra las de
-    Bart: SPARE PARTS, FILTER, LENS, TUBE, CARTRIDGE…) delatan que algo no es
-    una máquina, por palabra entera y sin acentos. «Aceptar todas» solo toca
-    lo que nadie ha revisado (`no_maquina` guarda lo revisado que no es
-    máquina). Recuento a la vista: «104 de 230 marcadas como máquina».
+    con una casilla «es máquina» y la **propuesta por la descripción**, que
+    **exige evidencia positiva** (0159): «máquina» solo si una pista positiva
+    lo dice (IMPRESORA, PRINTER, BEAMBOX, HEXA, ADOR, SPEEDSTAR, EPSON PP…);
+    si además hay una negativa (MAINBOARD, CUCHILLA, MANUAL…), «dudosa», sin
+    propuesta; solo negativa, «no»; ninguna, **sin propuesta** (nunca
+    «máquina» por defecto). Pistas en `historico_reglas_articulo` (`tipo`
+    maquina / no_maquina), editables, por palabra entera y sin acentos.
+    «Aceptar todas» solo aplica lo claro a lo que nadie ha revisado, y lo
+    apunta como «(aceptar todas)» (`no_maquina` guarda lo revisado que no es
+    máquina). La lista es de las familias que **hoy** (catálogo más reciente)
+    son de máquinas, más lo marcado como máquina en cualquier otra. Recuento a
+    la vista: «104 de 230 marcadas como máquina».
   - **Series que cuentan** (mismo sitio): una casilla por serie, con su
     nombre de Ajustes ERP si lo tiene y cuántos documentos y líneas tiene.
     Las que no cuentan quedan fuera del parque y de «Quién compró qué», y se
