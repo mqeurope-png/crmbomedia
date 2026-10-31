@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -26,7 +27,20 @@ from app.erp.api.deps import require_config, require_documents, require_office_v
 from app.erp.models.historico import CLASES_FAMILIA
 from app.models.crm import User
 
-router = APIRouter(prefix="/api/erp/historico", tags=["erp-historico"])
+
+def _recalcular_resumen_tras_escribir(request: Request) -> Iterator[None]:
+    """Tras una escritura (marcas, familias, equivalencias, alias, bajas,
+    series, umbrales…) se programa el recálculo del resumen ERP por empresa
+    (1/11/2026). Con margen: varios cambios seguidos, un solo pase."""
+    yield
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        from app.services.empresa_erp_job import tras_cambio  # noqa: PLC0415
+
+        tras_cambio()
+
+
+router = APIRouter(prefix="/api/erp/historico", tags=["erp-historico"],
+                   dependencies=[Depends(_recalcular_resumen_tras_escribir)])
 
 
 def _en_curso(session: Session) -> str:

@@ -845,6 +845,116 @@ FIELD_SPECS: dict[str, FieldSpec] = {
 }
 
 
+# --- 1/11/2026: lo que la empresa del contacto TIENE y COMPRA ---------------------------
+#
+# Hablan de la EMPRESA del contacto (`contacts.company_id`), no del contacto:
+# un contacto sin empresa nunca cumple una de estas reglas (ni en positivo ni
+# en negativo). Las de parque y compras leen el resumen ERP por empresa
+# (`crm_empresa_*`, tablas derivadas que rehace el recálculo), así que son SQL
+# y valen igual en la pantalla, los segmentos, Brevo y los workflows. Dormido y
+# hueco son los de «Dormidos y huecos», con sus umbrales.
+#
+# `extras["opciones"]`: las opciones salen de los DATOS al servir el esquema
+# (`opciones_dinamicas`), no de una lista escrita aquí.
+
+_EMPRESA = "Empresa, parque y compras"
+_INT_RANGO = ("eq", "gte", "lte")
+
+
+def _campo_empresa(key: str, label: str, type_: str, comparators: tuple[str, ...],
+                   *, relation: str, opciones: str | None = None,
+                   enum_values: tuple[str, ...] = ()) -> FieldSpec:
+    return FieldSpec(
+        key=key, label=label, type=type_, comparators=comparators, relation=relation,
+        enum_values=enum_values, extras={"opciones": opciones} if opciones else {},
+        grouped_under=_EMPRESA, source="related_table", displayable=False,
+    )
+
+
+def _sectores() -> tuple[str, ...]:
+    from app.services.sectores import SECTORES  # noqa: PLC0415
+
+    return SECTORES
+
+
+FIELD_SPECS.update({
+    # De la ficha de empresa.
+    "empresa_sector": _campo_empresa(
+        "empresa_sector", "Sector (empresa)", "enum",
+        ("eq", "neq", "in", "not_in", "contains", "is_null", "is_not_null"),
+        relation="empresa:sector", enum_values=_sectores()),
+    "empresa_cif": _campo_empresa(
+        "empresa_cif", "CIF / VAT (empresa) puesto", "bool", ("eq",), relation="empresa:cif"),
+    "empresa_pais": _campo_empresa(
+        "empresa_pais", "País (empresa)", "string", _COMMON_STRING, relation="empresa:country"),
+    "empresa_region": _campo_empresa(
+        "empresa_region", "Región (empresa)", "string", _COMMON_STRING,
+        relation="empresa:region"),
+    "empresa_provincia": _campo_empresa(
+        "empresa_provincia", "Provincia (empresa)", "string", _COMMON_STRING,
+        relation="empresa:state"),
+    "empresa_ciudad": _campo_empresa(
+        "empresa_ciudad", "Ciudad (empresa)", "string", _COMMON_STRING, relation="empresa:city"),
+    "empresa_factusol": _campo_empresa(
+        "empresa_factusol", "Empresa vinculada a cliente de FACTUSOL", "bool", ("eq",),
+        relation="empresa:factusol"),
+    # Del parque instalado (en servicio, con las equivalencias de código).
+    "parque_gama": _campo_empresa(
+        "parque_gama", "Tiene máquina de la gama…", "enum", ("in", "not_in"),
+        relation="parque:gama", opciones="gamas"),
+    "parque_modelo": _campo_empresa(
+        "parque_modelo", "Tiene el modelo…", "enum", ("in", "not_in"),
+        relation="parque:modelo", opciones="modelos"),
+    "parque_maquinas": _campo_empresa(
+        "parque_maquinas", "Nº de máquinas en servicio", "int", _INT_RANGO,
+        relation="parque:maquinas"),
+    "parque_meses_nueva": _campo_empresa(
+        "parque_meses_nueva", "Meses de la máquina más nueva", "int", ("gte", "lte"),
+        relation="parque:meses_nueva"),
+    "parque_meses_vieja": _campo_empresa(
+        "parque_meses_vieja", "Meses de la máquina más vieja", "int", ("gte", "lte"),
+        relation="parque:meses_vieja"),
+    "parque_tiene_baja": _campo_empresa(
+        "parque_tiene_baja", "Tiene máquina dada de baja", "bool", ("eq",),
+        relation="parque:tiene_baja"),
+    # De lo que compra.
+    "compra_dormido": _campo_empresa(
+        "compra_dormido", "Es dormido (de la gama…)", "enum", ("in",),
+        relation="compra:dormido", opciones="gamas_o_cualquiera"),
+    "compra_hueco": _campo_empresa(
+        "compra_hueco", "Es hueco (de la gama…)", "enum", ("in",),
+        relation="compra:hueco", opciones="gamas_o_cualquiera"),
+    "compra_gasto_total": _campo_empresa(
+        "compra_gasto_total", "Gasto total (€)", "int", ("gte", "lte"),
+        relation="compra:gasto_total"),
+    "compra_ultima": _campo_empresa(
+        "compra_ultima", "Última compra", "date", ("before", "after", "between"),
+        relation="compra:ultima_compra"),
+    "compra_meses_sin_comprar": _campo_empresa(
+        "compra_meses_sin_comprar", "Meses sin comprar", "int", ("gte", "lte"),
+        relation="compra:meses_sin_comprar"),
+    "compra_articulo": _campo_empresa(
+        "compra_articulo", "Ha comprado el artículo… (código o nombre)", "string",
+        ("eq", "contains"), relation="compra:articulo"),
+    "compra_familia": _campo_empresa(
+        "compra_familia", "Ha comprado de la familia…", "enum", ("in",),
+        relation="compra:familia", opciones="familias"),
+    "compra_clase": _campo_empresa(
+        "compra_clase", "Ha comprado de la clase…", "enum", ("in",),
+        relation="compra:clase", opciones="clases"),
+    "compra_nunca_clase": _campo_empresa(
+        "compra_nunca_clase", "Nunca ha comprado de la clase…", "enum", ("in",),
+        relation="compra:nunca_clase", opciones="clases"),
+    # Del contacto: el origen, con TODOS los valores que haya en los datos.
+    "origin": FieldSpec(
+        key="origin", label="Origen del contacto", type="enum",
+        comparators=_ENUM_NULLABLE, column=Contact.origin,
+        extras={"opciones": "origenes"}, grouped_under="Propiedad y origen",
+        sortable=True,
+    ),
+})
+
+
 # --- CRM-1.5: reorganización del panel de filtros en 7 grupos ----------------
 #
 # El panel de /contacts agrupa los campos por `grouped_under`. Reorganizar =

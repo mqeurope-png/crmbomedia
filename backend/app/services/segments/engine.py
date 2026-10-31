@@ -281,6 +281,9 @@ def _compile_leaf(
         return _compile_activity_leaf(spec, comparator, value)
     if spec.relation and spec.relation.startswith("erp_"):
         return _compile_erp_leaf(spec, comparator, value)
+    # 1/11/2026 — la empresa del contacto: ficha, parque y compras.
+    if spec.relation and spec.relation.split(":", 1)[0] in {"empresa", "parque", "compra"}:
+        return _compile_empresa_leaf(spec, comparator, value)
     # PR-E3 (Deuda #8) — interacción con campañas Brevo. EXISTS /
     # NOT EXISTS sobre activity_events filtrado por campaña + acción
     # + ventana temporal (sent_at de la campaña).
@@ -674,6 +677,101 @@ def _compile_erp_leaf(
             select(Order.company_id).where(or_(*conds)))
 
     raise SegmentRuleError(f"Campo ERP desconocido: {spec.key!r}")
+
+
+def _compile_empresa_leaf(
+    spec: FieldSpec, comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """1/11/2026 — reglas sobre la EMPRESA del contacto. Todas compilan a
+    `Contact.company_id IN (empresas que cumplen)`: un contacto sin empresa
+    no cumple nunca (tampoco una regla en negativo). Las de parque y compras
+    leen el resumen ERP por empresa (tablas derivadas `crm_empresa_*`)."""
+    from app.erp.models.historico import HistoricoArticulo  # noqa: PLC0415
+    from app.erp.models.resumen_empresa import (  # noqa: PLC0415
+        CrmEmpresaCompra,
+        CrmEmpresaErp,
+        CrmEmpresaGama,
+        CrmEmpresaModelo,
+    )
+    from app.models.crm import Company  # noqa: PLC0415
+
+    grupo, campo = spec.relation.split(":", 1)
+
+    def empresas(q: Any) -> ColumnElement[bool]:
+        return Contact.company_id.in_(q)
+
+    if grupo == "empresa":
+        if campo == "cif":
+            puesto = or_(func.coalesce(func.trim(Company.tax_id), "") != "",
+                         func.coalesce(func.trim(Company.vat), "") != "")
+            return empresas(select(Company.id).where(puesto if value else ~puesto))
+        if campo == "factusol":
+            col = Company.factusol_company_id
+            return empresas(select(Company.id).where(
+                and_(col.is_not(None), func.trim(col) != "") if value
+                else or_(col.is_(None), func.trim(col) == "")))
+        column = getattr(Company, campo)
+        if comparator == "is_null":
+            return empresas(select(Company.id).where(
+                or_(column.is_(None), func.trim(column) == "")))
+        return empresas(select(Company.id).where(
+            _compile_column_leaf(column, spec, comparator, value)))
+
+    if grupo == "parque":
+        if campo == "gama":
+            q = select(CrmEmpresaGama.company_id).where(CrmEmpresaGama.gama.in_(value))
+            if comparator == "not_in":
+                return empresas(select(CrmEmpresaErp.company_id).where(
+                    CrmEmpresaErp.company_id.not_in(q)))
+            return empresas(q)
+        if campo == "modelo":
+            q = select(CrmEmpresaModelo.company_id).where(
+                func.upper(CrmEmpresaModelo.modelo).in_([str(v).upper() for v in value]))
+            if comparator == "not_in":
+                return empresas(select(CrmEmpresaErp.company_id).where(
+                    CrmEmpresaErp.company_id.not_in(q)))
+            return empresas(q)
+        column = getattr(CrmEmpresaErp, campo)
+        return empresas(select(CrmEmpresaErp.company_id).where(
+            _compile_column_leaf(column, spec, comparator, value)))
+
+    # compras
+    if campo in {"dormido", "hueco"}:
+        vals = value if isinstance(value, list) else [value]
+        if "cualquiera" in vals:
+            return empresas(select(CrmEmpresaErp.company_id).where(
+                getattr(CrmEmpresaErp, campo).is_(True)))
+        return empresas(select(CrmEmpresaGama.company_id).where(
+            CrmEmpresaGama.gama.in_(vals), getattr(CrmEmpresaGama, campo).is_(True)))
+    if campo == "articulo":
+        texto = str(value).strip()
+        if not texto:
+            raise SegmentRuleError("compra_articulo requiere un código o un nombre")
+        if comparator == "eq":
+            cond = func.upper(CrmEmpresaCompra.codart) == texto.upper()
+        else:
+            nombres = select(HistoricoArticulo.codart).where(
+                HistoricoArticulo.descripcion.ilike(f"%{texto}%"))
+            cond = or_(CrmEmpresaCompra.codart.ilike(f"%{texto}%"),
+                       CrmEmpresaCompra.codart.in_(nombres))
+        return empresas(select(CrmEmpresaCompra.company_id).where(cond))
+    if campo == "familia":
+        return empresas(select(CrmEmpresaCompra.company_id).where(
+            CrmEmpresaCompra.familia.in_(value)))
+    if campo == "clase":
+        return empresas(select(CrmEmpresaCompra.company_id).where(
+            CrmEmpresaCompra.clase.in_(value)))
+    if campo == "nunca_clase":
+        # Empresas del resumen (clientes de FACTUSOL) sin ninguna compra de
+        # esa clase. Una empresa sin histórico no está en el resumen: no se
+        # puede decir que «nunca» compró.
+        compraron = select(CrmEmpresaCompra.company_id).where(
+            CrmEmpresaCompra.clase.in_(value))
+        return empresas(select(CrmEmpresaErp.company_id).where(
+            CrmEmpresaErp.codcli.is_not(None), CrmEmpresaErp.company_id.not_in(compraron)))
+    column = getattr(CrmEmpresaErp, campo)
+    return empresas(select(CrmEmpresaErp.company_id).where(
+        _compile_column_leaf(column, spec, comparator, value)))
 
 
 def _compile_brevo_campaign_interaction_leaf(

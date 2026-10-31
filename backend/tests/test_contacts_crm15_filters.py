@@ -253,9 +253,11 @@ def test_contacts_filter_combined_activity_and_erp(factory):
 
 def test_filter_panel_reorganised_into_seven_groups(factory):
     groups = {s.grouped_under for s in FIELD_SPECS.values() if s.filterable}
+    # 1/11/2026: un octavo grupo, aparte, para lo que habla de la EMPRESA del
+    # contacto (ficha, parque y compras), no del contacto.
     assert groups == {
         "Datos del contacto", "Dirección", "Propiedad y origen", "Pertenencia",
-        "Actividad reciente", "Llamadas", "ERP y FACTUSOL",
+        "Actividad reciente", "Llamadas", "ERP y FACTUSOL", "Empresa, parque y compras",
     }
 
 

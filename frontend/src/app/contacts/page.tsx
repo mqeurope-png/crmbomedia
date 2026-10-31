@@ -64,6 +64,7 @@ import { StarRating } from "../components/StarRating";
 import { PushViewToBrevoModal } from "../components/PushViewToBrevoModal";
 import { useModalBehaviour } from "../components/useModalBehaviour";
 import { EntityFilterBuilder } from "../components/entity/EntityFilterBuilder";
+import { ResumenErpEstado } from "../components/crm/ResumenErpEstado";
 import {
   EntityTable,
   type SortState,
@@ -924,6 +925,8 @@ export default function ContactsListPage() {
             ) : null}
           </div>
         </div>
+
+        <ResumenErpEstado />
 
         <EntityFilterBuilder
           key={`builder:${builderKey}`}
