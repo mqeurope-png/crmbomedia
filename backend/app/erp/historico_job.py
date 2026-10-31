@@ -162,6 +162,11 @@ def _cargar_con_cerrojo(ejercicios: list[str] | None, ficha: str) -> None:
                               f"La carga falló ({type(exc).__name__}): vuelve a lanzarla.")
         finally:
             _soltar_carga(ficha)
+            # Tras cada carga (la de cada noche y la pedida), el resumen ERP
+            # por empresa: los meses avanzan solos aunque no cambie nada.
+            from app.services.empresa_erp_job import encolar  # noqa: PLC0415
+
+            encolar("carga del histórico", ya=True)
 
 
 def _carga_runner(ejercicios: list[str], ficha: str) -> None:

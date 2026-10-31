@@ -5252,10 +5252,13 @@ def _segment_to_read(segment: Segment, *, current_user: User) -> SegmentRead:
     tags=["crm"],
 )
 def segment_available_fields(
+    session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[dict[str, Any]]:
     _ = current_user
-    return segment_fields.list_fields_for_ui()
+    from app.services.segments.opciones import rellenar  # noqa: PLC0415
+
+    return rellenar(session, segment_fields.list_fields_for_ui(), dict(segment_fields.FIELD_SPECS))
 
 
 @router.get(

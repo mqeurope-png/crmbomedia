@@ -94,6 +94,7 @@ def list_registered_entities(
 @router.get("/{entity}/filter-schema")
 def entity_filter_schema(
     entity: str,
+    session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> dict[str, Any]:
     """Declarative field schema for one entity: drives the filter
@@ -106,6 +107,10 @@ def entity_filter_schema(
         raise not_found("Entity")
     descriptor = get_entity(entity)
     assert descriptor is not None  # list_fields_for_entity already checked
+    # Las opciones que salen de los datos (gamas, modelos, familias, orígenes).
+    from app.services.segments.opciones import rellenar  # noqa: PLC0415
+
+    fields = rellenar(session, fields, dict(descriptor.field_specs))
     return {
         "entity": descriptor.key,
         "label": descriptor.label,

@@ -71,6 +71,14 @@ from app.erp.models.plantillas import (
     PlantillaDocumentoLinea,
 )
 from app.erp.models.quotes import FactusolQuoteLineCache
+from app.erp.models.resumen_empresa import (
+    CrmEmpresaCompra,
+    CrmEmpresaErp,
+    CrmEmpresaGama,
+    CrmEmpresaModelo,
+    CrmEtiquetaAuto,
+    CrmResumenEstado,
+)
 from app.erp.models.seguimiento_legacy import (
     LEGACY_MATCH_STATUSES,
     SeguimientoLegacy,
@@ -97,6 +105,12 @@ from app.erp.models.shipping import (
 from app.erp.models.sku_mapping import ProductSkuMapping, SkuMatchedBy
 
 __all__ = [
+    "CrmEmpresaCompra",
+    "CrmEmpresaErp",
+    "CrmEmpresaGama",
+    "CrmEmpresaModelo",
+    "CrmEtiquetaAuto",
+    "CrmResumenEstado",
     "HistoricoAjuste",
     "HistoricoAliasArticulo",
     "HistoricoEquivalencia",

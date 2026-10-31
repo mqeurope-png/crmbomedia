@@ -11,17 +11,18 @@ un panel a medida — cada filtro es un campo del registro
 
 ---
 
-## Los 7 grupos
+## Los 8 grupos
 
 | Grupo | Filtros |
 |---|---|
 | **Datos del contacto** | Tags · Notas (texto libre) · Lead score · Estrellas · Estado comercial |
 | **Dirección** | País · Provincia · Ciudad |
-| **Propiedad y origen** | Propietario · Cuenta de origen · Creado en origen (fecha) |
+| **Propiedad y origen** | Propietario · Cuenta de origen · Creado en origen (fecha) · **Origen** (los valores salen de los datos) |
 | **Pertenencia** | En segmento · En lista Brevo · En pipeline · En etapa de pipeline · Interacción con campañas |
 | **Actividad reciente** | Fecha última interacción · Días sin contactar · Con tareas · Con emails · Con notas · En workflow |
 | **Llamadas** | Resultado · Acción posterior · Duración · Fecha · **Con llamadas / Sin llamadas** (CRM-1.6) |
 | **ERP y FACTUSOL** | Vinculado a FACTUSOL · Con pedidos ERP |
+| **Empresa, parque y compras** | Ver más abajo: hablan de la **empresa** del contacto |
 
 > **«Con llamadas / Sin llamadas»** (CRM-1.6): presencia de llamadas registradas.
 > Para filtrar por **fecha** de llamada está «Fecha de llamada» (antes de /
@@ -141,9 +142,61 @@ lectura por request + tope de resultados si el set es grande). El vínculo
 
 ---
 
+## «Empresa, parque y compras» (1/11/2026)
+
+Reglas sobre lo que la **empresa** del contacto tiene y compra. Un contacto sin
+empresa no entra en ninguna, ni en positivo ni en negativo. Las de parque y
+compras solo miran empresas **vinculadas a un cliente de FACTUSOL**: de una
+empresa que solo tiene pedidos del ERP no se sabe el parque ni el histórico, así
+que no cumple «0 máquinas», «sin baja» ni «gasto ≤ …».
+
+| Subgrupo | Filtros |
+|---|---|
+| Ficha | Sector · Con CIF/VAT · País / Región / Provincia / Ciudad **(empresa)** · Vinculada a FACTUSOL |
+| Parque | Gama · Modelo · Nº de máquinas · Meses de la más nueva / de la más vieja · Tiene alguna baja |
+| Compras | Dormido de… · Hueco de… (una gama o «cualquiera») · Gasto total · Última compra · Meses sin comprar · Artículo · Familia · Clase · **Nunca ha comprado** de la clase |
+
+- **Mismas cuentas que «Dormidos y huecos»**: dormido y hueco salen del mismo
+  informe, umbrales incluidos. Si se cambia un umbral, cambian en los dos sitios.
+- **Modelo y artículo con sus equivalentes**: «ha comprado L1» encuentra también
+  a quien compró un código equivalente (el mismo modelo con otro código), y un
+  equivalente de una máquina marcada cuenta como máquina.
+- **Familia de ahora**: si un artículo cambió de familia, cuenta la del
+  ejercicio más reciente en que la empresa lo compró.
+- **«Nunca ha comprado…»** mira solo las empresas que han comprado algo: para
+  las que no han comprado nada está «YA CLIENTE».
+- **Opciones leídas de los datos**: gamas, modelos, familias, clases y orígenes
+  se leen de lo que hay, no están escritos a mano.
+- **Tablas precalculadas** (`crm_empresa_*`): se borran y se rehacen enteras
+  tras cada carga del histórico (también la nocturna), tras los cambios de Bart
+  en el histórico o el parque (a los 45 s del primero; los que llegan mientras
+  tanto van en el mismo pase) y con «Recalcular ahora».
+  Encima del panel se ve de cuándo son los datos y, si el último recálculo
+  falló, se dice. No escriben en ninguna tabla de Bart.
+- Valen igual en la pantalla, en los segmentos, en Brevo (los segmentos
+  dinámicos se recalculan en cada sincronización; los estáticos son una foto) y
+  en los workflows.
+
+### Etiquetas automáticas
+
+- **YA CLIENTE**: contactos de una empresa con gasto en el histórico (> 0) o
+  con pedidos en el ERP.
+- **ORIGEN WOO**: contactos con origen `woocommerce`.
+
+Las mantiene el recálculo: las pone a quien cumple y quita **solo las que puso
+él** cuando deja de cumplir. Una puesta a mano no se quita nunca. Si alguien
+quita a mano una que el contacto merece, queda apuntado («quitada a mano») y
+el recálculo no se la vuelve a poner; si alguien se la vuelve a añadir a mano,
+el apunte se borra y vuelve al régimen normal. Encima del panel se ve cuántos
+contactos tienen ese apunte.
+
+---
+
 ## Rendimiento
 
 Todos los filtros son EXISTS sobre tablas **locales** indexadas
 (`call_logs.contact_id`, `notes.contact_id`, `orders.company_id`, etc.), así que
-no cambian el coste del listado de forma apreciable. Los dos filtros que tocarán
+no cambian el coste del listado de forma apreciable. Las de «Empresa, parque y
+compras» van contra las tablas precalculadas: con 17.558 contactos y tres
+reglas de parque, ~30 ms la página (medido en local con figurantes). Los dos filtros que tocarán
 FACTUSOL (CRM-1.6b) llevarán su propia salvaguarda de caché + tope.
