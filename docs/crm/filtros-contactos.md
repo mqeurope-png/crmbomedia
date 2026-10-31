@@ -145,7 +145,10 @@ lectura por request + tope de resultados si el set es grande). El vínculo
 ## «Empresa, parque y compras» (1/11/2026)
 
 Reglas sobre lo que la **empresa** del contacto tiene y compra. Un contacto sin
-empresa no entra en ninguna, ni en positivo ni en negativo.
+empresa no entra en ninguna, ni en positivo ni en negativo. Las de parque y
+compras solo miran empresas **vinculadas a un cliente de FACTUSOL**: de una
+empresa que solo tiene pedidos del ERP no se sabe el parque ni el histórico, así
+que no cumple «0 máquinas», «sin baja» ni «gasto ≤ …».
 
 | Subgrupo | Filtros |
 |---|---|
@@ -155,11 +158,19 @@ empresa no entra en ninguna, ni en positivo ni en negativo.
 
 - **Mismas cuentas que «Dormidos y huecos»**: dormido y hueco salen del mismo
   informe, umbrales incluidos. Si se cambia un umbral, cambian en los dos sitios.
+- **Modelo y artículo con sus equivalentes**: «ha comprado L1» encuentra también
+  a quien compró un código equivalente (el mismo modelo con otro código), y un
+  equivalente de una máquina marcada cuenta como máquina.
+- **Familia de ahora**: si un artículo cambió de familia, cuenta la del
+  ejercicio más reciente en que la empresa lo compró.
+- **«Nunca ha comprado…»** mira solo las empresas que han comprado algo: para
+  las que no han comprado nada está «YA CLIENTE».
 - **Opciones leídas de los datos**: gamas, modelos, familias, clases y orígenes
   se leen de lo que hay, no están escritos a mano.
 - **Tablas precalculadas** (`crm_empresa_*`): se borran y se rehacen enteras
   tras cada carga del histórico (también la nocturna), tras los cambios de Bart
-  en el histórico o el parque (a los 45 s del último) y con «Recalcular ahora».
+  en el histórico o el parque (a los 45 s del primero; los que llegan mientras
+  tanto van en el mismo pase) y con «Recalcular ahora».
   Encima del panel se ve de cuándo son los datos y, si el último recálculo
   falló, se dice. No escriben en ninguna tabla de Bart.
 - Valen igual en la pantalla, en los segmentos, en Brevo (los segmentos

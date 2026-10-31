@@ -82,7 +82,9 @@ class AliasFamilias:
         return self.expr(col)
 
 
-def familias(session: Session) -> AliasFamilias:
+def familias(session: Session, *, solo_tabla: bool = False) -> AliasFamilias:
+    """Con `solo_tabla`, solo lo que sale de la tabla de familias (fundidas
+    y avisos), sin recorrer el catálogo: lo barato, para listar opciones."""
     tabla = list(session.scalars(select(HistoricoFamilia)))
     out = AliasFamilias(_tabla={_k(f.codigo): f.codigo for f in tabla})
     por_numero: dict[int, list[HistoricoFamilia]] = {}
@@ -112,6 +114,8 @@ def familias(session: Session) -> AliasFamilias:
                                        "motivo": "varias"})
                 continue
             out.fundidas[corta.codigo] = con_nombre[0].codigo
+    if solo_tabla:
+        return out
     # Familia vacía en un ejercicio: la del ejercicio más reciente que la
     # tenga. No se reescribe el catálogo; no se inventa por el nombre.
     vacios: set[str] = set()

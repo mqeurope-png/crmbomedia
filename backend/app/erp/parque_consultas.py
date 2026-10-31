@@ -107,9 +107,11 @@ def _fecha(m: dict[str, Any]) -> date | None:
     return None
 
 
-def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
+def _parque_activo(session: Session, *,
+                   con_baja: set[str] | None = None) -> dict[str, list[dict[str, Any]]]:
     """Por cliente (`clave_cliente`): sus máquinas en servicio, volcadas y a
-    mano, con gama y fecha."""
+    mano, con gama y fecha. Si se pasa `con_baja`, se le añaden los clientes
+    con alguna máquina dada de baja (con la misma regla de la ficha)."""
     from app.erp import historico_alias  # noqa: PLC0415
 
     al_fam = historico_alias.familias(session)
@@ -119,6 +121,8 @@ def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
     for cli, filas in volcadas.items():
         for m in filas:
             if any(c in bajas for c in parque._claves_heredables(m)):
+                if con_baja is not None:
+                    con_baja.add(cli)
                 continue
             out.setdefault(cli, []).append({
                 "codart": m["codart"], "articulo": m["articulo"], "gama": m["gama"],

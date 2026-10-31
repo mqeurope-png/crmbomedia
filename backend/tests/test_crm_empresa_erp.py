@@ -292,3 +292,156 @@ def test_api_estado_y_opciones_de_los_datos(http, session_factory) -> None:  # n
     assert campos["parque_gama"]["grouped_under"] == "Empresa, parque y compras"
     # Las de siempre siguen ahí, con su etiqueta.
     assert campos["address_country"]["label"] != campos["empresa_pais"]["label"]
+
+
+# --- Revisión (1/11/2026) ---------------------------------------------------------------
+
+
+def _datos_revision() -> dict[str, Any]:
+    """Los de «Dormidos y huecos» más: L2 (equivalente de L1, con familia de
+    consumible) comprada por HUECO_UV; una línea tecleada «0L1» (alias de L1)
+    de RECIENTE; y F1 cambiada de familia en 2026 (recambio), comprada por
+    AL_DIA en 2023 y en 2026."""
+    from tests.test_erp_historico import _art, _fac, _lfa
+    from tests.test_erp_parque_consultas import _datos
+
+    datos = _datos()
+    d23 = datos["2023"]
+    d23["F_ART"] = [*d23["F_ART"], _art("L2", "FLUX BEAMBOX FIGURANTE 40W (WEB)", "251")]
+    for codigo, cli, art in ((230010, HUECO_UV, "L2"), (230011, RECIENTE, "0L1"),
+                             (230012, AL_DIA, "F1")):
+        d23["F_FAC"] = [*d23["F_FAC"], _fac(codigo, cli, "Cliente Figurante",
+                                            "2023-04-01T00:00:00")]
+        d23["F_LFA"] = [*d23["F_LFA"], _lfa(codigo, 1, art, art, 1, 100)]
+    d26 = datos["2026"]
+    d26["F_ART"] = [a if a["CODART"] != "F1" else {**a, "FAMART": "211"} for a in d26["F_ART"]]
+    return datos
+
+
+def _preparar_revision(session_factory) -> dict[str, str]:  # noqa: F811
+    from app.erp import historico_alias, historico_equivalencias
+    from tests.test_erp_parque_consultas import _preparar
+
+    _preparar(session_factory, _datos_revision())
+    with session_factory() as s:
+        historico_equivalencias.declarar(s, "L1", "L2", por="bart")
+        historico_alias.declarar_articulo(s, "0L1", "L1", por="bart")
+        emp = {c.factusol_company_id: c.id for c in s.scalars(select(Company))}
+        for n, cid in enumerate(emp.values()):
+            s.add(Contact(first_name=f"Figurante {n}", email=f"rev{n}@ejemplo.test",
+                          company_id=cid, tags=""))
+        s.commit()
+        return emp
+
+
+def test_equivalentes_alias_y_familia_de_ahora(session_factory) -> None:  # noqa: F811
+    from app.erp.models import CrmEmpresaCompra, CrmEmpresaModelo
+
+    emp = _preparar_revision(session_factory)
+    _recalcular(session_factory)
+    with session_factory() as s:
+        def compra(cli: str, codart: str) -> Any:
+            return s.get(CrmEmpresaCompra, (emp[cli], codart))
+
+        # L2 es el mismo modelo que la L1 marcada: es máquina, aunque su familia
+        # diga consumible, y su modelo es L1.
+        assert (compra(HUECO_UV, "L2").clase, compra(HUECO_UV, "L2").modelo) == ("maquina", "L1")
+        # La línea «0L1» es la L1 del catálogo, también como modelo del parque.
+        assert compra(RECIENTE, "L1") is not None
+        assert s.get(CrmEmpresaModelo, (emp[RECIENTE], "L1")) is not None
+        assert emp[RECIENTE] in _empresas_que_cumplen(s, _rule("parque_modelo", "in", ["L1"]))
+        # F1 cambió de familia: manda la del ejercicio más reciente, siempre.
+        assert compra(AL_DIA, "F1").familia == "211"
+        # «Ha comprado L1» encuentra a quien compró el equivalente, y al revés.
+        con_l1 = _empresas_que_cumplen(s, _rule("compra_articulo", "eq", "L1"))
+        assert {emp[HUECO_UV], emp[RECIENTE], emp[AL_DIA]} <= con_l1
+        assert emp[AL_DIA] in _empresas_que_cumplen(s, _rule("compra_articulo", "eq", "l2"))
+        assert emp[HUECO_UV] in _empresas_que_cumplen(s, _rule("compra_clase", "in", ["maquina"]))
+        # Un «%» es un carácter, no un comodín.
+        assert _empresas_que_cumplen(s, _rule("compra_articulo", "contains", "%")) == set()
+
+
+def test_sin_cliente_de_factusol_ni_compras_no_cumple_las_negativas(session_factory) -> None:  # noqa: F811,E501
+    from app.erp.models.orders import Order
+
+    _con_contactos(session_factory)
+    with session_factory() as s:
+        solo_pedidos = Company(name="Solo pedidos figurante")
+        sin_compras = Company(name="Sin compras figurante", factusol_company_id="4799")
+        s.add_all([solo_pedidos, sin_compras])
+        s.flush()
+        s.add(Order(order_number="M-9", external_source="manual", company_id=solo_pedidos.id,
+                    total_amount=10))
+        for c in (solo_pedidos, sin_compras):
+            s.add(Contact(first_name="Figurante", email=f"{c.id[:6]}@ejemplo.test",
+                          company_id=c.id, tags=""))
+        s.commit()
+        ids = (solo_pedidos.id, sin_compras.id)
+        emp = {c.factusol_company_id: c.id for c in s.scalars(select(Company))}
+    _recalcular(session_factory)
+    with session_factory() as s:
+        assert s.get(CrmEmpresaErp, ids[0]).ya_cliente is True       # es cliente…
+        for regla in (_rule("parque_maquinas", "eq", 0), _rule("parque_tiene_baja", "eq", False),
+                      _rule("compra_gasto_total", "lte", 100),
+                      _rule("parque_gama", "not_in", ["laser"])):
+            assert ids[0] not in _empresas_que_cumplen(s, regla), regla   # …sin parque conocido
+        nunca = _empresas_que_cumplen(s, _rule("compra_nunca_clase", "in", ["consumible"]))
+        assert ids[1] not in nunca and ids[0] not in nunca
+        assert emp[SOLO_RECAMBIO] in nunca
+
+
+def test_la_ultima_compra_sin_fecha_cuenta_el_1_de_enero(session_factory) -> None:  # noqa: F811
+    from datetime import date
+
+    from app.erp.models.historico import HistoricoDocumento
+
+    emp = _con_contactos(session_factory)
+    with session_factory() as s:
+        for d in s.scalars(select(HistoricoDocumento).where(
+                HistoricoDocumento.codcli == SOLO_RECAMBIO, HistoricoDocumento.ejercicio == "2023")):
+            d.fecha = None
+        s.commit()
+    _recalcular(session_factory)
+    with session_factory() as s:
+        assert s.get(CrmEmpresaErp, emp[SOLO_RECAMBIO]).ultima_compra == date(2023, 1, 1)
+
+
+def test_regla_de_asignacion_al_crear_mira_la_empresa_en_la_bd(session_factory) -> None:  # noqa: F811,E501
+    from app.services.segments.engine import evaluate_contact_against_rules
+
+    emp = _con_contactos(session_factory)
+    _recalcular(session_factory)
+    regla = {"operator": "AND", "children": [
+        {"type": "rule", **_rule("empresa_pais", "is_null", None)}]}
+    gama = {"operator": "AND", "children": [
+        {"type": "rule", **_rule("parque_gama", "in", ["laser"])}]}
+    with session_factory() as s:
+        sin = Contact(first_name="Nuevo", email="nuevo@ejemplo.test", tags="")
+        con = Contact(first_name="Nuevo", email="nuevo2@ejemplo.test", tags="",
+                      company_id=emp[AL_DIA])
+        s.add_all([sin, con])
+        s.flush()
+        assert evaluate_contact_against_rules(sin, regla) is False    # sin empresa, nunca
+        assert evaluate_contact_against_rules(con, regla) is True     # su empresa no tiene país
+        assert evaluate_contact_against_rules(con, gama) is True
+        assert evaluate_contact_against_rules(sin, gama) is False
+
+
+def test_contactos_borrados_y_etiquetas_automaticas_huerfanas(session_factory) -> None:  # noqa: F811,E501
+    _con_contactos(session_factory)
+    _recalcular(session_factory)
+    with session_factory() as s:
+        tag_id = s.scalar(select(Tag.id).where(Tag.name_normalized == "ya cliente"))
+        victima = sorted(_etiquetados(s, ee.YA_CLIENTE))[0]
+        s.query(ContactTag).filter_by(contact_id=victima).delete()
+        s.query(Contact).filter_by(id=victima).delete()
+        # Una automática sin apunte en quien no cumple (p. ej. tras bajar y
+        # volver a subir la migración): es suya por el `source`, se quita.
+        sin = s.scalar(select(Contact.id).where(Contact.company_id.is_(None)))
+        s.add(ContactTag(contact_id=sin, tag_id=tag_id, source="auto:ya_cliente"))
+        s.commit()
+    _recalcular(session_factory)
+    with session_factory() as s:
+        assert ee.estado(s)["quitadas_a_mano"] == 0          # el borrado no cuenta
+        assert s.get(CrmEtiquetaAuto, (victima, "ya_cliente")) is None
+        assert sin not in _etiquetados(s, ee.YA_CLIENTE)

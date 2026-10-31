@@ -67,7 +67,9 @@ class CrmEmpresaModelo(Base):
 
 class CrmEmpresaCompra(Base):
     """Cada artículo que ha comprado la empresa, con la familia y la clase
-    que valen hoy (alias de código, familia de respaldo, clase propia)."""
+    que valen hoy (alias de código, familia de respaldo, clase propia,
+    equivalentes de una máquina marcada) y su modelo (código canónico del
+    grupo de equivalentes)."""
 
     __tablename__ = "crm_empresa_compra"
 
@@ -75,6 +77,7 @@ class CrmEmpresaCompra(Base):
     codart: Mapped[str] = mapped_column(String(64), primary_key=True)
     familia: Mapped[str | None] = mapped_column(String(32), index=True)
     clase: Mapped[str | None] = mapped_column(String(16), index=True)
+    modelo: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
 class CrmResumenEstado(Base):

@@ -68,8 +68,10 @@ def upgrade() -> None:
         sa.Column("codart", sa.String(64), primary_key=True),
         sa.Column("familia", sa.String(32), nullable=True),
         sa.Column("clase", sa.String(16), nullable=True),
+        sa.Column("modelo", sa.String(64), nullable=True),
     )
     op.create_index("ix_crm_empresa_compra_familia", "crm_empresa_compra", ["familia"])
+    op.create_index("ix_crm_empresa_compra_modelo", "crm_empresa_compra", ["modelo"])
     op.create_index("ix_crm_empresa_compra_clase", "crm_empresa_compra", ["clase"])
     op.create_table(
         "crm_resumen_estado",
@@ -101,6 +103,7 @@ def downgrade() -> None:
     # valor de la lista y pudo ponerlo Bart a cualquier otra empresa.
     op.drop_table("crm_etiqueta_auto")
     op.drop_table("crm_resumen_estado")
+    op.drop_index("ix_crm_empresa_compra_modelo", table_name="crm_empresa_compra")
     op.drop_index("ix_crm_empresa_compra_clase", table_name="crm_empresa_compra")
     op.drop_index("ix_crm_empresa_compra_familia", table_name="crm_empresa_compra")
     op.drop_table("crm_empresa_compra")

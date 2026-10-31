@@ -58,7 +58,7 @@ def _familias(session: Session) -> list[tuple[str, str]]:
     from app.erp import historico_alias  # noqa: PLC0415
     from app.erp.models.historico import HistoricoFamilia  # noqa: PLC0415
 
-    fundidas = historico_alias.familias(session).fundidas
+    fundidas = historico_alias.familias(session, solo_tabla=True).fundidas
     return [(f.codigo, f"{f.codigo} · {f.descripcion}" if f.descripcion else f.codigo)
             for f in session.scalars(select(HistoricoFamilia).order_by(HistoricoFamilia.codigo))
             if f.codigo not in fundidas]

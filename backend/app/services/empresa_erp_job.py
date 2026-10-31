@@ -5,7 +5,8 @@
 - **Tras cada carga del histórico**, también la pedida desde la pantalla.
 - **Poco después de un cambio de Bart** que lo afecta (marcas de máquina,
   familias, gamas, equivalencias, alias, bajas, series, umbrales): se programa
-  con un margen (`MARGEN`) y se juntan los cambios seguidos en un solo pase.
+  a `MARGEN` del primer cambio y los que llegan mientras tanto van en el mismo
+  pase; los que llegan con el pase ya en marcha programan otro.
 - **Con el botón «Recalcular ahora»** de la pantalla de contactos.
 
 Un pase a la vez (cerrojo en Redis). Va por la cola del histórico
@@ -27,9 +28,14 @@ JOB_TIMEOUT_SECONDS = 900
 
 
 def _redis():
-    from app.workers.queues import redis_connection  # noqa: PLC0415
+    """Con tiempos de espera cortos: si Redis no responde, se dice
+    `sin_cola` en un par de segundos en vez de colgar a quien llama."""
+    import os  # noqa: PLC0415
 
-    return redis_connection()
+    from redis import Redis  # noqa: PLC0415
+
+    return Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+                          socket_connect_timeout=2, socket_timeout=5)
 
 
 def _cola():
@@ -43,11 +49,13 @@ def _cola():
 def encolar(motivo: str = "cambio", *, ya: bool = False) -> str:
     """Programa un recálculo. Devuelve `programado`, `ya_programado` o
     `sin_cola`. Con `ya`, sin margen (el botón)."""
+    conn, puesto = None, False
     try:
         conn = _redis()
         if not conn.set(PROGRAMADO_KEY, motivo, nx=True,
                         ex=int(MARGEN.total_seconds()) + 120):
             return "ya_programado"
+        puesto = True
         if ya:
             _cola().enqueue(_runner)
         else:
@@ -56,10 +64,14 @@ def encolar(motivo: str = "cambio", *, ya: bool = False) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning("resumen ERP: no se pudo programar el recálculo (%s)",
                        type(exc).__name__)
-        try:
-            _redis().delete(PROGRAMADO_KEY)
-        except Exception:  # noqa: BLE001
-            pass
+        if conn is not None and puesto:
+            # Se apuntó pero no se encoló: se borra el apunte para que el
+            # próximo cambio pueda programarlo (si Redis sigue sin responder,
+            # el apunte caduca solo).
+            try:
+                conn.delete(PROGRAMADO_KEY)
+            except Exception:  # noqa: BLE001
+                pass
         return "sin_cola"
 
 
@@ -86,8 +98,9 @@ def _runner() -> None:
 
 
 def tras_cambio() -> None:
-    """Para colgar de las rutas que cambian lo que lee el resumen: programa
-    un recálculo sin que un fallo de la cola afecte a la respuesta."""
+    """Para colgar de las rutas que cambian lo que lee el resumen (como tarea
+    de fondo, después de responder): programa un recálculo sin que un fallo
+    de la cola afecte a la respuesta."""
     try:
         encolar("cambio")
     except Exception:  # noqa: BLE001
