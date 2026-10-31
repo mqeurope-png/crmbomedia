@@ -110,6 +110,7 @@ _NO_VALIDO = {
     "pista_existe": "Esa pista ya está en la lista.",
     "serie": "Falta la serie.",
     "umbral": "El umbral tiene que ser un importe positivo.",
+    "meses": "Los meses tienen que ir de 1 a 120.",
     "mismo_codigo": "Escribe dos códigos distintos.",
     "sin_catalogo": "Los dos códigos tienen que estar en algún catálogo volcado.",
     "ya_declarado": "Esos dos códigos ya son equivalentes.",
@@ -706,3 +707,55 @@ def ficha_documento(
             "detail": ("Ese documento no está en lo volcado. Si es de un año antiguo, "
                        "cárgalo desde Quién compró qué → Carga."),
         }) from exc
+
+
+# --- Dormidos y huecos (1/11/2026) ------------------------------------------------------
+
+
+class DormidosAjustesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    meses_dormido: int | None = Field(None, ge=1, le=120)
+    meses_gracia_hueco: int | None = Field(None, ge=1, le=120)
+
+
+@router.get("/parque/dormidos-huecos")
+def dormidos_huecos(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    from app.erp import parque_consultas  # noqa: PLC0415
+
+    return parque_consultas.informe(session)
+
+
+@router.put("/parque/dormidos-ajustes")
+def dormidos_ajustes(
+    body: DormidosAjustesIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import parque_consultas  # noqa: PLC0415
+
+    try:
+        parque_consultas.guardar_ajustes(session, body.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    return parque_consultas.informe(session)
+
+
+@router.get("/parque/{tipo}.csv")
+def dormidos_huecos_csv(
+    tipo: str = Path(..., pattern="^(dormidos|huecos)$"),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> Response:
+    from app.erp import parque_consultas  # noqa: PLC0415
+
+    datos = parque_consultas.informe(session)
+    texto = parque_consultas.csv_de(datos[tipo], tipo)
+    return Response(
+        content=("﻿" + texto).encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{tipo}.csv"'},
+    )

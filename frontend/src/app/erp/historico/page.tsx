@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { ArticulosClasePanel } from "../../components/erp/ArticulosClasePanel";
 import { MaquinasPanel } from "../../components/erp/MaquinasPanel";
+import { DormidosHuecosPanel } from "../../components/erp/DormidosHuecosPanel";
 import { EquivalenciasPanel } from "../../components/erp/EquivalenciasPanel";
 import { SeriesVentaPanel } from "../../components/erp/SeriesVentaPanel";
 import { getCurrentUser, type User } from "../../lib/api";
@@ -42,7 +43,7 @@ import { extractErrorMessage } from "../../lib/errors";
  *  volcado en BoHub. Se consulta lo volcado, nunca FACTUSOL en vivo; la carga
  *  solo LEE FACTUSOL. */
 
-type Tab = "compradores" | "familias" | "carga";
+type Tab = "compradores" | "dormidos" | "familias" | "carga";
 
 const CLASE_LABEL = HISTORICO_CLASE_LABEL;
 const CLASES = Object.keys(CLASE_LABEL) as HistoricoClase[];
@@ -145,14 +146,15 @@ export default function HistoricoPage() {
       ) : null}
 
       <nav className="erp-tabs" aria-label="Secciones">
-        {(["compradores", "familias", "carga"] as const).map((t) => (
+        {(["compradores", "dormidos", "familias", "carga"] as const).map((t) => (
           <button
             key={t}
             type="button"
             className={`button small ${tab === t ? "" : "secondary"}`}
             onClick={() => setTab(t)}
           >
-            {t === "compradores" ? "Compradores" : t === "familias" ? "Familias" : "Carga"}
+            {t === "compradores" ? "Compradores" : t === "dormidos" ? "Dormidos y huecos"
+              : t === "familias" ? "Familias" : "Carga"}
           </button>
         ))}
       </nav>
@@ -160,6 +162,7 @@ export default function HistoricoPage() {
       {tab === "compradores" ? (
         <CompradoresPanel enCurso={estado?.en_curso ?? null} familias={familias} gamas={gamas} />
       ) : null}
+      {tab === "dormidos" ? <DormidosHuecosPanel puedeEditar={can(usuario, Cap.CONFIG)} /> : null}
       {tab === "familias" ? (
         <FamiliasPanel
           familias={familias}
