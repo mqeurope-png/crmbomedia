@@ -184,6 +184,14 @@ export async function listCompanyContacts(
   return apiFetch<CompanyContact[]>(`/api/companies/${id}/contacts`);
 }
 
+/** Lo que el despegue de dominios compartidos le quitó a una empresa (sin
+ *  revertir): para que su ficha diga por qué se ha quedado sin contactos. */
+export type DespegueEmpresa = { contactos: number; dominios: string[]; at: string | null };
+
+export async function getDespegueEmpresa(id: string): Promise<DespegueEmpresa> {
+  return apiFetch<DespegueEmpresa>(`/api/crm/despegue-dominios/empresa/${id}`);
+}
+
 export async function assignContactCompany(
   contact_id: string,
   company_id: string | null,

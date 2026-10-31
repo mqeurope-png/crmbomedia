@@ -11,12 +11,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_admin
+from app.core.auth import require_admin, require_viewer
 from app.db.session import get_session
 from app.models.crm import Contact, User
 from app.services import dominios_compartidos as dc
 
 router = APIRouter(prefix="/api/admin/dominios-compartidos", tags=["admin-dominios"])
+#: Lo que la ficha de empresa necesita saber del despegue (quien ve la ficha,
+#: también un viewer: solo dice cuántos, de qué dominio y cuándo).
+empresa_router = APIRouter(prefix="/api/crm/despegue-dominios", tags=["crm-despegue"])
 
 ERRORES = {
     "dominio_no_valido": "Eso no es un dominio (por ejemplo: xtec.cat).",
@@ -58,3 +61,14 @@ def quitar(dominio: str, session: Session = Depends(get_session),
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Ese dominio no está en la lista.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@empresa_router.get("/empresa/{company_id}")
+def despegue_de_empresa(company_id: str, session: Session = Depends(get_session),
+                        _: User = Depends(require_viewer)) -> dict[str, Any]:
+    """Cuántos contactos le quitó el despegue a esta empresa (sin revertir),
+    de qué dominios y cuándo. `contactos: 0` si ninguno."""
+    from app.services import despegue_dominios as dd  # noqa: PLC0415
+
+    return dd.despegados_de_empresa(session, company_id) or {
+        "contactos": 0, "dominios": [], "at": None}

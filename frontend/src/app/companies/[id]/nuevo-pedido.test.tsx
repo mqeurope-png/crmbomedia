@@ -29,6 +29,7 @@ jest.mock("../../lib/companiesApi", () => ({
   updateCompany: jest.fn(),
   deleteCompany: jest.fn(),
   fiscalCheck: jest.fn(() => Promise.reject(new Error("sin backend"))),
+  getDespegueEmpresa: jest.fn(() => Promise.resolve({ contactos: 0, dominios: [], at: null })),
 }));
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),

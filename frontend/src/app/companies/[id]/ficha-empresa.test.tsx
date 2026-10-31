@@ -2,7 +2,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import CompanyDetailPage from "./page";
 import {
-  archiveCompany, fiscalCheck, getCompany, listCompanyContacts, restoreCompany, viesRevalidate,
+  archiveCompany, fiscalCheck, getCompany, getDespegueEmpresa, listCompanyContacts, restoreCompany,
+  viesRevalidate,
 } from "../../lib/companiesApi";
 import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib/erpApi";
 
@@ -49,6 +50,7 @@ jest.mock("../../lib/companiesApi", () => ({
   restoreCompany: jest.fn(),
   fiscalCheck: jest.fn(),
   viesRevalidate: jest.fn(),
+  getDespegueEmpresa: jest.fn(() => Promise.resolve({ contactos: 0, dominios: [], at: null })),
 }));
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
@@ -542,5 +544,42 @@ describe("Sector de la empresa (lista, 1/11/2026)", () => {
     const sector = (await screen.findByLabelText("Sector")) as HTMLSelectElement;
     expect(sector.value).toBe("Vending");
     expect(Array.from(sector.options).map((o) => o.textContent)).not.toContain(" vending (texto anterior)");
+  });
+});
+
+
+describe("Cliente de FACTUSOL sin contactos (1/11/2026)", () => {
+  const AVISO = /Cliente de FACTUSOL sin ningún contacto: no hay a quién escribir/;
+
+  it("avisa, y dice que se los quitó el despegue de un dominio compartido", async () => {
+    (listCompanyContacts as jest.Mock).mockResolvedValue([]);
+    (getDespegueEmpresa as jest.Mock).mockResolvedValueOnce(
+      { contactos: 1, dominios: ["xtec.cat"], at: "2026-10-31T20:54:00Z" });
+    render(<CompanyDetailPage />);
+    const aviso = await screen.findByText(AVISO);
+    await waitFor(() => expect(aviso).toHaveTextContent(
+      "Se le quitó 1 contacto de xtec.cat el fecha(2026-10-31T20:54:00Z)"));
+    expect(getDespegueEmpresa).toHaveBeenCalledWith("c1");
+  });
+
+  it("sin despegue, avisa igual (sin el porqué)", async () => {
+    (listCompanyContacts as jest.Mock).mockResolvedValue([]);
+    render(<CompanyDetailPage />);
+    const aviso = await screen.findByText(AVISO);
+    expect(aviso).not.toHaveTextContent("Se le quit");
+  });
+
+  it("con contactos, o sin cliente de FACTUSOL, o archivada, no avisa", async () => {
+    render(<CompanyDetailPage />);
+    await screen.findAllByText(/En FACTUSOL · CLI-2760/);
+    expect(screen.queryByText(AVISO)).toBeNull();
+  });
+
+  it("una empresa solo CRM sin contactos no avisa", async () => {
+    (listCompanyContacts as jest.Mock).mockResolvedValue([]);
+    (getCompany as jest.Mock).mockResolvedValue({ ...COMPANY, factusol_company_id: null });
+    render(<CompanyDetailPage />);
+    await screen.findAllByText(/Solo CRM/);
+    expect(screen.queryByText(AVISO)).toBeNull();
   });
 });
