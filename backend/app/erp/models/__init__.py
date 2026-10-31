@@ -17,6 +17,7 @@ from app.erp.models.exceptions import (
 )
 from app.erp.models.historico import (
     HistoricoAjuste,
+    HistoricoAliasArticulo,
     HistoricoArticulo,
     HistoricoArticuloClase,
     HistoricoDocumento,
@@ -97,6 +98,7 @@ from app.erp.models.sku_mapping import ProductSkuMapping, SkuMatchedBy
 
 __all__ = [
     "HistoricoAjuste",
+    "HistoricoAliasArticulo",
     "HistoricoEquivalencia",
     "HistoricoArticulo",
     "HistoricoArticuloClase",

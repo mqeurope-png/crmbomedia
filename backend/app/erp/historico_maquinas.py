@@ -353,15 +353,29 @@ def _vendidas(session: Session, fuera: set[str], solo: set[str] | None = None,
     )
     if fuera:
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    # El código de la línea, con su alias del catálogo si lo tiene (`053332`
+    # → `53332`, 1/11/2026): lo vendido con el alias cuenta para el artículo.
+    al_art = historico_alias.articulos(session)
     if solo is not None and session.get_bind().dialect.name == "mysql":
         # MySQL ya compara sin mayúsculas ni tildes: se filtra por el índice
         # de `codart` en vez de agregar todo el histórico. (En sqlite, que
         # distingue mayúsculas, se agrega todo y se filtra en Python.)
         if not solo:
             return {}
+        destinos = {_k(x) for x in solo}
+        solo = set(solo) | {c for c, d in al_art.crudo.items() if _k(d) in destinos}
         stmt = stmt.where(lin.codart.in_(sorted(solo)))
-    return {c: (int(n), float(p) if p is not None else None)
-            for c, n, p in session.execute(stmt) if c and c.strip()}
+    out: dict[str, tuple[int, float | None]] = {}
+    for c, n, p in session.execute(stmt):
+        if not c or not c.strip():
+            continue
+        c = al_art.resuelve(c) or c
+        n0, p0 = out.get(c, (0, None))
+        p = float(p) if p is not None else None
+        out[c] = (n0 + int(n), p if p0 is None else (p0 if p is None else max(p, p0)))
+    return out
 
 
 def _sin_ceros(codart: str) -> str:
@@ -407,6 +421,9 @@ def sin_catalogo(session: Session,
 
     # Con catálogo y sin familia que case: por la familia de su catálogo más
     # reciente, tal cual (sin quitar ceros).
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_fam = historico_alias.familias(session)
     familias = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
     ultimo: dict[str, tuple[str, str | None]] = {}
     for _, c, fam in catalogo:
@@ -414,7 +431,7 @@ def sin_catalogo(session: Session,
     lineas = {_k(c): n for c, (n, _p) in vendidas.items()}
     sin_fam: dict[str, dict[str, Any]] = {}
     for kc, (c, fam) in ultimo.items():
-        f = familias.get(fam) if fam else None
+        f = familias.get(al_fam.resuelve(fam) or "") if fam else None
         if f is not None and f.clase:
             continue
         motivo = ("sin_familia" if not fam else "no_esta" if f is None else "sin_clase")
@@ -432,6 +449,10 @@ def sin_catalogo(session: Session,
         "con_ceros": [{"codart": c, "descripcion": nombres.get(c), "lineas": n,
                        "parecidos": parecidos[c]}
                       for c, n in sorted(con_ceros, key=lambda x: (-x[1], x[0]))],
+        # Las gemelas del cero: las fundidas (fantasma → su familia) y las que
+        # no se funden y hay que mirar.
+        "fundidas": [{"corta": c, "larga": la} for c, la in sorted(al_fam.fundidas.items())],
+        "avisos_familia": al_fam.avisos,
         "sin_familia": {"articulos": sum(g["articulos"] for g in grupos),
                         "lineas": sum(g["lineas"] for g in grupos), "familias": grupos},
     }
@@ -453,6 +474,9 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
     art, fam = HistoricoArticulo, HistoricoFamilia
     propia = HistoricoArticuloClase
     fuera = series_excluidas(session)
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_fam = historico_alias.familias(session)
     familias = {f.codigo: f for f in session.scalars(select(fam))}
     # La familia de cada artículo es la de su catálogo más reciente.
     ultimo = select(art.codart, func.max(art.ejercicio).label("ej")).group_by(
@@ -461,7 +485,8 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
         codart for codart, familia in session.execute(
             select(art.codart, art.familia).join(
                 ultimo, (ultimo.c.codart == art.codart) & (ultimo.c.ej == art.ejercicio)))
-        if familia in familias and familias[familia].clase == CLASE_MAQUINA
+        if (f := familias.get(al_fam.resuelve(familia) or "")) is not None
+        and f.clase == CLASE_MAQUINA
     }
     candidatos |= set(session.scalars(select(propia.codart).where(
         propia.clase == CLASE_MAQUINA)))
@@ -505,7 +530,7 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
     items = []
     for codart, n in vendidos.items():
         a = catalogo.get(_k(codart))
-        f = familias.get(a.familia) if a and a.familia else None
+        f = familias.get(al_fam.resuelve(a.familia) or "") if a and a.familia else None
         clase = propias.get(_k(codart))
         estado = (MARCADA if clase == CLASE_MAQUINA else
                   SIN_REVISAR if clase is None else NO_MAQUINA)
@@ -516,7 +541,7 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
             # El código del catálogo (no la grafía de la línea): es con el que
             # se guarda la marca y con el que la buscan las demás pantallas.
             "codart": a.codart if a else codart, "descripcion": a.descripcion if a else None,
-            "familia": a.familia if a else None,
+            "familia": al_fam.resuelve(a.familia) if a else None,
             "familia_nombre": f.descripcion if f else None, "gama": f.gama if f else None,
             "familia_clase": f.clase if f else None,
             "lineas": int(n), "precio_max": precios.get(codart),
@@ -534,7 +559,7 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
             # Dada por revisada con el botón de SU familia de hoy (lo que
             # deshace ese mismo botón).
             "en_lote": bool(a and a.familia and (lotes.get(_k(codart)) or "").endswith(
-                MARCA_LOTE.format(familia=a.familia))),
+                MARCA_LOTE.format(familia=al_fam.resuelve(a.familia)))),
         })
     items.sort(key=lambda i: (i["familia"] or "~", -i["lineas"], i["codart"]))
     return {

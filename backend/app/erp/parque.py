@@ -229,10 +229,17 @@ def _pedidas_en_proformas(session: Session, filas: list[Any], canon: Any = None,
 def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list[Any]:
     """Las líneas de máquina (marcadas) de factura y albarán de esos clientes
     (o de todos, con `codigos` None), de las series que cuentan."""
+    from app.erp import historico_alias  # noqa: PLC0415
+
     art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
     maquinas = _codigos_maquina(session, eq)
     if not maquinas:
         return []
+    # Los códigos de línea con alias del catálogo (1/11/2026) y la familia
+    # sin mayúsculas ni el fantasma del cero.
+    al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
+    maquinas = maquinas | {equivalencias.clave(c) for c, d in al_art.crudo.items()
+                           if equivalencias.clave(d) in maquinas}
     filas = session.execute(
         select(doc.codcli, lin.ejercicio, doc.tipo, doc.serie, doc.codigo, doc.fecha,
                doc.fecha_original, doc.estado, lin.posicion, lin.codart,
@@ -240,8 +247,8 @@ def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list
                lin.cantidad, art.descripcion.label("art_desc"), art.familia, fam.gama,
                lin.origen_tipo, lin.origen_serie, lin.origen_codigo)
         .join(doc, doc.id == lin.documento_id)
-        .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
-        .outerjoin(fam, fam.codigo == art.familia)
+        .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == al_art.expr(lin.codart)))
+        .outerjoin(fam, fam.codigo == al_fam.expr(art.familia))
         .where(*([doc.codcli.in_(codigos)] if codigos is not None else []),
                doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
                lin.es_producto.is_(True),
@@ -256,8 +263,15 @@ def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list
 
 
 def _contexto(session: Session, filas: list[Any], eq: Any) -> dict[str, Any]:
-    return {"canon": eq.canonico,
-            "proformas": _pedidas_en_proformas(session, filas, eq.canonico),
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_art = historico_alias.articulos(session)
+
+    def canon(c: str | None) -> str:
+        return eq.canonico(al_art.resuelve(c))
+
+    return {"canon": canon, "catalogo": al_art.resuelve,
+            "proformas": _pedidas_en_proformas(session, filas, canon),
             "enlazados": set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
                 HistoricoEjercicio.con_enlaces.is_(True))))}
 
@@ -298,6 +312,7 @@ def maquinas_de_todos(session: Session) -> dict[str, list[dict[str, Any]]]:
 
 def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
     canon, enlazados = ctx["canon"], ctx["enlazados"]
+    catalogo = ctx.get("catalogo") or (lambda c: c)
     queda, cubre = _emparejar(filas, ctx["proformas"], canon)
     # Un abono (línea en negativo) anula la venta más reciente de ese artículo.
     abonado: dict[str, float] = {}
@@ -348,6 +363,8 @@ def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]
             "origen": f.tipo, "clave": clave_linea(f.ejercicio, f.tipo, f.serie, f.codigo,
                                                    f.posicion, f.codart),
             "codart": f.codart, "articulo": f.art_desc or f.lin_desc, "familia": f.familia,
+            # El código del catálogo (con el alias de la línea resuelto).
+            "codart_catalogo": catalogo(f.codart),
             "gama": f.gama, "fecha": f.fecha.isoformat() if f.fecha else None,
             "fecha_original": None if f.fecha else f.fecha_original,
             "ejercicio": f.ejercicio, "cantidad": cantidad,
@@ -357,7 +374,8 @@ def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]
             "albaranes": [{"tipo": a.tipo, "serie": a.serie, "codigo": a.codigo,
                            "ejercicio": a.ejercicio, "numero": _ref(a),
                            "clave": clave_linea(a.ejercicio, a.tipo, a.serie, a.codigo,
-                                                a.posicion, a.codart)}
+                                                a.posicion, a.codart),
+                           "codart_catalogo": catalogo(a.codart)}
                           for a in cubre.get(id(f), [])],
             "posible_misma_venta": sospecha,
         })
@@ -390,8 +408,9 @@ def avisar_mismo_modelo(rows: list[dict[str, Any]], eq: Any = None) -> None:
         r["mismo_modelo"] = []
     for i, a in enumerate(activas):
         for b in activas[i + 1:]:
-            if (a["codart"] or "").strip().upper() == (b["codart"] or "").strip().upper():
-                continue
+            if equivalencias.clave(a.get("codart_catalogo") or a["codart"]) == \
+                    equivalencias.clave(b.get("codart_catalogo") or b["codart"]):
+                continue    # el mismo artículo (también con el alias de la línea)
             if eq is not None and eq.declarado(a["codart"], b["codart"]):
                 continue    # par declarado: ya se emparejan; no se avisa
             if not _mismo_modelo(a["articulo"], b["articulo"]):
@@ -465,9 +484,12 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
 
 
 def _claves_heredables(m: dict[str, Any]) -> list[str]:
-    mio = equivalencias.clave(m["codart"])
+    """La clave de la fila y las de sus albaranes del MISMO artículo (con el
+    alias de la línea resuelto, no por equivalencia)."""
+    mio = equivalencias.clave(m.get("codart_catalogo") or m["codart"])
     return [m["clave"], *(a["clave"] for a in m.get("albaranes") or []
-                          if equivalencias.clave(a["clave"].rsplit("|", 1)[-1]) == mio)]
+                          if equivalencias.clave(a.get("codart_catalogo")
+                                                 or a["clave"].rsplit("|", 1)[-1]) == mio)]
 
 
 def _claves_de(m: dict[str, Any]) -> list[str]:

@@ -416,28 +416,40 @@ def familias(session: Session) -> list[dict[str, Any]]:
     """Las familias, con cuántos artículos (de cualquier año, distintos) y
     cuántas líneas de venta de producto tienen, su clase y gama, y lo que
     proponen las reglas, para que Bart las clasifique."""
+    from app.erp import historico_alias  # noqa: PLC0415
     from app.erp.historico_clasificacion import propuestas  # noqa: PLC0415
 
-    n_art = dict(session.execute(
+    al_fam = historico_alias.familias(session)
+    al_art = historico_alias.articulos(session)
+    n_art: dict[str, int] = {}
+    for fam, n in session.execute(
         select(HistoricoArticulo.familia, func.count(func.distinct(HistoricoArticulo.codart)))
         .group_by(HistoricoArticulo.familia)
-    ).all())
-    n_ventas = dict(session.execute(
+    ).all():
+        k = al_fam.resuelve(fam)
+        n_art[k] = n_art.get(k, 0) + int(n)
+    n_ventas: dict[str, int] = {}
+    for fam, n in session.execute(
         select(HistoricoArticulo.familia, func.count(HistoricoLinea.id))
         .join(HistoricoArticulo, and_(
             HistoricoArticulo.ejercicio == HistoricoLinea.ejercicio,
-            HistoricoArticulo.codart == HistoricoLinea.codart,
+            HistoricoArticulo.codart == al_art.expr(HistoricoLinea.codart),
         ))
         .where(HistoricoLinea.es_producto.is_(True), _de_venta())
         .group_by(HistoricoArticulo.familia)
-    ).all())
+    ).all():
+        k = al_fam.resuelve(fam)
+        n_ventas[k] = n_ventas.get(k, 0) + int(n)
     props = propuestas(session)
     out = [{
         "codigo": f.codigo, "descripcion": f.descripcion, "clase": f.clase, "gama": f.gama,
         "articulos": int(n_art.get(f.codigo, 0)), "ventas": int(n_ventas.get(f.codigo, 0)),
         "propuesta": props.get(f.codigo),
-    } for f in session.scalars(select(HistoricoFamilia))]
-    return sorted(out, key=lambda x: (-x["ventas"], x["codigo"]))
+    } for f in session.scalars(select(HistoricoFamilia))
+        # El fantasma del cero, fundido en su gemela: no se lista aparte.
+        if f.codigo not in al_fam.fundidas]
+    # Las que faltan por clasificar, arriba: si no, se pierden al final.
+    return sorted(out, key=lambda x: (x["clase"] is not None, -x["ventas"], x["codigo"]))
 
 
 def clasificar_familia(session: Session, codigo: str, clase: str | None, por: str) -> dict:
@@ -487,17 +499,23 @@ def compradores(
     BoHub si está vinculada, última compra (fecha y documento), unidades,
     compras y qué artículos. Solo líneas de producto; facturas antes que
     albaranes (ver el módulo)."""
+    from app.erp import historico_alias  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
 
     art = HistoricoArticulo
     lin = HistoricoLinea
     doc = HistoricoDocumento
+    # Cómo se comparan los códigos (1/11/2026): la línea con su alias del
+    # catálogo; la familia, sin mayúsculas y con el fantasma del cero fundido.
+    al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
+    cod_lin = al_art.expr(lin.codart)
+    fam_art = al_fam.expr(art.familia)
     stmt = (
         select(lin.codart, lin.cantidad, lin.ejercicio, doc.tipo, doc.serie, doc.codigo,
                doc.fecha, doc.fecha_original, doc.codcli, doc.cliente_nombre,
                art.descripcion, art.familia, lin.descripcion)
         .join(doc, doc.id == lin.documento_id)
-        .outerjoin(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
+        .outerjoin(art, and_(art.ejercicio == lin.ejercicio, art.codart == cod_lin))
         .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA))
     )
     if codart:
@@ -505,26 +523,28 @@ def compradores(
         # el código de la web o el interno, 1/11/2026).
         from app.erp import historico_equivalencias  # noqa: PLC0415
 
-        grupo = historico_equivalencias.cargar(session).grupo(codart)
-        stmt = stmt.where(func.upper(lin.codart).in_(
-            sorted({historico_equivalencias.clave(c) for c in grupo})) if len(grupo) > 1
-            else lin.codart == codart)
+        grupo = historico_equivalencias.cargar(session).grupo(al_art.resuelve(codart) or codart)
+        # Y las líneas tecleadas con un alias de cualquiera de ellos.
+        claves = {historico_equivalencias.clave(c) for c in grupo | {codart}}
+        claves |= {historico_equivalencias.clave(c) for c, d in al_art.crudo.items()
+                   if historico_equivalencias.clave(d) in claves}
+        stmt = stmt.where(func.upper(lin.codart).in_(sorted(claves)))
     if q:
-        stmt = stmt.where(or_(lin.codart == q.strip(),
+        stmt = stmt.where(or_(lin.codart == q.strip(), cod_lin == q.strip(),
                               art.descripcion.ilike(_like(q.strip()), escape="/")))
     if familia:
-        stmt = stmt.where(art.familia == familia)
+        stmt = stmt.where(fam_art == familia)
     if clase or gama:
         # La clase y la gama son de la familia del artículo en el catálogo de
         # su año; la clase propia del artículo, si la tiene, manda.
-        stmt = stmt.outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
+        stmt = stmt.outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == fam_art)
         if clase:
             # La clase que vale: la propia del artículo o la de su familia;
             # «máquina», solo marcada por artículo (31/10/2026).
             from app.erp.historico_maquinas import clase_efectiva  # noqa: PLC0415
 
             stmt = stmt.outerjoin(HistoricoArticuloClase,
-                                  HistoricoArticuloClase.codart == lin.codart).where(
+                                  HistoricoArticuloClase.codart == cod_lin).where(
                 clase_efectiva(HistoricoArticuloClase.clase, HistoricoFamilia.clase) == clase)
         if gama:
             stmt = stmt.where(HistoricoFamilia.gama == gama)
@@ -542,7 +562,11 @@ def compradores(
 
     from app.erp import historico_equivalencias as _eq  # noqa: PLC0415
 
-    modelo = _eq.cargar(session).canonico
+    _equiv = _eq.cargar(session)
+
+    def modelo(c: str | None) -> str:
+        # Por MODELO: el alias de la línea resuelto y el código equivalente.
+        return _equiv.canonico(al_art.resuelve(c))
     clientes: dict[str, dict[str, Any]] = {}
     for (c_art, cant, ej, tipo, serie, codigo, fecha, fecha_orig, codcli, nombre,
          art_desc, _familia, lin_desc) in session.execute(stmt):
@@ -558,7 +582,7 @@ def compradores(
             TIPO_FACTURA: [0.0, set()], TIPO_ALBARAN: [0.0, set()]})
         pa[tipo][0] += float(cant or 0)
         pa[tipo][1].add((ej, tipo, serie, codigo))
-        cl["articulos"][c_art] = art_desc or lin_desc
+        cl["articulos"][al_art.resuelve(c_art) or c_art] = art_desc or lin_desc
         # La más reciente: por la fecha si es de verdad; si no, por el ejercicio.
         orden = (fecha or date(int(ej), 1, 1), ej, codigo)
         if cl["_orden"] is None or orden > cl["_orden"]:

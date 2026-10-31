@@ -306,11 +306,14 @@ def clases_de_articulo(session: Session) -> list[dict[str, Any]]:
             HistoricoArticulo.codart.in_([p.codart for p in propias]))
             .order_by(HistoricoArticulo.ejercicio)):
         catalogo[a.codart] = a   # se queda el del año más reciente
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_fam = historico_alias.familias(session)
     familias = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
     out = []
     for p in propias:
         a = catalogo.get(p.codart)
-        fam = familias.get(a.familia) if a and a.familia else None
+        fam = familias.get(al_fam.resuelve(a.familia)) if a and a.familia else None
         # «Es máquina» / «no es máquina» en una familia de máquinas se lleva
         # en el panel de máquinas (31/10/2026); aquí, lo que va contra su
         # familia.
