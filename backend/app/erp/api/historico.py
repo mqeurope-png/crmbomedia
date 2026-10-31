@@ -108,6 +108,7 @@ _NO_VALIDO = {
     "pista": "Escribe la pista (una palabra o unas pocas).",
     "pista_existe": "Esa pista ya está en la lista.",
     "serie": "Falta la serie.",
+    "umbral": "El umbral tiene que ser un importe positivo.",
 }
 
 
@@ -374,6 +375,69 @@ def aceptar_maquinas(
 
     hechas = historico_maquinas.aceptar_todas(session, por=_por(user))
     return {**_maquinas(session), "aplicadas": hechas}
+
+
+class UmbralIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    umbral: float = Field(ge=0)
+
+
+class ConfirmIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool = False
+
+
+@router.put("/maquinas-umbral")
+def cambiar_umbral(
+    body: UmbralIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    """El umbral de precio (dato, no código): por encima, un artículo sin
+    pista en el texto se propone como dudoso."""
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    historico_maquinas.guardar_umbral(session, body.umbral)
+    return _maquinas(session)
+
+
+@router.post("/maquinas-familias/{familia}/revisar")
+def dar_por_revisadas(
+    body: ConfirmIn,
+    familia: str = Path(..., max_length=32),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """«Dar por revisadas las que quedan» de una familia: lo que siga sin
+    revisar pasa a «no es máquina». Con confirmación (la pantalla dice
+    cuántas); se deshace por familia."""
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    if not body.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required", "detail": "Hace falta confirmarlo."})
+    hechas = historico_maquinas.dar_por_revisadas(session, familia, por=_por(user))
+    return {**_maquinas(session), "revisadas": hechas}
+
+
+@router.post("/maquinas-familias/{familia}/deshacer")
+def deshacer_revisadas(
+    body: ConfirmIn,
+    familia: str = Path(..., max_length=32),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Vuelve a «sin revisar» lo que dio por revisado ese botón en esa familia
+    (lo marcado después a mano no se toca)."""
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    if not body.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required", "detail": "Hace falta confirmarlo."})
+    vueltas = historico_maquinas.deshacer_revisadas(session, familia)
+    return {**_maquinas(session), "deshechas": vueltas}
 
 
 @router.post("/reglas-articulo", status_code=status.HTTP_201_CREATED)

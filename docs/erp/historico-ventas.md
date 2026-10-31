@@ -116,7 +116,16 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
     si además hay una negativa (MAINBOARD, CUCHILLA, MANUAL…), «dudosa», sin
     propuesta; solo negativa, «no»; ninguna, **sin propuesta** (nunca
     «máquina» por defecto). Pistas en `historico_reglas_articulo` (`tipo`
-    maquina / no_maquina), editables, por palabra entera y sin acentos.
+    maquina / no_maquina), editables, **por trozo** de texto y sin acentos
+    (1/11/2026: «ARTIS» casa con «ARTISJET»; una pista corta casa también
+    dentro de palabras largas). **El precio suma, no veta** (0160): sin pista
+    en el texto y con precio unitario MÁXIMO ≥ umbral (`historico_ajustes`,
+    2.000 € de salida, editable) → «dudosa · precio»; nunca cancela ni cambia
+    una propuesta del texto. **Lo revisado no lleva propuesta**: solo lo sin
+    revisar; un filtro enseña las revisadas como no máquina que una regla
+    propondría hoy. «No es máquina» por fila y, por familia, «Dar por
+    revisadas las que quedan» (con su número y confirmación, se deshace por
+    familia). Columna de precio máximo ordenable.
     «Aceptar todas» solo aplica lo claro a lo que nadie ha revisado, y lo
     apunta como «(aceptar todas)» (`no_maquina` guarda lo revisado que no es
     máquina). La lista es de las familias que **hoy** (catálogo más reciente)

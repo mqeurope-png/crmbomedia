@@ -62,7 +62,7 @@ def _preparar(session_factory, datos=None) -> dict[str, str]:  # noqa: F811
         cl.clasificar(s, "FLX", {"clase": "maquina"}, por="x")
         for p in hm.PISTAS_INICIALES + hm.PISTAS_NO_0159:
             hm.guardar_regla(s, p)
-        for p in hm.PISTAS_MAQUINA:
+        for p in hm.PISTAS_MAQUINA + hm.PISTAS_MAQUINA_0160:
             hm.guardar_regla(s, p, hm.PISTA_SI)
         a = Company(name="Láseres Figurante", factusol_company_id=CLI)
         b = Company(name="Otro Cliente Figurante", factusol_company_id=OTRO)
@@ -103,10 +103,8 @@ def test_la_propuesta_por_texto(session_factory) -> None:  # noqa: F811
     assert (items[BEAMBOX]["propuesta"], items[BEAMBOX]["pista_si"]) == ("maquina", "BEAMBOX")
     assert (items[LENTE]["propuesta"], items[LENTE]["pista_no"]) == ("no_maquina", "LENS")
     assert items[CARTUCHO]["propuesta"] == "no_maquina"
-    # Palabra entera: «LID» no casa con «SOLID».
-    regla = hm._compilar(["LID"])
-    assert hm.pista("SOLID STATE LASER", regla) is None
-    assert hm.pista("TOP LID", regla) == "LID"
+    # Por trozo (1/11/2026): «ARTIS» casa dentro de «ARTISJET».
+    assert hm.pista("ARTISJET A3000U", hm._compilar(["ARTIS"])) == "ARTIS"
 
 
 def test_aceptar_todas_no_pisa_lo_marcado_a_mano(session_factory) -> None:  # noqa: F811
@@ -247,10 +245,10 @@ def test_el_aviso_no_apunta_a_la_factura_del_propio_albaran(session_factory) -> 
 # --- la propuesta exige evidencia positiva (31/10/2026) ------------------------------------
 
 
-def _propuesta(desc: str) -> str | None:
-    si = hm._compilar(list(hm.PISTAS_MAQUINA))
+def _propuesta(desc: str, precio: float | None = None, umbral: float = 2000) -> str | None:
+    si = hm._compilar(list(hm.PISTAS_MAQUINA + hm.PISTAS_MAQUINA_0160))
     no = hm._compilar(list(hm.PISTAS_INICIALES + hm.PISTAS_NO_0159))
-    return hm.proponer(desc, si, no)["propuesta"]
+    return hm.proponer(desc, si, no, precio_max=precio, umbral=umbral)["propuesta"]
 
 
 def test_sin_evidencia_positiva_no_se_propone_como_maquina() -> None:
@@ -315,3 +313,104 @@ def test_la_migracion_0159_siembra_las_positivas() -> None:
     modulo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     assert modulo.POSITIVAS == hm.PISTAS_MAQUINA and modulo.NEGATIVAS == hm.PISTAS_NO_0159
+
+
+
+# --- pistas por trozo y el precio como segunda señal (1/11/2026) ---------------------------
+
+
+def test_las_pistas_casan_por_trozo() -> None:
+    for desc in ("ARTISJET A3000U", "EPSON PP100", "ADR1-10DVD", "ADR1-14DVD TORRE DUPLICACIÓN"):
+        assert _propuesta(desc) == "maquina", desc
+    for desc in ("FLUX FOCUSING LENS", "FLUX HX AF Sensor (3D touch)",
+                 "SPARE PARTS PP100 HOLDER CARTRIDGE"):
+        assert _propuesta(desc) == "no_maquina", desc
+
+
+def test_el_precio_suma_y_no_veta() -> None:
+    # El texto manda: una Ador barata sigue siendo máquina.
+    assert _propuesta("FLUX ADOR 10W", precio=900) == "maquina"
+    # Una lente cara sigue siendo «no».
+    assert _propuesta("FLUX FOCUSING LENS", precio=5000) == "no_maquina"
+    # Sin pista: por encima del umbral, dudosa; por debajo, nada.
+    assert _propuesta("A5000 UV", precio=12000) == "dudoso"
+    assert _propuesta("A5000 UV", precio=1500) is None
+    # El umbral es un dato: bajándolo, la misma pasa a dudosa.
+    assert _propuesta("A5000 UV", precio=1500, umbral=1000) == "dudoso"
+
+
+def _datos_precio() -> dict[str, Any]:
+    d = _datos()
+    d["2026"]["F_ART"].append(_art("5010", "A5000 UV FIGURANTE", "FLX"))
+    d["2026"]["F_LFA"] += [_lfa(260101, 10, "5010", "garantía", 1, 0),
+                           _lfa(260102, 10, "5010", "A5000", 1, 12000)]
+    return d
+
+
+def test_el_precio_es_el_maximo_y_el_umbral_es_un_dato(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory, _datos_precio())
+    with session_factory() as s:
+        fila = next(i for i in hm.articulos(s)["items"] if i["codart"] == "5010")
+        assert fila["precio_max"] == 12000
+        assert (fila["propuesta"], fila["por_precio"]) == ("dudoso", True)
+        assert fila["estado"] == hm.SIN_REVISAR          # no se marca sola
+        hm.guardar_umbral(s, 15000)
+        fila = next(i for i in hm.articulos(s)["items"] if i["codart"] == "5010")
+        assert fila["propuesta"] is None
+
+
+def test_lo_revisado_no_lleva_propuesta_y_sale_en_el_filtro(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory, _datos_precio())
+    with session_factory() as s:
+        hm.marcar(s, BEAMBOX, True, por="bart")
+        hm.marcar(s, "5010", False, por="bart")          # «No es máquina»
+        items = {i["codart"]: i for i in hm.articulos(s)["items"]}
+        # Marcada sigue marcada; la descartada no reaparece como propuesta…
+        assert items[BEAMBOX]["estado"] == hm.MARCADA
+        assert (items["5010"]["estado"], items["5010"]["propuesta"]) == (hm.NO_MAQUINA, None)
+        # …pero el filtro de colisiones la enseña (por precio, hoy sería dudosa).
+        assert items["5010"]["propondria"] == "dudoso"
+        assert hm.articulos(s)["colisiones"] == 1
+        # «Aceptar todas» no la toca.
+        hm.aceptar_todas(s, por="x")
+        assert s.get(HistoricoArticuloClase, "5010").clase == "no_maquina"
+        assert s.get(HistoricoArticuloClase, BEAMBOX).clase == "maquina"
+
+
+def test_dar_por_revisadas_una_familia_y_deshacerlo(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        hm.marcar(s, BEAMBOX, True, por="bart")
+        assert hm.dar_por_revisadas(s, "FLX", por="bart") == 2   # lente y cartucho
+        hm.marcar(s, LENTE, True, por="bart")                    # luego, a mano
+        assert hm.articulos(s)["sin_revisar"] == 0
+        assert hm.deshacer_revisadas(s, "FLX") == 1              # solo el cartucho
+        clases = {p.codart: p.clase for p in s.scalars(select(HistoricoArticuloClase))}
+        assert clases == {BEAMBOX: "maquina", LENTE: "maquina"}
+
+
+def test_api_umbral_y_familia(http, session_factory) -> None:  # noqa: F811
+    _preparar(session_factory, _datos_precio())
+    h = auth_headers(http, "admin")
+    r = http.put("/api/erp/historico/maquinas-umbral", json={"umbral": 500}, headers=h)
+    assert r.status_code == 200 and r.json()["umbral"] == 500
+    assert http.post("/api/erp/historico/maquinas-familias/FLX/revisar", json={},
+                     headers=h).status_code == 400
+    r = http.post("/api/erp/historico/maquinas-familias/FLX/revisar", json={"confirm": True},
+                  headers=h)
+    assert r.status_code == 200 and r.json()["revisadas"] == 4
+    r = http.post("/api/erp/historico/maquinas-familias/FLX/deshacer", json={"confirm": True},
+                  headers=h)
+    assert r.json()["deshechas"] == 4
+    assert http.put("/api/erp/historico/maquinas-umbral", json={"umbral": 1},
+                    headers=auth_headers(http, "pedidos")).status_code == 403
+
+
+def test_la_migracion_0160_siembra_umbral_y_positivas() -> None:
+    ruta = next(Path(__file__).resolve().parents[1].glob(
+        "alembic/versions/20261101_0160_*.py"))
+    spec = importlib.util.spec_from_file_location("m0160", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    assert modulo.POSITIVAS == hm.PISTAS_MAQUINA_0160
+    assert float(modulo.UMBRAL) == hm.UMBRAL_POR_DEFECTO

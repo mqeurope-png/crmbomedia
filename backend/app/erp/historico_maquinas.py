@@ -66,6 +66,14 @@ PISTAS_NO_0159 = (
     "MAINBOARD", "MOTOR", "STEPPER", "FAN", "POWER SUPPLY", "CLAMP", "DUCT", "SENSOR",
     "LUBRICANT", "CUCHILLA", "LAMINA", "PLATO", "MESA", "RASPBERRY",
 )
+#: Positivas que añade la 0160 (las que se repiten en el catálogo).
+PISTAS_MAQUINA_0160 = ("ADR", "TORRE DUPLICADORA", "PLANCHA", "MULTIFUNCION", "FIBER LASER")
+#: El umbral de precio (`historico_ajustes`): por encima, un artículo SIN
+#: pista se propone como dudoso. Nunca cancela una propuesta del texto.
+AJUSTE_UMBRAL = "umbral_precio_maquina"
+UMBRAL_POR_DEFECTO = 2000.0
+#: Lo que deja «Dar por revisadas las que quedan» en `por`, para deshacerlo.
+MARCA_LOTE = "(dar por revisadas {familia})"
 PISTA_SI, PISTA_NO = "maquina", "no_maquina"
 PROPUESTA_SI, PROPUESTA_NO, PROPUESTA_DUDOSA = "maquina", "no_maquina", "dudoso"
 
@@ -188,10 +196,10 @@ def borrar_regla(session: Session, regla_id: int) -> None:
 
 
 def _compilar(patrones: list[str]) -> list[tuple[str, re.Pattern[str]]]:
-    """Palabra entera, sin mayúsculas ni acentos: «LID» no casa con
-    «SOLID», «LENS» sí con «FOCUSING LENS»."""
-    return [(p, re.compile(rf"(?<![A-Z0-9]){re.escape(_plano(p))}(?![A-Z0-9])"))
-            for p in patrones if _plano(p)]
+    """Por TROZO de texto, sin mayúsculas ni acentos (1/11/2026): «ARTIS»
+    casa con «ARTISJET», «EPSON PP» con «EPSON PP100». Ojo: una pista corta
+    casa también dentro de palabras largas (ver docs)."""
+    return [(p, re.compile(re.escape(_plano(p)))) for p in patrones if _plano(p)]
 
 
 def pista(descripcion: str | None, compiladas: list[tuple[str, re.Pattern[str]]]) -> str | None:
@@ -204,7 +212,8 @@ def pista(descripcion: str | None, compiladas: list[tuple[str, re.Pattern[str]]]
 
 
 def proponer(descripcion: str | None, si: list[tuple[str, re.Pattern[str]]],
-             no: list[tuple[str, re.Pattern[str]]]) -> dict[str, Any]:
+             no: list[tuple[str, re.Pattern[str]]], *, precio_max: float | None = None,
+             umbral: float | None = None) -> dict[str, Any]:
     """La propuesta EXIGE evidencia positiva (31/10/2026): «máquina» solo si
     el nombre lo dice (IMPRESORA, BEAMBOX, HEXA…). Las pistas negativas van
     después:
@@ -214,20 +223,55 @@ def proponer(descripcion: str | None, si: list[tuple[str, re.Pattern[str]]],
       también SPEEDSTAR 2 ENCELOFANADORA MANUAL) → `dudoso`: sin propuesta,
       lo decide Bart;
     - solo negativa → `no_maquina`;
-    - ninguna → sin propuesta (`None`): no se propone como máquina."""
+    - ninguna y precio máximo ≥ umbral → `dudoso` por precio (1/11/2026);
+    - ninguna y por debajo → sin propuesta (`None`).
+
+    El precio solo AÑADE propuestas: nunca cancela ni cambia una que venga
+    del texto (una FLUX ADOR barata sigue siendo máquina)."""
     a_favor, en_contra = pista(descripcion, si), pista(descripcion, no)
+    por_precio = False
     if a_favor and not en_contra:
         propuesta = PROPUESTA_SI
     elif a_favor:
         propuesta = PROPUESTA_DUDOSA
     elif en_contra:
         propuesta = PROPUESTA_NO
+    elif umbral is not None and precio_max is not None and precio_max >= umbral:
+        propuesta, por_precio = PROPUESTA_DUDOSA, True
     else:
         propuesta = None
-    return {"propuesta": propuesta, "pista_si": a_favor, "pista_no": en_contra}
+    return {"propuesta": propuesta, "pista_si": a_favor, "pista_no": en_contra,
+            "por_precio": por_precio}
+
+
+def umbral(session: Session) -> float:
+    from app.erp.models.historico import HistoricoAjuste  # noqa: PLC0415
+
+    fila = session.get(HistoricoAjuste, AJUSTE_UMBRAL)
+    try:
+        return float(fila.valor) if fila else UMBRAL_POR_DEFECTO
+    except (TypeError, ValueError):
+        return UMBRAL_POR_DEFECTO
+
+
+def guardar_umbral(session: Session, valor: float) -> float:
+    from app.erp.models.historico import HistoricoAjuste  # noqa: PLC0415
+
+    if valor is None or valor < 0:
+        raise ValueError("umbral")
+    fila = session.get(HistoricoAjuste, AJUSTE_UMBRAL) or HistoricoAjuste(clave=AJUSTE_UMBRAL)
+    fila.valor = str(float(valor))
+    session.add(fila)
+    session.commit()
+    return float(valor)
 
 
 # --- los artículos de las familias de máquinas -------------------------------------------
+
+
+def _vacio(session: Session) -> dict[str, Any]:
+    return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0,
+            "umbral": umbral(session), "colisiones": 0}
 
 
 def articulos(session: Session) -> dict[str, Any]:
@@ -253,9 +297,11 @@ def articulos(session: Session) -> dict[str, Any]:
     candidatos |= set(session.scalars(select(propia.codart).where(
         propia.clase == CLASE_MAQUINA)))
     if not candidatos:
-        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0}
+        return _vacio(session)
     stmt = (
-        select(lin.codart, func.count(lin.id))
+        # El precio unitario MÁXIMO, nunca la media: hay líneas a 0 € de
+        # garantías y reposiciones.
+        select(lin.codart, func.count(lin.id), func.max(lin.precio))
         .join(doc, doc.id == lin.documento_id)
         .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA),
                lin.codart.in_(sorted(candidatos)))
@@ -263,9 +309,11 @@ def articulos(session: Session) -> dict[str, Any]:
     )
     if fuera:
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
-    vendidos = dict(session.execute(stmt).all())
+    filas = session.execute(stmt).all()
+    vendidos = {c: n for c, n, _ in filas}
+    precios = {c: (float(p) if p is not None else None) for c, _, p in filas}
     if not vendidos:
-        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0}
+        return _vacio(session)
     # Nombre y familia: los del catálogo más reciente que lo tenga.
     catalogo: dict[str, HistoricoArticulo] = {}
     for a in session.scalars(select(art).where(art.codart.in_(list(vendidos)))
@@ -276,6 +324,9 @@ def articulos(session: Session) -> dict[str, Any]:
     todas = reglas(session)
     si = _compilar([r["patron"] for r in todas if r["tipo"] == PISTA_SI])
     no = _compilar([r["patron"] for r in todas if r["tipo"] == PISTA_NO])
+    corte = umbral(session)
+    lotes = {p.codart: p.por for p in session.scalars(
+        select(propia).where(propia.codart.in_(list(vendidos))))}
     items = []
     for codart, n in vendidos.items():
         a = catalogo.get(codart)
@@ -283,13 +334,27 @@ def articulos(session: Session) -> dict[str, Any]:
         clase = propias.get(codart)
         estado = (MARCADA if clase == CLASE_MAQUINA else
                   SIN_REVISAR if clase is None else NO_MAQUINA)
+        hoy = proponer(a.descripcion if a else None, si, no,
+                       precio_max=precios.get(codart), umbral=corte)
+        revisada = estado != SIN_REVISAR
         items.append({
             "codart": codart, "descripcion": a.descripcion if a else None,
             "familia": a.familia if a else None,
             "familia_nombre": f.descripcion if f else None, "gama": f.gama if f else None,
             "familia_clase": f.clase if f else None,
-            "lineas": int(n), "estado": estado, "clase_propia": clase,
-            **proponer(a.descripcion if a else None, si, no),
+            "lineas": int(n), "precio_max": precios.get(codart),
+            "estado": estado, "clase_propia": clase,
+            # Lo revisado (marcado o no) no lleva propuesta: es decisión de
+            # Bart, no un hueco. Las reglas nuevas solo proponen en lo que
+            # sigue sin revisar.
+            **(hoy if not revisada else {"propuesta": None, "pista_si": None,
+                                         "pista_no": None, "por_precio": False}),
+            # Solo para el filtro «revisadas que hoy se propondrían»: lo que
+            # una regla propondría hoy en una revisada como no máquina.
+            "propondria": (hoy["propuesta"] if estado == NO_MAQUINA
+                           and hoy["propuesta"] in (PROPUESTA_SI, PROPUESTA_DUDOSA)
+                           else None),
+            "en_lote": bool(lotes.get(codart) and "(dar por revisadas" in lotes[codart]),
         })
     items.sort(key=lambda i: (i["familia"] or "~", -i["lineas"], i["codart"]))
     return {
@@ -297,6 +362,8 @@ def articulos(session: Session) -> dict[str, Any]:
         "marcadas": sum(1 for i in items if i["estado"] == MARCADA),
         "total": len(items),
         "sin_revisar": sum(1 for i in items if i["estado"] == SIN_REVISAR),
+        "umbral": corte,
+        "colisiones": sum(1 for i in items if i["propondria"]),
         # Lo que «Aceptar todas» aplicaría: sin revisar Y con propuesta clara.
         "propuestas": sum(1 for i in items if i["estado"] == SIN_REVISAR
                           and i["propuesta"] in (PROPUESTA_SI, PROPUESTA_NO)),
@@ -344,3 +411,37 @@ def aceptar_todas(session: Session, *, por: str) -> dict[str, int]:
         hechas[i["propuesta"]] += 1
     session.commit()
     return hechas
+
+
+# --- «Dar por revisadas las que quedan» de una familia -----------------------------------
+
+
+def dar_por_revisadas(session: Session, familia: str, *, por: str) -> int:
+    """Pasa a «no es máquina» TODO lo que siga sin revisar en esa familia (la
+    de hoy de cada artículo). Lo apunta para poder deshacerlo por familia.
+    Devuelve cuántas."""
+    marca = MARCA_LOTE.format(familia=familia)
+    hechas = 0
+    for i in articulos(session)["items"]:
+        if i["familia"] != familia or i["estado"] != SIN_REVISAR:
+            continue
+        if session.get(HistoricoArticuloClase, i["codart"]):
+            continue   # alguien lo marcó mientras tanto
+        session.add(HistoricoArticuloClase(codart=i["codart"], clase=CLASE_NO_MAQUINA,
+                                           por=f"{por} {marca}"[:255], at=_ahora()))
+        hechas += 1
+    session.commit()
+    return hechas
+
+
+def deshacer_revisadas(session: Session, familia: str) -> int:
+    """Vuelve a «sin revisar» lo que dio por revisado el botón de esa familia
+    (solo lo que sigue tal cual: si luego se marcó a mano, no se toca)."""
+    marca = MARCA_LOTE.format(familia=familia)
+    filas = [p for p in session.scalars(select(HistoricoArticuloClase).where(
+        HistoricoArticuloClase.clase == CLASE_NO_MAQUINA,
+        HistoricoArticuloClase.por.like(f"%{marca}"))) if (p.por or "").endswith(marca)]
+    for p in filas:
+        session.delete(p)
+    session.commit()
+    return len(filas)

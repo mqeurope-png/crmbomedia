@@ -219,6 +219,16 @@ class HistoricoReglaArticulo(Base):
     tipo: Mapped[str] = mapped_column(String(16), nullable=False, default="no_maquina")
 
 
+class HistoricoAjuste(Base):
+    """Un ajuste del histórico, como dato (0160): p. ej. el umbral de precio
+    a partir del cual un artículo sin pista se propone como máquina dudosa."""
+
+    __tablename__ = "historico_ajustes"
+
+    clave: Mapped[str] = mapped_column(String(64), primary_key=True)
+    valor: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
 class HistoricoSerie(Base):
     """Si una serie de FACTUSOL cuenta como venta (0158). Sin fila, cuenta.
     Las que no cuentan quedan fuera del parque y de «Quién compró qué»."""

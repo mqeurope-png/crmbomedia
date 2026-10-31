@@ -7791,6 +7791,14 @@ export type MaquinaArticulo = {
   propuesta: "maquina" | "no_maquina" | "dudoso" | null;
   pista_si: string | null;
   pista_no: string | null;
+  /** Dudosa solo por el precio (sin pista en el texto, por encima del umbral). */
+  por_precio?: boolean;
+  /** Precio unitario MÁXIMO de sus líneas (nunca la media). */
+  precio_max?: number | null;
+  /** En una revisada como no máquina: lo que una regla propondría hoy (filtro). */
+  propondria?: "maquina" | "dudoso" | null;
+  /** Dada por revisada con el botón de su familia (se puede deshacer). */
+  en_lote?: boolean;
 };
 
 export type MaquinasResumen = {
@@ -7802,6 +7810,12 @@ export type MaquinasResumen = {
   propuestas: number;
   reglas: { id: number; patron: string; orden: number; tipo: "maquina" | "no_maquina" }[];
   aplicadas?: { maquina: number; no_maquina: number };
+  /** Umbral de precio (dato editable). */
+  umbral?: number;
+  /** Revisadas como no máquina que una regla propondría hoy. */
+  colisiones?: number;
+  revisadas?: number;
+  deshechas?: number;
 };
 
 export async function getHistoricoMaquinas(): Promise<MaquinasResumen> {
@@ -7818,6 +7832,25 @@ export async function marcarHistoricoMaquina(
 
 export async function aceptarPropuestasMaquinas(): Promise<MaquinasResumen> {
   return apiFetch("/api/erp/historico/maquinas/aceptar-propuestas", { method: "POST" });
+}
+
+export async function cambiarUmbralMaquinas(umbral: number): Promise<MaquinasResumen> {
+  return apiFetch("/api/erp/historico/maquinas-umbral", {
+    method: "PUT", body: JSON.stringify({ umbral }),
+  });
+}
+
+/** «Dar por revisadas las que quedan» de una familia (confirmado en pantalla). */
+export async function darPorRevisadasFamilia(familia: string): Promise<MaquinasResumen> {
+  return apiFetch(`/api/erp/historico/maquinas-familias/${encodeURIComponent(familia)}/revisar`, {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  });
+}
+
+export async function deshacerRevisadasFamilia(familia: string): Promise<MaquinasResumen> {
+  return apiFetch(`/api/erp/historico/maquinas-familias/${encodeURIComponent(familia)}/deshacer`, {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  });
 }
 
 export async function crearPistaArticulo(

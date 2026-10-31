@@ -16068,3 +16068,4 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-maquinas-pistas { margin-top: 16px; }
 .erp-maquinas-pistas-lista { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; }
 .erp-maquinas-pistas-lista li { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 10px; }
+.erp-th-orden { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-transform: inherit; letter-spacing: inherit; }
