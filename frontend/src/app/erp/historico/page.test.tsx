@@ -34,6 +34,8 @@ jest.mock("../../lib/erpApi", () => ({
 }));
 // Los artículos con clase propia tienen su propio test.
 jest.mock("../../components/erp/ArticulosClasePanel", () => ({ ArticulosClasePanel: () => null }));
+jest.mock("../../components/erp/MaquinasPanel", () => ({ MaquinasPanel: () => null }));
+jest.mock("../../components/erp/SeriesVentaPanel", () => ({ SeriesVentaPanel: () => null }));
 jest.mock("../../lib/api", () => ({ getCurrentUser: jest.fn() }));
 
 function api() {

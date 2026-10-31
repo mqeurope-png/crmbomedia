@@ -27,6 +27,18 @@ from tests.test_erp_historico import (  # noqa: F401 — fixtures
 ACCESORIO = "4001"
 
 
+def _marcar_maquinas(s, codarts: tuple[str, ...] | None = None) -> None:
+    """Desde el 31/10/2026 «máquina» se marca por artículo: los figurantes
+    marcan sus máquinas (no los accesorios)."""
+    from app.erp import historico_maquinas as hm
+
+    for codart in codarts or (MAQUINA, "0917", "3301"):
+        try:
+            hm.marcar(s, codart, True, por="x")
+        except LookupError:
+            pass   # no está en el catálogo de esta prueba
+
+
 def _datos() -> dict[str, Any]:
     d = datos_figurantes()
     hoy = d["2026"]
@@ -56,6 +68,7 @@ def _preparar(session_factory) -> dict[str, str]:  # noqa: F811
         cl.clasificar(s, "LAS", {"clase": "maquina", "gama": "laser"}, por="x")
         cl.clasificar(s, "ACC", {"clase": "accesorio", "gama": "laser"}, por="x")
         cl.clasificar(s, "PLO", {"clase": "maquina", "gama": "laser"}, por="x")
+        _marcar_maquinas(s)
         rotulos = Company(name="Rótulos Figurante", factusol_company_id=CLI_ROTULOS)
         sin = Company(name="Sin FACTUSOL Figurante")
         s.add_all([rotulos, sin])
@@ -185,6 +198,7 @@ def test_un_abono_anula_la_maquina_mas_reciente(session_factory) -> None:  # noq
         from app.erp import historico_clasificacion as cl
 
         cl.clasificar(s, "LAS", {"clase": "maquina"}, por="x")
+        _marcar_maquinas(s)
         rotulos = Company(name="Rótulos Figurante", factusol_company_id=CLI_ROTULOS)
         s.add(rotulos)
         s.commit()
@@ -248,6 +262,7 @@ def _parque_hexa(session_factory, enlace: str, **extra) -> dict:  # noqa: F811
         from app.erp import historico_clasificacion as cl
 
         cl.clasificar(s, "LAS", {"clase": "maquina"}, por="x")
+        _marcar_maquinas(s)
         for codart, clase in extra.items():
             cl.clasificar_articulo(s, codart, clase, por="x")
         empresa = Company(name="Grabados Figurante", factusol_company_id=CLI_HEXA)
@@ -291,6 +306,7 @@ def test_dos_compras_del_mismo_modelo_lejanas_son_dos_maquinas(session_factory) 
         from app.erp import historico_clasificacion as cl
 
         cl.clasificar(s, "LAS", {"clase": "maquina"}, por="x")
+        _marcar_maquinas(s)
         empresa = Company(name="Grabados Figurante", factusol_company_id=CLI_HEXA)
         s.add(empresa)
         s.commit()
@@ -299,9 +315,11 @@ def test_dos_compras_del_mismo_modelo_lejanas_son_dos_maquinas(session_factory) 
     assert all(m["posible_misma_venta"] is None for m in hexas)
 
 
-def test_sin_clase_propia_el_accesorio_de_una_familia_de_maquinas_sale(session_factory) -> None:  # noqa: F811
+def test_sin_marcar_un_articulo_de_una_familia_de_maquinas_no_entra(session_factory) -> None:  # noqa: F811
+    # 31/10/2026: la familia es de máquinas, pero el sensor no está marcado.
     con = _parque_hexa(session_factory, "proforma")
-    assert SENSOR in {m["codart"] for m in con["maquinas"]}
+    assert SENSOR not in {m["codart"] for m in con["maquinas"]}
+    assert HEXA in {m["codart"] for m in con["maquinas"]}
 
 
 def test_la_clase_propia_del_articulo_manda_sobre_la_familia(session_factory) -> None:  # noqa: F811
@@ -313,11 +331,11 @@ def test_la_clase_propia_del_articulo_manda_sobre_la_familia(session_factory) ->
         assert historico.compradores(s, codart=SENSOR, clase="maquina") == []
         from app.erp import historico_clasificacion as cl
 
-        # Quitarla vuelve a la de la familia.
+        # Quitarla vuelve a la de la familia, que ya no basta para ser máquina.
         cl.clasificar_articulo(s, SENSOR, None, por="x")
         empresa = s.scalars(select(Company).where(
             Company.factusol_company_id == CLI_HEXA)).one()
-        assert SENSOR in {m["codart"] for m in parque.parque(s, empresa)["maquinas"]}
+        assert SENSOR not in {m["codart"] for m in parque.parque(s, empresa)["maquinas"]}
 
 
 def test_api_clase_de_articulo_la_pone_quien_configura(http, session_factory) -> None:  # noqa: F811
@@ -361,6 +379,7 @@ def _empresa_hexa(s) -> Company:
     from app.erp import historico_clasificacion as cl
 
     cl.clasificar(s, "LAS", {"clase": "maquina"}, por="x")
+    _marcar_maquinas(s)
     empresa = Company(name="Grabados Figurante", factusol_company_id=CLI_HEXA)
     s.add(empresa)
     s.commit()

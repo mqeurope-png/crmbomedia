@@ -68,6 +68,13 @@ TIPOS_VENTA = (TIPO_FACTURA, TIPO_ALBARAN)
 #: `historico_familias.clase` (la pone Bart). Recambio y accesorio, desde la
 #: 0154: un recambio avisa de servicio y un accesorio no es una máquina.
 CLASES_FAMILIA = ("maquina", "consumible", "recambio", "accesorio", "otro")
+#: «Máquina» se decide por ARTÍCULO (31/10/2026): una familia de clase máquina
+#: marca qué hay que mirar, no mete a todos sus artículos en el parque. Un
+#: artículo es máquina solo con `historico_articulos_clase.clase = maquina`.
+CLASE_MAQUINA = "maquina"
+#: En `historico_articulos_clase`: revisado y NO es máquina (sin otra clase;
+#: «Aceptar todas» no lo vuelve a proponer).
+CLASE_NO_MAQUINA = "no_maquina"
 
 #: `historico_reglas_familia.campo`: contra qué se compara el patrón.
 REGLA_CODIGO = "codigo"     # el código de la familia, exacto
@@ -193,6 +200,30 @@ class HistoricoArticuloClase(Base):
 
     codart: Mapped[str] = mapped_column(String(64), primary_key=True)
     clase: Mapped[str] = mapped_column(String(16), nullable=False)
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class HistoricoReglaArticulo(Base):
+    """Una pista en la descripción de un artículo que delata que NO es una
+    máquina («FILTER», «LENS», «SPARE PARTS»…). Propone; no decide. Datos
+    editables (0158)."""
+
+    __tablename__ = "historico_reglas_articulo"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    patron: Mapped[str] = mapped_column(String(64), nullable=False)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+
+
+class HistoricoSerie(Base):
+    """Si una serie de FACTUSOL cuenta como venta (0158). Sin fila, cuenta.
+    Las que no cuentan quedan fuera del parque y de «Quién compró qué»."""
+
+    __tablename__ = "historico_series"
+
+    serie: Mapped[str] = mapped_column(String(8), primary_key=True)
+    cuenta: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     por: Mapped[str | None] = mapped_column(String(255))
     at: Mapped[datetime | None] = mapped_column(DateTime)
 

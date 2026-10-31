@@ -105,6 +105,9 @@ _NO_VALIDO = {
     "existe": "Esa gama ya está en la lista.",
     "sin_propuesta": "Ninguna regla propone nada para esta familia.",
     "no_choca": "La propuesta no choca con lo que tiene: no hay nada que mantener.",
+    "pista": "Escribe la pista (una palabra o unas pocas).",
+    "pista_existe": "Esa pista ya está en la lista.",
+    "serie": "Falta la serie.",
 }
 
 
@@ -301,6 +304,132 @@ def clasificar_articulo(
     except LookupError as exc:
         raise _no_existe(exc, "articulo") from exc
     return {"items": clasificacion.clases_de_articulo(session), "clases": list(CLASES_FAMILIA)}
+
+
+# --- máquinas por artículo y series que cuentan (31/10/2026) ---------------------------
+
+
+class EsMaquinaIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    es_maquina: bool
+
+
+class ReglaArticuloIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patron: str = Field(min_length=1, max_length=64)
+
+
+class SerieCuentaIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cuenta: bool
+
+
+def _maquinas(session: Session) -> dict[str, Any]:
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    return {**historico_maquinas.articulos(session),
+            "reglas": historico_maquinas.reglas(session)}
+
+
+@router.get("/maquinas")
+def maquinas(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Los artículos de las familias de clase máquina (y los marcados como
+    máquina en otras), por líneas vendidas, con la propuesta por texto, si
+    están marcados y el recuento («104 de 230»)."""
+    return _maquinas(session)
+
+
+@router.put("/maquinas/{codart:path}")
+def marcar_maquina(
+    body: EsMaquinaIn,
+    codart: str = Path(..., max_length=64),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    try:
+        historico_maquinas.marcar(session, codart, body.es_maquina, por=_por(user))
+    except LookupError as exc:
+        raise _no_existe(exc, "articulo") from exc
+    return _maquinas(session)
+
+
+@router.post("/maquinas/aceptar-propuestas")
+def aceptar_maquinas(
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Aplica la propuesta a lo que nadie ha revisado; lo marcado a mano no
+    se toca."""
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    hechas = historico_maquinas.aceptar_todas(session, por=_por(user))
+    return {**_maquinas(session), "aplicadas": hechas}
+
+
+@router.post("/reglas-articulo", status_code=status.HTTP_201_CREATED)
+def crear_regla_articulo(
+    body: ReglaArticuloIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    try:
+        historico_maquinas.guardar_regla(session, body.patron)
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    return _maquinas(session)
+
+
+@router.delete("/reglas-articulo/{regla_id}")
+def borrar_regla_articulo(
+    regla_id: int,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    try:
+        historico_maquinas.borrar_regla(session, regla_id)
+    except LookupError as exc:
+        raise _no_existe(exc, "regla") from exc
+    return _maquinas(session)
+
+
+@router.get("/series")
+def series_venta(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    """Las series de las ventas volcadas, si cuentan como venta, y cuántos
+    documentos y líneas se quedan fuera con lo marcado."""
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    return historico_maquinas.series(session)
+
+
+@router.put("/series/{serie}")
+def marcar_serie(
+    body: SerieCuentaIn,
+    serie: str = Path(..., max_length=8),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    try:
+        historico_maquinas.marcar_serie(session, serie, body.cuenta, por=_por(user))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    return historico_maquinas.series(session)
 
 
 def _compradores(

@@ -7772,6 +7772,82 @@ export const HISTORICO_CLASE_LABEL: Record<HistoricoClase, string> = {
   otro: "Otro",
 };
 
+/** Un artículo de una familia de máquinas (o marcado como máquina): «es
+ *  máquina» se decide por artículo (31/10/2026). */
+export type MaquinaArticulo = {
+  codart: string;
+  descripcion: string | null;
+  familia: string | null;
+  familia_nombre: string | null;
+  gama: string | null;
+  /** Líneas vendidas (de las series que cuentan). */
+  lineas: number;
+  estado: "maquina" | "no_maquina" | "sin_revisar";
+  clase_propia: string | null;
+  propuesta: "maquina" | "no_maquina";
+  /** La pista de la descripción que delata que no es máquina. */
+  pista: string | null;
+};
+
+export type MaquinasResumen = {
+  items: MaquinaArticulo[];
+  marcadas: number;
+  total: number;
+  propuestas: number;
+  reglas: { id: number; patron: string; orden: number }[];
+  aplicadas?: { maquina: number; no_maquina: number };
+};
+
+export async function getHistoricoMaquinas(): Promise<MaquinasResumen> {
+  return apiFetch("/api/erp/historico/maquinas");
+}
+
+export async function marcarHistoricoMaquina(
+  codart: string, esMaquina: boolean,
+): Promise<MaquinasResumen> {
+  return apiFetch(`/api/erp/historico/maquinas/${encodeURIComponent(codart)}`, {
+    method: "PUT", body: JSON.stringify({ es_maquina: esMaquina }),
+  });
+}
+
+export async function aceptarPropuestasMaquinas(): Promise<MaquinasResumen> {
+  return apiFetch("/api/erp/historico/maquinas/aceptar-propuestas", { method: "POST" });
+}
+
+export async function crearPistaArticulo(patron: string): Promise<MaquinasResumen> {
+  return apiFetch("/api/erp/historico/reglas-articulo", {
+    method: "POST", body: JSON.stringify({ patron }),
+  });
+}
+
+export async function borrarPistaArticulo(id: number): Promise<MaquinasResumen> {
+  return apiFetch(`/api/erp/historico/reglas-articulo/${id}`, { method: "DELETE" });
+}
+
+export type SerieVenta = {
+  serie: string;
+  nombre: string | null;
+  documentos: number;
+  lineas: number;
+  cuenta: boolean;
+};
+
+export type SeriesVenta = {
+  items: SerieVenta[];
+  /** Lo que se queda fuera con lo marcado. */
+  fuera: { documentos: number; lineas: number };
+};
+
+export async function getHistoricoSeries(): Promise<SeriesVenta> {
+  return apiFetch("/api/erp/historico/series");
+}
+
+export async function marcarHistoricoSerie(serie: string, cuenta: boolean): Promise<SeriesVenta> {
+  return apiFetch(`/api/erp/historico/series/${encodeURIComponent(serie)}`, {
+    method: "PUT", body: JSON.stringify({ cuenta }),
+  });
+}
+
 /** Un artículo con clase propia, por encima de la de su familia. */
 export type ArticuloClase = {
   codart: string;

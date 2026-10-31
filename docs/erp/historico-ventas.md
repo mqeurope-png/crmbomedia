@@ -100,10 +100,26 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
 `…/compras`):
 
 - **Máquinas:** las líneas de producto de sus facturas y albaranes cuyo
-  artículo es de clase `maquina`: la **clase propia del artículo** si la
-  tiene (`historico_articulos_clase`, ver abajo) o, si no, la de su familia
-  en el catálogo de su año. Un accesorio, recambio o consumible no lo es.
-  Con gama, fecha, ejercicio y documento (enlace a su ficha).
+  artículo está **marcado como máquina** (`historico_articulos_clase.clase =
+  maquina`, 31/10/2026, `app/erp/historico_maquinas.py`). La clase de la
+  familia ya no basta: una familia de clase máquina dice qué artículos hay
+  que mirar (en la 021 de Flux, de 65 vendidos solo una docena son
+  máquinas). Lo no marcado no entra, tampoco un artículo nuevo, hasta que
+  alguien lo marque. Solo cuentan las **series que cuentan como venta**
+  (`historico_series`). Con gama (de la familia), fecha, ejercicio y
+  documento (enlace a su ficha).
+  - **Marcar las máquinas** (Histórico → Familias → «Máquinas, artículo a
+    artículo»): los artículos de familias de máquinas por líneas vendidas,
+    con una casilla «es máquina» y la **propuesta por la descripción**: las
+    pistas de `historico_reglas_articulo` (editables; la 0158 siembra las de
+    Bart: SPARE PARTS, FILTER, LENS, TUBE, CARTRIDGE…) delatan que algo no es
+    una máquina, por palabra entera y sin acentos. «Aceptar todas» solo toca
+    lo que nadie ha revisado (`no_maquina` guarda lo revisado que no es
+    máquina). Recuento a la vista: «104 de 230 marcadas como máquina».
+  - **Series que cuentan** (mismo sitio): una casilla por serie, con su
+    nombre de Ajustes ERP si lo tiene y cuántos documentos y líneas tiene.
+    Las que no cuentan quedan fuera del parque y de «Quién compró qué», y se
+    dice cuánto se queda fuera.
   - **Una venta, una vez (0157).** Un albarán y su factura cuentan como una
     máquina, la de la factura (con «y su albarán …» debajo). Se emparejan por
     el enlace que FACTUSOL guarda **en cada línea** (`DOC*`/`DTP*`/`DCO*`,
@@ -125,8 +141,10 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
   - **Limitación: sin enlace no se empareja.** Si el albarán y la factura se
     teclearon por separado, sin documento común, no hay dato que los una y
     salen los dos. Cuando un albarán que queda solo tiene una factura del
-    mismo artículo a menos de 60 días (`DIAS_MISMA_VENTA`) que no cubre ni
-    apunta a ningún albarán, la fila avisa «¿Misma venta que la factura …?»;
+    mismo artículo a menos de 60 días (`DIAS_MISMA_VENTA`, también entre años)
+    —aunque esa factura ya esté emparejada con otro albarán (31/10/2026: es
+    justo el caso del albarán duplicado)—, la fila avisa «¿Misma venta que la
+    factura …?»;
     si lo es, se da de baja el albarán. El enlace no lleva el ejercicio: se
     casa por serie y número dentro del cliente. Una factura a otro código de
     cliente que el albarán tampoco se empareja. Los pedidos de cliente no se
