@@ -11,6 +11,7 @@ jest.mock("../../lib/erpApi", () => ({
   crearPistaArticulo: jest.fn(),
   borrarPistaArticulo: jest.fn(),
   cambiarUmbralMaquinas: jest.fn(),
+  cambiarPalabraEnteraPista: jest.fn(),
   darPorRevisadasFamilia: jest.fn(),
   deshacerRevisadasFamilia: jest.fn(),
 }));
@@ -39,8 +40,8 @@ const DATOS = {
     ART("5005", "EMBUDO FIGURANTE", { propuesta: null, pista_si: null, precio_max: null }),
   ],
   marcadas: 1, total: 5, propuestas: 1, sin_revisar: 3, umbral: 2000, colisiones: 1,
-  reglas: [{ id: 1, patron: "LENS", orden: 100, tipo: "no_maquina" },
-           { id: 2, patron: "BEAMBOX", orden: 100, tipo: "maquina" }],
+  reglas: [{ id: 1, patron: "LENS", orden: 100, tipo: "no_maquina", palabra_entera: false },
+           { id: 2, patron: "HEXA", orden: 100, tipo: "maquina", palabra_entera: true }],
 };
 
 beforeEach(() => {
@@ -113,4 +114,15 @@ test("quien no configura no marca ni revisa", async () => {
   expect(screen.getByLabelText("Es máquina 5001")).toBeDisabled();
   expect(screen.queryByRole("button", { name: "No es máquina" })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Umbral de precio")).not.toBeInTheDocument();
+});
+
+test("la casilla «palabra entera» de una pista", async () => {
+  const user = userEvent.setup();
+  api().cambiarPalabraEnteraPista.mockResolvedValue(DATOS);
+  render(<MaquinasPanel puedeEditar />);
+  await screen.findByText("1 de 5");
+  await user.click(screen.getByText(/Pistas de la propuesta/));
+  expect(screen.getByLabelText("Palabra entera HEXA")).toBeChecked();
+  await user.click(screen.getByLabelText("Palabra entera LENS"));
+  expect(api().cambiarPalabraEnteraPista).toHaveBeenCalledWith(1, true);
 });

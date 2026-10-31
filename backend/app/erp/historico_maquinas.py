@@ -74,6 +74,10 @@ AJUSTE_UMBRAL = "umbral_precio_maquina"
 UMBRAL_POR_DEFECTO = 2000.0
 #: Lo que deja «Dar por revisadas las que quedan» en `por`, para deshacerlo.
 MARCA_LOTE = "(dar por revisadas {familia})"
+#: 0161: positivas que faltaban, y las pistas que van como palabra entera
+#: (abren la palabra que ensucian: HEXAGONAL, LAMINADORA).
+PISTAS_MAQUINA_0161 = ("LAMINADORA", "ENCELOFANADORA")
+PALABRA_ENTERA_0161 = ("HEXA", "LAMINA")
 PISTA_SI, PISTA_NO = "maquina", "no_maquina"
 PROPUESTA_SI, PROPUESTA_NO, PROPUESTA_DUDOSA = "maquina", "no_maquina", "dudoso"
 
@@ -162,7 +166,8 @@ def _plano(texto: str | None) -> str:
 
 
 def _regla(r: HistoricoReglaArticulo) -> dict[str, Any]:
-    return {"id": r.id, "patron": r.patron, "orden": r.orden, "tipo": r.tipo}
+    return {"id": r.id, "patron": r.patron, "orden": r.orden, "tipo": r.tipo,
+            "palabra_entera": bool(r.palabra_entera)}
 
 
 def reglas(session: Session) -> list[dict[str, Any]]:
@@ -172,7 +177,8 @@ def reglas(session: Session) -> list[dict[str, Any]]:
                                                 HistoricoReglaArticulo.patron))]
 
 
-def guardar_regla(session: Session, patron: str, tipo: str = PISTA_NO) -> dict[str, Any]:
+def guardar_regla(session: Session, patron: str, tipo: str = PISTA_NO, *,
+                  palabra_entera: bool = False) -> dict[str, Any]:
     """Una pista: `maquina` (el nombre dice que es una máquina) o
     `no_maquina` (delata un recambio, accesorio…)."""
     patron = " ".join((patron or "").split())[:64]
@@ -181,10 +187,19 @@ def guardar_regla(session: Session, patron: str, tipo: str = PISTA_NO) -> dict[s
     if _plano(patron) in {_plano(r.patron) for r in session.scalars(
             select(HistoricoReglaArticulo))}:
         raise ValueError("pista_existe")
-    r = HistoricoReglaArticulo(patron=patron, orden=100, tipo=tipo)
+    r = HistoricoReglaArticulo(patron=patron, orden=100, tipo=tipo,
+                               palabra_entera=bool(palabra_entera))
     session.add(r)
     session.commit()
     return _regla(r)
+
+
+def cambiar_palabra_entera(session: Session, regla_id: int, valor: bool) -> None:
+    r = session.get(HistoricoReglaArticulo, regla_id)
+    if r is None:
+        raise LookupError("regla")
+    r.palabra_entera = bool(valor)
+    session.commit()
 
 
 def borrar_regla(session: Session, regla_id: int) -> None:
@@ -195,11 +210,23 @@ def borrar_regla(session: Session, regla_id: int) -> None:
     session.commit()
 
 
-def _compilar(patrones: list[str]) -> list[tuple[str, re.Pattern[str]]]:
-    """Por TROZO de texto, sin mayúsculas ni acentos (1/11/2026): «ARTIS»
-    casa con «ARTISJET», «EPSON PP» con «EPSON PP100». Ojo: una pista corta
-    casa también dentro de palabras largas (ver docs)."""
-    return [(p, re.compile(re.escape(_plano(p)))) for p in patrones if _plano(p)]
+def _compilar(patrones: list[str | tuple[str, bool]]) -> list[tuple[str, re.Pattern[str]]]:
+    """Sin mayúsculas ni acentos y **al principio de una palabra** (1/11/2026):
+    el modelo abre la palabra y lo que varía es la cola, así que «ARTIS» casa
+    con «ARTISJET», «EPSON PP» con «EPSON PP100» y «ADR» con «ADR1-10DVD»,
+    pero no la pista enterrada en otra palabra («ADOR» en ALIMENTADOR, «MBO»
+    en TAMBOR, «DUCT» en PRODUCTO). Con `palabra_entera` (dato, por pista)
+    exige también el final: «HEXA» suelta HEXAGONAL, «LAMINA» la LAMINADORA.
+    Acepta el patrón solo o `(patrón, palabra_entera)`."""
+    out = []
+    for item in patrones:
+        patron, entera = item if isinstance(item, tuple) else (item, False)
+        plano = _plano(patron)
+        if not plano:
+            continue
+        cola = r"(?![A-Z0-9])" if entera else ""
+        out.append((patron, re.compile(rf"(?<![A-Z0-9]){re.escape(plano)}{cola}")))
+    return out
 
 
 def pista(descripcion: str | None, compiladas: list[tuple[str, re.Pattern[str]]]) -> str | None:
@@ -322,8 +349,8 @@ def articulos(session: Session) -> dict[str, Any]:
     propias = {p.codart: p.clase for p in session.scalars(
         select(propia).where(propia.codart.in_(list(vendidos))))}
     todas = reglas(session)
-    si = _compilar([r["patron"] for r in todas if r["tipo"] == PISTA_SI])
-    no = _compilar([r["patron"] for r in todas if r["tipo"] == PISTA_NO])
+    si = _compilar([(r["patron"], r["palabra_entera"]) for r in todas if r["tipo"] == PISTA_SI])
+    no = _compilar([(r["patron"], r["palabra_entera"]) for r in todas if r["tipo"] == PISTA_NO])
     corte = umbral(session)
     lotes = {p.codart: p.por for p in session.scalars(
         select(propia).where(propia.codart.in_(list(vendidos))))}

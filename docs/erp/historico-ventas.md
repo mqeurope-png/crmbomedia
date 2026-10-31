@@ -116,9 +116,11 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
     si además hay una negativa (MAINBOARD, CUCHILLA, MANUAL…), «dudosa», sin
     propuesta; solo negativa, «no»; ninguna, **sin propuesta** (nunca
     «máquina» por defecto). Pistas en `historico_reglas_articulo` (`tipo`
-    maquina / no_maquina), editables, **por trozo** de texto y sin acentos
-    (1/11/2026: «ARTIS» casa con «ARTISJET»; una pista corta casa también
-    dentro de palabras largas). **El precio suma, no veta** (0160): sin pista
+    maquina / no_maquina), editables, sin acentos y **al principio de una
+    palabra** (0161: «ARTIS» casa con «ARTISJET», «ADR» con «ADR1-10DVD»,
+    pero «ADOR» no con ALIMENTADOR ni «DUCT» con PRODUCTO). Con la casilla
+    **«palabra entera»** (dato, por pista; hoy en HEXA y LAMINA) solo la
+    palabra exacta: HEXA no coge HEXAGONAL, LAMINA no coge LAMINADORA. **El precio suma, no veta** (0160): sin pista
     en el texto y con precio unitario MÁXIMO ≥ umbral (`historico_ajustes`,
     2.000 € de salida, editable) → «dudosa · precio»; nunca cancela ni cambia
     una propuesta del texto. **Lo revisado no lleva propuesta**: solo lo sin

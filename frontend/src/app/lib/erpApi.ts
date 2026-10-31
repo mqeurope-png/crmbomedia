@@ -7808,7 +7808,11 @@ export type MaquinasResumen = {
   sin_revisar: number;
   /** Las que «Aceptar todas» aplicaría (sin revisar y con propuesta clara). */
   propuestas: number;
-  reglas: { id: number; patron: string; orden: number; tipo: "maquina" | "no_maquina" }[];
+  reglas: {
+    id: number; patron: string; orden: number; tipo: "maquina" | "no_maquina";
+    /** Solo como palabra entera; si no, al principio de una palabra. */
+    palabra_entera?: boolean;
+  }[];
   aplicadas?: { maquina: number; no_maquina: number };
   /** Umbral de precio (dato editable). */
   umbral?: number;
@@ -7854,10 +7858,19 @@ export async function deshacerRevisadasFamilia(familia: string): Promise<Maquina
 }
 
 export async function crearPistaArticulo(
-  patron: string, tipo: "maquina" | "no_maquina",
+  patron: string, tipo: "maquina" | "no_maquina", palabraEntera = false,
 ): Promise<MaquinasResumen> {
   return apiFetch("/api/erp/historico/reglas-articulo", {
-    method: "POST", body: JSON.stringify({ patron, tipo }),
+    method: "POST", body: JSON.stringify({ patron, tipo, palabra_entera: palabraEntera }),
+  });
+}
+
+/** La casilla «palabra entera» de una pista. */
+export async function cambiarPalabraEnteraPista(
+  id: number, palabraEntera: boolean,
+): Promise<MaquinasResumen> {
+  return apiFetch(`/api/erp/historico/reglas-articulo/${id}`, {
+    method: "PUT", body: JSON.stringify({ palabra_entera: palabraEntera }),
   });
 }
 

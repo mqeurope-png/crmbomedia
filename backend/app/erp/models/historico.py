@@ -217,6 +217,8 @@ class HistoricoReglaArticulo(Base):
     #: `maquina` (el nombre dice que lo es) o `no_maquina` (delata que no). La
     #: propuesta exige una positiva (0159).
     tipo: Mapped[str] = mapped_column(String(16), nullable=False, default="no_maquina")
+    #: Casa solo como palabra entera (0161); si no, al principio de palabra.
+    palabra_entera: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class HistoricoAjuste(Base):
