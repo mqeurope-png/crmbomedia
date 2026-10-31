@@ -162,3 +162,25 @@ def test_0159_no_duplica_ni_borra_lo_anadido_a_mano(alembic_setup):
         quedan = {p for (p,) in c.exec_driver_sql(
             "SELECT patron FROM historico_reglas_articulo").all()}
     assert {"Motor", "impresora"} <= quedan and "BEAMBOX" not in quedan
+
+
+def test_0160_umbral_y_positivas_sin_tocar_lo_marcado(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261031_0159")
+    with engine.begin() as c:
+        c.exec_driver_sql("INSERT INTO historico_articulos_clase (codart, clase, por) "
+                          "VALUES ('A1', 'maquina', 'bart'), ('A2', 'no_maquina', 'bart')")
+    command.upgrade(cfg, "20261101_0160")
+    with engine.connect() as c:
+        marcas = dict(c.exec_driver_sql(
+            "SELECT codart, clase FROM historico_articulos_clase").all())
+        umbral = c.exec_driver_sql("SELECT valor FROM historico_ajustes "
+                                   "WHERE clave = 'umbral_precio_maquina'").scalar()
+        adr = c.exec_driver_sql("SELECT tipo FROM historico_reglas_articulo "
+                                "WHERE patron = 'ADR'").scalar()
+    assert marcas == {"A1": "maquina", "A2": "no_maquina"}
+    assert umbral == "2000" and adr == "maquina"
+    command.downgrade(cfg, "20261031_0159")
+    assert "historico_ajustes" not in inspect(engine).get_table_names()

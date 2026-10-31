@@ -1049,7 +1049,17 @@ En la ficha de una empresa, bajo «Actividad reciente»:
     CUCHILLA…), «dudosa»; si solo dice recambio, «no»; si no dice nada, sin
     propuesta. **«Aceptar todas las propuestas»** aplica solo lo claro; lo
     dudoso y lo que no tiene propuesta lo marcas tú. Lo que ya marcaste a mano
-    no se toca. El recuento dice cuántas llevas («104 de
+    no se toca.
+    - **Ordena por «Precio máx.»**: las máquinas quedan arriba y los
+      recambios abajo; basta con mirar dónde cae el corte. Un artículo sin
+      pista y por encima del umbral (2.000 €, se cambia ahí mismo) sale
+      «dudosa · precio».
+    - **«No es máquina»** en cada fila sin revisar deja constancia de que lo
+      has mirado. Lo revisado (marcado o no) ya no lleva propuesta.
+    - **«Dar por revisadas las que quedan»** (con una familia elegida): dice
+      cuántas son antes de hacerlo, y se deshace por familia.
+    - **«Ver → Revisadas que hoy se propondrían»**: las que descartaste y una
+      regla nueva propondría; para repasar solo esas. El recuento dice cuántas llevas («104 de
     230 marcadas como máquina»). Las pistas se editan ahí mismo.
   - **«Series que cuentan como venta»** (mismo sitio): quita la casilla de
     una serie que no sea de venta y sus documentos salen del parque y de
