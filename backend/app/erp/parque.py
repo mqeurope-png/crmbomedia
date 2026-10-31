@@ -22,8 +22,10 @@ Un accesorio, un recambio o un consumible no son máquinas.
   (un albarán y una factura directa) se casan como si fueran una. El enlace
   tampoco lleva el ejercicio: se casa por serie y número dentro del cliente
   (si dos años repiten número, gana la fecha más cercana).
-- **Máquina** es la clase de la familia del artículo, salvo que el artículo
-  tenga clase propia (`historico_articulos_clase`, «esto no es una máquina»).
+- **Máquina se decide por artículo** (31/10/2026): solo cuenta un artículo
+  marcado como máquina (`historico_articulos_clase`, ver
+  `historico_maquinas`). La clase de la familia ya no basta: lo no marcado no
+  entra. Y solo las series que cuentan como venta (`historico_series`).
 - **Incompleto a sabiendas.** Lo vendido antes de 2014, como línea de nota o
   en otro sitio no sale: se **añade a mano** (`ParqueMaquinaManual`). Lo que
   ya no está en servicio se **da de baja** y deja de contar en el parque
@@ -44,6 +46,7 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from app.erp.historico_maquinas import series_excluidas
 from app.erp.models.historico import (
     TIPO_ALBARAN,
     TIPO_FACTURA,
@@ -207,8 +210,11 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
         .outerjoin(propia, propia.codart == lin.codart)
         .where(doc.codcli.in_(codigos), doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
                lin.es_producto.is_(True),
-               # La clase propia del artículo, si la tiene, manda sobre la de su familia.
-               func.coalesce(propia.clase, fam.clase) == CLASE_MAQUINA)
+               # Máquina SOLO si el artículo está marcado (31/10/2026): la clase
+               # de la familia ya no basta. Y solo las series que cuentan.
+               propia.clase == CLASE_MAQUINA,
+               *([doc.serie.notin_(sorted(fuera))] if (fuera := series_excluidas(session))
+                 else []))
     ).all()
     proformas = _pedidas_en_proformas(session, filas)
     queda, cubre = _emparejar(filas, proformas)
@@ -243,8 +249,10 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
             # sale; si hay una factura del mismo artículo cerca que no cubre
             # ningún albarán ni apunta a uno, se avisa (puede ser la misma
             # venta tecleada a mano, o dos compras: no se decide solo).
-            cerca = [x for x in facturas if x.codart == f.codart and id(x) not in cubre
-                     and (_origen(x) or ("",))[0] != "A"
+            # Cualquier factura del artículo cerca (31/10/2026): también la que
+            # ya cubre otro albarán. Un segundo albarán suelto junto a una
+            # factura ya emparejada es justo el duplicado que hay que ver.
+            cerca = [x for x in facturas if x.codart == f.codart
                      and _dias(x, f) <= DIAS_MISMA_VENTA]
             if cerca:
                 x = min(cerca, key=lambda x: _dias(x, f))

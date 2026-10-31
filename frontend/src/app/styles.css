@@ -16061,3 +16061,10 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 
 /* El pago como distintivo junto a la línea de vida (31/10/2026) */
 .erp-pago-distintivo { display: inline-block; margin: 0 0 10px; }
+
+/* Máquinas por artículo (31/10/2026) */
+.erp-maquinas-recuento { font-size: var(--fs-body); margin: 8px 0 12px; }
+.data-table tr.is-pendiente td { background: #fffbeb; }
+.erp-maquinas-pistas { margin-top: 16px; }
+.erp-maquinas-pistas-lista { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; }
+.erp-maquinas-pistas-lista li { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 10px; }

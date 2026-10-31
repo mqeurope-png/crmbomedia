@@ -1040,11 +1040,21 @@ En la ficha de una empresa, bajo «Actividad reciente»:
     (se hicieron por separado) pero hay una factura del mismo artículo muy
     cerca. Si es la misma venta, da de baja el albarán; si son dos compras,
     déjalo.
-  - **«No es una máquina»** (quien configura el ERP): un accesorio que sale
-    como máquina porque su familia mezcla las dos cosas. Eliges qué es
-    (accesorio, recambio…) y sale del parque **de todos los clientes** que lo
-    tengan. Se deshace en Histórico → Familias → «Artículos con clase
-    propia».
+  - **Solo salen los artículos marcados como máquina** (31/10/2026): que la
+    familia sea de clase «Máquina» ya no basta. Se marcan en **Histórico →
+    Familias → «Máquinas, artículo a artículo»**: una casilla «es máquina»
+    por artículo, por líneas vendidas, con la **propuesta** de BoHub por la
+    descripción (si dice FILTER, LENS, SPARE PARTS… propone que no). Pulsa
+    **«Aceptar todas las propuestas»** y corrige las pocas que fallen; lo que
+    ya marcaste a mano no se toca. El recuento dice cuántas llevas («104 de
+    230 marcadas como máquina»). Las pistas se editan ahí mismo.
+  - **«Series que cuentan como venta»** (mismo sitio): quita la casilla de
+    una serie que no sea de venta y sus documentos salen del parque y de
+    «Quién compró qué». Antes de decidir ves cuántos documentos y líneas se
+    quedan fuera.
+  - **«No es una máquina»** (quien configura el ERP): un artículo marcado
+    como máquina que no lo es. Eliges qué es (accesorio, recambio…) y sale
+    del parque **de todos los clientes** que lo tengan.
   - **«Añadir una máquina a mano»:** para las vendidas antes de 2014, las que
     entraron como línea de nota o las que compró en otro sitio.
   - **«Dar de baja»** (con motivo): la que ya no está en servicio. Deja de

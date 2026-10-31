@@ -482,11 +482,20 @@ def compradores(
         # su año; la clase propia del artículo, si la tiene, manda.
         stmt = stmt.outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == art.familia)
         if clase:
+            # La clase que vale: la propia del artículo o la de su familia;
+            # «máquina», solo marcada por artículo (31/10/2026).
+            from app.erp.historico_maquinas import clase_efectiva  # noqa: PLC0415
+
             stmt = stmt.outerjoin(HistoricoArticuloClase,
                                   HistoricoArticuloClase.codart == lin.codart).where(
-                func.coalesce(HistoricoArticuloClase.clase, HistoricoFamilia.clase) == clase)
+                clase_efectiva(HistoricoArticuloClase.clase, HistoricoFamilia.clase) == clase)
         if gama:
             stmt = stmt.where(HistoricoFamilia.gama == gama)
+    from app.erp.historico_maquinas import series_excluidas  # noqa: PLC0415
+
+    if fuera := series_excluidas(session):
+        # Las series que no cuentan como venta, fuera (31/10/2026).
+        stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
     if desde:
         stmt = stmt.where(lin.ejercicio >= str(desde))
     if hasta:

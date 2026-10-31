@@ -18,7 +18,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.erp.models.historico import (
@@ -107,7 +107,7 @@ def _clasificacion(session: Session, ejercicio: str, codarts: set[str]) -> dict[
     filas = session.execute(
         select(HistoricoArticulo.codart, HistoricoArticulo.descripcion,
                HistoricoArticulo.familia,
-               func.coalesce(HistoricoArticuloClase.clase, HistoricoFamilia.clase),
+               HistoricoArticuloClase.clase, HistoricoFamilia.clase,
                HistoricoFamilia.gama)
         .outerjoin(HistoricoFamilia, HistoricoFamilia.codigo == HistoricoArticulo.familia)
         .outerjoin(HistoricoArticuloClase,
@@ -115,8 +115,10 @@ def _clasificacion(session: Session, ejercicio: str, codarts: set[str]) -> dict[
         .where(HistoricoArticulo.ejercicio == ejercicio,
                HistoricoArticulo.codart.in_(sorted(codarts)))
     ).all()
-    return {c: {"nombre": d, "familia": f, "clase": cl, "gama": g}
-            for c, d, f, cl, g in filas}
+    from app.erp.historico_maquinas import clase_efectiva_py  # noqa: PLC0415
+
+    return {c: {"nombre": d, "familia": f, "clase": clase_efectiva_py(propia, cl), "gama": g}
+            for c, d, f, propia, cl, g in filas}
 
 
 def _estado_label(tipo: str, raw: str | None) -> str | None:

@@ -112,3 +112,18 @@ def test_0157_suma_el_origen_de_linea_y_la_clase_propia_del_articulo(alembic_set
     cols = {c["name"] for c in inspect(engine).get_columns("historico_lineas")}
     assert not {"origen_tipo", "origen_serie", "origen_codigo"} & cols
     assert "historico_articulos_clase" not in inspect(engine).get_table_names()
+
+
+def test_0158_reglas_de_articulo_sembradas_y_series(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261031_0158")
+    tablas = set(inspect(engine).get_table_names())
+    assert {"historico_reglas_articulo", "historico_series"} <= tablas
+    with engine.connect() as c:
+        n = c.exec_driver_sql("SELECT COUNT(*) FROM historico_reglas_articulo").scalar()
+    assert n == 30
+    command.downgrade(cfg, "20261030_0157")
+    assert not {"historico_reglas_articulo", "historico_series"} & set(
+        inspect(engine).get_table_names())

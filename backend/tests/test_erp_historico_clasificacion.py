@@ -92,6 +92,11 @@ def test_compradores_filtra_por_clase_y_por_gama(clasificado) -> None:
         cl.clasificar(s, "LAS", {"clase": "maquina", "gama": "uv-led"}, por=POR)
         cl.clasificar(s, "ACC", {"clase": "accesorio", "gama": "uv-led"}, por=POR)
         cl.clasificar(s, "TIN", {"clase": "consumible", "gama": "uv-led"}, por=POR)
+        # «Máquina» se marca por artículo (31/10/2026): la familia ya no basta.
+        assert historico.compradores(s, clase="maquina", gama="uv-led") == []
+        from app.erp import historico_maquinas as hm
+
+        hm.marcar(s, "1712", True, por=POR)
         maquinas = historico.compradores(s, clase="maquina", gama="uv-led")
         toda_la_gama = historico.compradores(s, gama="uv-led")
         accesorios = historico.compradores(s, clase="accesorio")
@@ -165,6 +170,8 @@ def test_api_familias_propuestas_y_filtro(http, clasificado) -> None:  # noqa: F
     assert r.json() == {"codigo": "LAS", "clase": "maquina", "gama": "uv-led"}
     assert http.patch("/api/erp/historico/familias/LAS", headers=h,
                       json={"gama": "nada"}).status_code == 422
+    assert http.put("/api/erp/historico/maquinas/1712", json={"es_maquina": True},
+                    headers=h).status_code == 200
     compradores = http.get("/api/erp/historico/compradores?clase=maquina&gama=uv-led",
                            headers=h).json()
     assert {c["codcli"] for c in compradores["items"]} >= {CLI_TALLER, CLI_ROTULOS}
@@ -209,6 +216,9 @@ def test_familias_solo_en_catalogos_antiguos_se_listan_para_clasificar(
         plo = s.get(HistoricoFamilia, "PLO")
         assert plo is not None and plo.descripcion is None
         cl.clasificar(s, "PLO", {"clase": "maquina", "gama": "laser"}, por=POR)
+        from app.erp import historico_maquinas as hm
+
+        hm.marcar(s, "0917", True, por=POR)   # «máquina», por artículo
         assert [c["codcli"] for c in historico.compradores(s, clase="maquina", gama="laser")] == [
             CLI_TALLER]
 

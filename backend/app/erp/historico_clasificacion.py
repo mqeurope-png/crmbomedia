@@ -311,6 +311,12 @@ def clases_de_articulo(session: Session) -> list[dict[str, Any]]:
     for p in propias:
         a = catalogo.get(p.codart)
         fam = familias.get(a.familia) if a and a.familia else None
+        # «Es máquina» / «no es máquina» en una familia de máquinas se lleva
+        # en el panel de máquinas (31/10/2026); aquí, lo que va contra su
+        # familia.
+        if p.clase == "no_maquina" or (p.clase == "maquina" and fam is not None
+                                        and fam.clase == "maquina"):
+            continue
         out.append({
             "codart": p.codart, "clase": p.clase, "por": p.por,
             "at": f"{p.at.isoformat()}Z" if p.at else None,
