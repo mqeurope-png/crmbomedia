@@ -253,6 +253,7 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
             # ya cubre otro albarán. Un segundo albarán suelto junto a una
             # factura ya emparejada es justo el duplicado que hay que ver.
             cerca = [x for x in facturas if x.codart == f.codart
+                     and f not in cubre.get(id(x), [])     # no su propia factura
                      and _dias(x, f) <= DIAS_MISMA_VENTA]
             if cerca:
                 x = min(cerca, key=lambda x: _dias(x, f))

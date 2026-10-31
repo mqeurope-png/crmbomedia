@@ -203,3 +203,38 @@ def test_la_migracion_siembra_las_mismas_pistas() -> None:
     modulo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     assert modulo.PISTAS == hm.PISTAS_INICIALES
+
+
+# --- lo que encontró la revisión ---------------------------------------------------------
+
+
+def test_no_es_maquina_no_borra_la_clase_de_la_familia(session_factory) -> None:  # noqa: F811
+    assert hm.clase_efectiva_py("no_maquina", "accesorio") == "accesorio"
+    assert hm.clase_efectiva_py("no_maquina", "maquina") is None
+    assert hm.clase_efectiva_py(None, "maquina") is None
+    assert hm.clase_efectiva_py("maquina", "accesorio") == "maquina"
+
+
+def test_el_aviso_no_apunta_a_la_factura_del_propio_albaran(session_factory) -> None:  # noqa: F811
+    # Albarán de 2 uds; su factura (que lo apunta) solo factura 1: queda 1 suelta.
+    d = {
+        "2026": {
+            "F_FAC": [_fac(260201, CLI, "Láseres Figurante S.L.", "2026-03-10T00:00:00")],
+            "F_LFA": [{**_lfa(260201, 1, BEAMBOX, "BEAMBOX", 1, 4000),
+                       "DOCLFA": "A", "DTPLFA": "5", "DCOLFA": 26020}],
+            "F_ALB": [{**_alb(26020, CLI, "Láseres Figurante S.L.", "2026-03-01T00:00:00"),
+                       "ESTALB": "0"}],
+            "F_LAL": [_lal(26020, 1, BEAMBOX, "BEAMBOX", 2)],
+            "F_ART": _datos()["2026"]["F_ART"],
+            "F_FAM": [{"CODFAM": "FLX", "DESFAM": "Cortadoras figurante"}],
+        },
+    }
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(d), ["2026"], en_curso="2026")
+        cl.clasificar(s, "FLX", {"clase": "maquina"}, por="x")
+        hm.marcar(s, BEAMBOX, True, por="x")
+        empresa = Company(name="Láseres Figurante", factusol_company_id=CLI)
+        s.add(empresa)
+        s.commit()
+        suelto = next(m for m in parque.parque(s, empresa)["maquinas"] if m["origen"] == "albaran")
+    assert suelto["cantidad"] == 1 and suelto["posible_misma_venta"] is None

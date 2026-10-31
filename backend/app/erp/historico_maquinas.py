@@ -68,21 +68,18 @@ def _ahora() -> datetime:
 
 
 def clase_efectiva(propia_clase: Any, familia_clase: Any) -> Any:
-    """La clase de un artículo en SQL: la propia si la tiene (`no_maquina` =
-    ninguna); si no, la de su familia, salvo «máquina», que por familia ya
-    no basta (es por artículo)."""
+    """La clase de un artículo en SQL: la propia si la tiene; si no (o si es
+    `no_maquina`, «revisado: no es máquina»), la de su familia, salvo
+    «máquina», que por familia ya no basta (es por artículo)."""
     return case(
-        (propia_clase == CLASE_NO_MAQUINA, null()),
-        (propia_clase.is_not(None), propia_clase),
+        ((propia_clase.is_not(None)) & (propia_clase != CLASE_NO_MAQUINA), propia_clase),
         (familia_clase == CLASE_MAQUINA, null()),
         else_=familia_clase,
     )
 
 
 def clase_efectiva_py(propia: str | None, familia: str | None) -> str | None:
-    if propia == CLASE_NO_MAQUINA:
-        return None
-    if propia:
+    if propia and propia != CLASE_NO_MAQUINA:
         return propia
     return None if familia == CLASE_MAQUINA else familia
 
@@ -110,10 +107,12 @@ def series(session: Session) -> dict[str, Any]:
     lineas = dict(session.execute(
         select(doc.serie, func.count(lin.id)).join(doc, doc.id == lin.documento_id)
         .where(doc.tipo.in_(TIPOS_VENTA)).group_by(doc.serie)).all())
+    # Documentos sin serie: siempre cuentan (no hay serie que marcar).
     items = [{
         "serie": s, "nombre": nombres.get(s), "documentos": docs.get(s, 0),
         "lineas": lineas.get(s, 0), "cuenta": s not in fuera,
-    } for s in sorted(docs, key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))]
+    } for s in sorted((x for x in docs if x),
+                      key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))]
     return {
         "items": items,
         "fuera": {"documentos": sum(i["documentos"] for i in items if not i["cuenta"]),
@@ -193,14 +192,21 @@ def articulos(session: Session) -> dict[str, Any]:
     art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
     propia = HistoricoArticuloClase
     fuera = series_excluidas(session)
+    # Primero los artículos a mirar (pocos: los del catálogo en familias de
+    # máquinas y los marcados), luego sus líneas: sin un OR entre dos tablas
+    # que impida usar índices sobre todas las líneas.
+    candidatos = set(session.scalars(
+        select(art.codart).join(fam, fam.codigo == art.familia)
+        .where(fam.clase == CLASE_MAQUINA).distinct()))
+    candidatos |= set(session.scalars(select(propia.codart).where(
+        propia.clase == CLASE_MAQUINA)))
+    if not candidatos:
+        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0}
     stmt = (
         select(lin.codart, func.count(lin.id))
         .join(doc, doc.id == lin.documento_id)
-        .join(art, (art.ejercicio == lin.ejercicio) & (art.codart == lin.codart))
-        .outerjoin(fam, fam.codigo == art.familia)
-        .outerjoin(propia, propia.codart == lin.codart)
         .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA),
-               (fam.clase == CLASE_MAQUINA) | (propia.clase == CLASE_MAQUINA))
+               lin.codart.in_(sorted(candidatos)))
         .group_by(lin.codart)
     )
     if fuera:
@@ -268,7 +274,8 @@ def aceptar_todas(session: Session, *, por: str) -> dict[str, int]:
     desmarcado a mano no se toca."""
     hechas = {"maquina": 0, "no_maquina": 0}
     for i in articulos(session)["items"]:
-        if i["estado"] != SIN_REVISAR:
+        # Releído: alguien pudo marcarlo mientras tanto (no se pisa ni choca).
+        if i["estado"] != SIN_REVISAR or session.get(HistoricoArticuloClase, i["codart"]):
             continue
         session.add(HistoricoArticuloClase(
             codart=i["codart"],

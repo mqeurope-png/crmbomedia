@@ -190,7 +190,7 @@ export function CompanyParquePanel({
                             </select>
                           </label>
                           <span className="form-hint">
-                            Sale del parque de todos los clientes que lo tengan. Se deshace en Histórico → Familias.
+                            Sale del parque de todos los clientes que lo tengan. Se deshace en Histórico → Familias → «Máquinas, artículo a artículo», marcando su casilla.
                           </span>
                           <button type="button" className="button small" disabled={ocupado}
                                   onClick={() => void hacer(() => setClaseArticulo(noMaquina.codart, noMaquina.clase),
