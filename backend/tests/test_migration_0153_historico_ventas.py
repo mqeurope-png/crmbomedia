@@ -315,3 +315,39 @@ def test_0164_alias_de_articulo_sin_tocar_nada_de_bart(alembic_setup):
     assert n == 9
     command.downgrade(cfg, "20261101_0163")
     assert foto() == antes
+
+
+def test_0165_resumen_por_empresa_y_el_sector_de_padel(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0164")
+    with engine.begin() as c:
+        # La base de este test arranca sellada en la 0152: sin `companies`.
+        c.exec_driver_sql("CREATE TABLE companies (id VARCHAR(36) PRIMARY KEY, "
+                          "name VARCHAR(255), sector VARCHAR(120))")
+        c.exec_driver_sql("INSERT INTO companies (id, name, sector) VALUES "
+                          "('c1', 'Figurante Uno', 'Fabricante palas Padel'), "
+                          "('c2', 'Figurante Dos', 'Vending'), "
+                          "('c3', 'Figurante Tres', NULL)")
+        c.exec_driver_sql("INSERT INTO historico_familias (codigo, clase, clase_por) "
+                          "VALUES ('019', 'recambio', 'bart')")
+        c.exec_driver_sql("INSERT INTO historico_articulos_clase (codart, clase, por) "
+                          "VALUES ('A1', 'maquina', 'bart')")
+
+    def foto():
+        with engine.connect() as c:
+            return (sorted(c.exec_driver_sql("SELECT id, sector FROM companies").all()),
+                    c.exec_driver_sql("SELECT codigo, clase FROM historico_familias").all(),
+                    c.exec_driver_sql("SELECT codart, clase FROM historico_articulos_clase").all())
+
+    antes = foto()
+    command.upgrade(cfg, "20261101_0165")
+    sectores, familias, marcas = foto()
+    assert sectores == [("c1", "Industria y fabricación"), ("c2", "Vending"), ("c3", None)]
+    assert familias == antes[1] and marcas == antes[2]
+    tablas = set(inspect(engine).get_table_names())
+    assert {"crm_empresa_erp", "crm_empresa_gama", "crm_empresa_modelo", "crm_empresa_compra",
+            "crm_resumen_estado", "crm_etiqueta_auto"} <= tablas
+    command.downgrade(cfg, "20261101_0164")
+    assert "crm_empresa_erp" not in set(inspect(engine).get_table_names())

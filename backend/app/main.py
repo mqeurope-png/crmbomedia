@@ -22,6 +22,7 @@ from app.api.entities import router as entities_router
 from app.api.entity_views import router as entity_views_router
 from app.api.gmail_backfill import router as gmail_backfill_router
 from app.api.google_integrations import router as google_router
+from app.api.resumen_erp import router as resumen_erp_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
 from app.api.user_aliases import router as user_aliases_router
@@ -95,6 +96,7 @@ app.include_router(contact_notes_router, dependencies=_CRM_SCOPE)
 app.include_router(contact_assignments_router, dependencies=_CRM_SCOPE)
 app.include_router(assignment_rules_router, dependencies=_CRM_SCOPE)
 app.include_router(entities_router, dependencies=_CRM_SCOPE)
+app.include_router(resumen_erp_router, dependencies=_CRM_SCOPE)
 app.include_router(entity_views_router, dependencies=_CRM_SCOPE)
 app.include_router(router, prefix="/api", dependencies=[Depends(crm_scope_monolith)])
 # Tasks router carries its own `/api/tasks` prefix and lives in its
