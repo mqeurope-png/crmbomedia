@@ -172,9 +172,9 @@ def resolve_brevo_company(
             )
         if company is not None:
             return company.id
-        if cif or not (web_en_lista or correo_compartido):
-            # Con CIF (identifica la empresa) o con una web propia: se crea,
-            # como siempre.
+        if cif or domain or not (web_en_lista or correo_compartido):
+            # Con CIF (identifica la empresa) o con una web propia (la
+            # siguiente vez se encuentra por ella): se crea, como siempre.
             refs_payload = {"brevo": {"empresa": empresa}}
             company = Company(
                 name=empresa,

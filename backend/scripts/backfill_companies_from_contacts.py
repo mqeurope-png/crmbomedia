@@ -95,7 +95,7 @@ def _resolve_from_brevo(
     web_en_lista = bool(domain) and lista.contiene(domain)
     if web_en_lista:
         domain = None
-    if company is None and not cif and (
+    if company is None and not cif and not domain and (
         web_en_lista or lista.compartido(dominios_compartidos.dominio_de_correo(email))
     ):
         # Sin CIF y con web o correo de un dominio de la lista: la empresa

@@ -123,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.sin_factusol:
             try:
                 correos = dd.correos_de_factusol(s)
+                if not correos:
+                    raise LookupError("F_CLI vacío")
             except Exception as exc:  # noqa: BLE001
                 print(f"No se ha podido leer F_CLI de FACTUSOL ({type(exc).__name__}). "
                       "Sin esa prueba podrían despegarse contactos que son del cliente. "
@@ -158,8 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         yc_antes = dd.ya_cliente(s)
         gamas_antes = {g["gama"]: g for g in dd.huecos_por_gama(s)}
         lote = dd.aplicar(s, p, por=POR)
-        print(f"\nAplicado. Lote {lote}: {p.a_despegar} contactos despegados, "
-              f"{len(p.a_archivar)} empresas archivadas. Para deshacerlo: --revertir {lote} --yes")
+        print(f"\nAplicado. Lote {lote}: {p.hechos['contactos']} contactos despegados, "
+              f"{p.hechos['empresas']} empresas archivadas. Para deshacerlo: "
+              f"--revertir {lote} --yes")
         print("Recalculando el resumen por empresa y las etiquetas…")
         empresa_erp.recalcular(s)
         yc = dd.ya_cliente(s)

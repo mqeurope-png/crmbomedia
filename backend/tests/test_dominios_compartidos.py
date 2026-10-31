@@ -260,8 +260,11 @@ def test_los_scripts_prueban_sin_escribir_y_aplican_con_yes(session_factory, mon
         raise ConnectionError("sin FACTUSOL")
     monkeypatch.setattr(dd, "correos_de_factusol", sin_factusol)
     assert script.main(["--probar"]) == 3
-    capsys.readouterr()
+    # F_CLI vacío (p. ej. ejercicio equivocado) tampoco vale.
     monkeypatch.setattr(dd, "correos_de_factusol", lambda _s: {})
+    assert script.main(["--probar"]) == 3
+    capsys.readouterr()
+    monkeypatch.setattr(dd, "correos_de_factusol", lambda _s: {"9999": {"otro@ejemplo.test"}})
     assert diagnostico_dominios.main([]) == 0
     salida = capsys.readouterr().out
     assert "xtec.cat" in salida and "Figurante" not in salida and "Centro" not in salida
@@ -316,7 +319,7 @@ def test_lo_que_concilio_factusol_por_correo_se_queda(session_factory) -> None: 
         s.commit()
         p = dd.plan(s, correos_factusol={"4790": {"centro4790@xtec.cat"}})
         fila = next(e for e in p.empresas if e.company_id == centro.id)
-        assert dict(fila.quedan) == {"correo_factusol": 1, "conciliado": 1, "a_mano": 1}
+        assert dict(fila.quedan) == {"correo_factusol": 1, "conciliado": 1, "alta_manual": 1}
         assert [c for c, _d in fila.despegar] == [d3]
         assert p.con_factusol
 
@@ -377,6 +380,14 @@ def test_brevo_con_web_de_la_lista_no_inventa_empresas(session_factory) -> None:
         propia = resolve_brevo_company(s, {"EMPRESA": "Taller", "WEB": "xtec.cat"},
                                        fallback_email="ana@taller-figurante.es")
         assert s.get(Company, propia).domain == "taller-figurante.es"
+        # Web propia y correo de la consejería: como siempre, por la web.
+        web = resolve_brevo_company(s, {"EMPRESA": "Instituto figurante",
+                                        "WEB": "https://instituto-figurante.cat"},
+                                    fallback_email="d@xtec.cat")
+        assert s.get(Company, web).domain == "instituto-figurante.cat"
+        assert resolve_brevo_company(s, {"EMPRESA": "Instituto figurante",
+                                         "WEB": "instituto-figurante.cat"},
+                                     fallback_email="d2@xtec.cat") == web
         # Con un CIF nuevo se crea la empresa (el CIF la identifica), sin el dominio.
         nueva = resolve_brevo_company(s, {"EMPRESA": "Centro", "CIF": "Q0000002J",
                                           "WEB": "xtec.cat"}, fallback_email="d@xtec.cat")
@@ -413,3 +424,29 @@ def test_el_alta_manual_con_empresa_queda_marcada(http, session_factory) -> None
     with session_factory() as s:
         c = s.scalar(select(Contact).where(Contact.email == "alta@xtec.cat"))
         assert "company_id" in json.loads(c.manually_edited_fields_json)
+
+
+def test_f_cli_con_codcli_numerico(session_factory, monkeypatch) -> None:  # noqa: F811
+    """FACTUSOL da el CODCLI como número; la empresa lo guarda como texto (a
+    veces con ceros). Tienen que cruzar."""
+    class ClienteFalso:
+        def load_table(self, tabla, **_kw):
+            assert tabla == "F_CLI"
+            return [{"CODCLI": 4790, "EMACLI": "Centro4790@xtec.cat; otra@ejemplo.test"},
+                    {"CODCLI": 4791, "EMACLI": ""}]
+
+    monkeypatch.setattr("app.integrations.factusol.client.FactusolClient.from_settings",
+                        classmethod(lambda cls: ClienteFalso()))
+    monkeypatch.setattr("app.integrations.factusol.service.ejercicio_for", lambda _s: "2026")
+    with session_factory() as s:
+        correos = dd.correos_de_factusol(s)
+        assert correos == {"4790": {"centro4790@xtec.cat", "otra@ejemplo.test"}}
+        centro = Company(name="Centro figurante", factusol_company_id="04790")
+        s.add(centro)
+        s.flush()
+        s.add(Contact(first_name="Figurante", email="centro4790@xtec.cat", company_id=centro.id,
+                      tags=""))
+        s.commit()
+        fila = next(e for e in dd.plan(s, correos_factusol=correos).empresas
+                    if e.company_id == centro.id)
+        assert dict(fila.quedan) == {"correo_factusol": 1} and not fila.despegar

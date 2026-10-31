@@ -94,11 +94,12 @@ por dominio, así que sus vínculos salen de otro sitio.
 | Motivo | Prueba |
 |---|---|
 | `factusol` | es él mismo un cliente de FACTUSOL (`factusol_contact_id`) |
-| `correo_factusol` | su correo es el del cliente de FACTUSOL de su empresa. El script lee F_CLI, solo lectura; si no puede leerlo se para, salvo con `--sin-factusol` |
+| `correo_factusol` | su correo es el del cliente de FACTUSOL de su empresa. El script lee F_CLI, solo lectura; si no puede leerlo (o llega vacío) se para, salvo con `--sin-factusol` |
 | `conciliado` | la conciliación con FACTUSOL por correo lo llevó a esa empresa (sus apuntes en la auditoría) |
 | `pedido` | figura en un pedido del ERP de esa empresa |
 | `oferta` | figura en una oferta de BoHub de esa empresa |
-| `a_mano` | alguien le puso esa empresa a mano: la ficha marca `company_id` como editado a mano, o la auditoría guarda la asignación (`assign-company`), o se dio de alta a mano (origen «Manual») |
+| `a_mano` | alguien le puso esa empresa a mano: la ficha marca `company_id` como editado a mano, o la auditoría guarda la asignación (`assign-company`) |
+| `alta_manual` | se dio de alta a mano (origen «Manual») y ninguna sincronización lo ha tocado después. Va aparte para ver cuántos se quedan solo por esto |
 
 La «EMPRESA» que declara alguien en Brevo no sirve de prueba: Brevo no la
 guarda en el contacto (y «Centro público» la declaran cientos de centros).

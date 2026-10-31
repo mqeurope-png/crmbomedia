@@ -19,8 +19,11 @@ hay alguna prueba de que es de esa empresa:
 - `conciliado`: la conciliación con FACTUSOL por correo lo llevó a esa
   empresa (sus apuntes en la auditoría);
 - `a_mano`: alguien le puso esa empresa a mano (la ficha marca `company_id`
-  como editado a mano, o la auditoría guarda la asignación), o se dio de alta
-  a mano (origen «Manual»).
+  como editado a mano, o la auditoría guarda la asignación);
+- `alta_manual`: se dio de alta a mano (origen «Manual») y ninguna
+  sincronización lo ha tocado después (sin referencias externas): su empresa
+  la eligió quien lo dio de alta. Va aparte para que se vea cuántos se quedan
+  solo por esto.
 
 **Cómo.** `company_id` a nulo: ni se borra ni se desactiva. Un apunte por
 contacto en `crm_despegue_dominio` con la empresa anterior y el motivo, en un
@@ -52,7 +55,8 @@ logger = logging.getLogger(__name__)
 
 MOTIVO = "dominio_compartido"
 MOTIVO_EMPRESA = "empresa_vacia_de_dominio_compartido"
-RAZONES = ("factusol", "correo_factusol", "conciliado", "pedido", "oferta", "a_mano")
+RAZONES = ("factusol", "correo_factusol", "conciliado", "pedido", "oferta", "a_mano",
+           "alta_manual")
 #: Las acciones de la conciliación con FACTUSOL por correo
 #: (`integrations/factusol/bulk_match.py`).
 _CONCILIACION = ("erp.factusol_bulk_sync_by_email",
@@ -94,6 +98,9 @@ class Plan:
     contactos_con_empresa: int
     #: Si se miró el correo de los clientes en F_CLI.
     con_factusol: bool = False
+    #: Lo que se hizo de verdad al aplicar (puede ser menos que el plan si
+    #: alguien movió contactos entre medias).
+    hechos: dict[str, int] = field(default_factory=dict)
 
     @property
     def a_despegar(self) -> int:
@@ -171,7 +178,7 @@ def _conciliados(session: Session) -> set[tuple[str, str]]:
 def correos_de_factusol(session: Session) -> dict[str, set[str]]:
     """Los correos de cada cliente de F_CLI (por `clave_cliente`). Solo lee
     FACTUSOL. Lanza si no se puede leer: el que llama decide."""
-    from app.erp import parque  # noqa: PLC0415
+    from app.integrations.factusol.auditoria_iva import codcli_key  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
     from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
@@ -179,7 +186,9 @@ def correos_de_factusol(session: Session) -> dict[str, set[str]]:
         "F_CLI", filtro="1=1", ejercicio=ejercicio_for(session))
     out: dict[str, set[str]] = {}
     for f in filas:
-        cli = parque.clave_cliente(f.get("CODCLI"))
+        # FACTUSOL da el CODCLI como número: `4471`, `'04471'` y `'4471.0'` son
+        # el mismo cliente.
+        cli = codcli_key(f.get("CODCLI"))
         correos = {c.strip().lower() for c in re.split(r"[;,\s]+", str(f.get("EMACLI") or ""))
                    if "@" in c}
         if cli and correos:
@@ -191,9 +200,9 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
     """Qué se despega y qué se queda, por empresa. Solo lee. Con
     `correos_factusol` (ver `correos_de_factusol`), también se queda quien
     tenga el correo del cliente de FACTUSOL de su empresa."""
-    from app.erp import parque  # noqa: PLC0415
     from app.erp.models.ofertas import Oferta  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
+    from app.integrations.factusol.auditoria_iva import codcli_key  # noqa: PLC0415
     from app.models.crm import Company, Contact, Task  # noqa: PLC0415
     from app.services import dominios_compartidos as dc  # noqa: PLC0415
 
@@ -210,8 +219,11 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
     ofertas = {(a, b) for a, b in session.execute(
         select(Oferta.contact_id, Oferta.company_id).where(
             Oferta.contact_id.is_not(None), Oferta.company_id.is_not(None)).distinct())}
+    from app.models.crm import ExternalReference  # noqa: PLC0415
+
     a_mano = _asignaciones_a_mano(session)
     conciliados = _conciliados(session)
+    sincronizados = set(session.scalars(select(ExternalReference.contact_id).distinct()))
     por_dominio: Counter = Counter()
     con_empresa = 0
     cols = [Contact.id, Contact.email, Contact.company_id, Contact.factusol_contact_id,
@@ -227,7 +239,7 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
         if dominio is None or not lista.compartido(dominio):
             continue
         razon = None
-        cli = parque.clave_cliente(e.codcli) if e.codcli else None
+        cli = codcli_key(e.codcli) if e.codcli else None
         if (fila[3] or "").strip():
             razon = "factusol"
         elif correos_factusol and cli and (email or "").strip().lower() in \
@@ -239,9 +251,10 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
             razon = "pedido"
         elif (cid, company_id) in ofertas:
             razon = "oferta"
-        elif "company_id" in _marcas_manuales(fila[4]) or (cid, company_id) in a_mano \
-                or (fila[5] or "").strip().lower() == "manual":
+        elif "company_id" in _marcas_manuales(fila[4]) or (cid, company_id) in a_mano:
             razon = "a_mano"
+        elif (fila[5] or "").strip().lower() == "manual" and cid not in sincronizados:
+            razon = "alta_manual"
         if razon:
             e.quedan[razon] += 1
         else:
@@ -278,6 +291,7 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
 
     lote = f"{_ahora():%Y%m%d%H%M}-{uuid.uuid4().hex[:6]}"
     ahora = _ahora()
+    hechos = {"contactos": 0, "empresas": 0}
     # El plan se leyó en otra transacción: en MySQL (REPEATABLE READ) seguir
     # en ella sería mirar la foto vieja. Se empieza una nueva y se bloquea.
     session.rollback()
@@ -300,6 +314,7 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
                 session.execute(update(Contact).where(
                     Contact.id.in_(siguen), Contact.company_id == e.company_id)
                     .values(company_id=None))
+                hechos["contactos"] += len(siguen)
             if e.archivar:
                 empresa = session.get(Company, e.company_id)
                 if empresa is not None and not empresa.is_archived:
@@ -313,13 +328,15 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
                         empresa.is_archived = True
                         empresa.archived_at = datetime.now(UTC)
                         empresa.archived_reason = _razon_archivo(lote)
+                        hechos["empresas"] += 1
         _auditar(session, "contacts.despegue_dominio", lote, por,
-                 {"contactos": p.a_despegar, "empresas_archivadas": len(p.a_archivar)})
+                 {"contactos": hechos["contactos"], "empresas_archivadas": hechos["empresas"]})
         session.commit()
     except Exception:
         session.rollback()
         raise
-    logger.info("despegue de dominios: lote %s, %d contactos", lote, p.a_despegar)
+    p.hechos = hechos
+    logger.info("despegue de dominios: lote %s, %d contactos", lote, hechos["contactos"])
     return lote
 
 
