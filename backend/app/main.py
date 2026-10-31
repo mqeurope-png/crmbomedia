@@ -14,6 +14,7 @@ from app.api.contact_assignments import router as contact_assignments_router
 from app.api.contact_channels import router as contact_channels_router
 from app.api.contact_notes import router as contact_notes_router
 from app.api.dashboard import router as dashboard_router
+from app.api.dominios_compartidos import empresa_router as despegue_empresa_router
 from app.api.dominios_compartidos import router as dominios_compartidos_router
 from app.api.email_drafts import router as email_drafts_router
 from app.api.emails import router as emails_router
@@ -99,6 +100,7 @@ app.include_router(assignment_rules_router, dependencies=_CRM_SCOPE)
 app.include_router(entities_router, dependencies=_CRM_SCOPE)
 app.include_router(resumen_erp_router, dependencies=_CRM_SCOPE)
 app.include_router(dominios_compartidos_router, dependencies=_CRM_SCOPE)
+app.include_router(despegue_empresa_router, dependencies=_CRM_SCOPE)
 app.include_router(entity_views_router, dependencies=_CRM_SCOPE)
 app.include_router(router, prefix="/api", dependencies=[Depends(crm_scope_monolith)])
 # Tasks router carries its own `/api/tasks` prefix and lives in its

@@ -5,7 +5,9 @@ Para decidir con datos qué dominios entran en la lista de los que no
 emparejan (Administración → Dominios compartidos). Un dominio es sospechoso
 de ser compartido cuando:
 
-- lo usan contactos de **varios clientes de FACTUSOL distintos**;
+- lo usan contactos de **cinco o más clientes de FACTUSOL distintos** (con
+  dos a cuatro suele ser una empresa real dada de alta varias veces en
+  FACTUSOL: eso sale aparte, en «Empresas con dos o más códigos de cliente»);
 - tiene en una sola empresa **muchos más contactos** que cualquier empresa
   real (se compara con el percentil 99 de contactos por empresa con cliente
   de FACTUSOL);
@@ -40,6 +42,11 @@ ADMINISTRACION = {
 CORREO = re.compile(r"^(g?mail|hotmail|outlook|live|yahoo|ymail|icloud|me|aol|gmx|web|"
                     r"proton(mail)?|tutanota|yandex|orange|free|wanadoo|telefonica|"
                     r"movistar|vodafone|terra|ono|jazztel|euskaltel|telecable|r)\.")
+
+
+#: Desde cuántos clientes de FACTUSOL distintos un dominio es sospechoso de
+#: ser compartido. Con 2 marcaba empresas reales duplicadas en FACTUSOL.
+UMBRAL_CLIENTES = 5
 
 
 def _pct(valores: list[int], p: float) -> int:
@@ -101,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             clientes = {codcli[cid] for cid in emp if codcli.get(cid)}
             maximo = max(emp.values()) if emp else 0
             motivos = []
-            if len(clientes) >= 2:
+            if len(clientes) >= UMBRAL_CLIENTES:
                 motivos.append(f"{len(clientes)} clientes FACTUSOL")
             if maximo > umbral:
                 motivos.append("muchos contactos en una empresa")
@@ -120,8 +127,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {d[:34]:34} {n:9} {ne:9} {emp:8} {cli:8} {mx:9}  {tipo or '—':10}  "
                   f"{'; '.join(mot)}")
 
-        print("\nDOMINIOS POR CLIENTES DE FACTUSOL DISTINTOS (2 o más)")
-        varios = sorted((f for f in filas if f[4] >= 2), key=lambda f: (-f[4], -f[1]))
+        print(f"\nDOMINIOS POR CLIENTES DE FACTUSOL DISTINTOS ({UMBRAL_CLIENTES} o más)")
+        varios = sorted((f for f in filas if f[4] >= UMBRAL_CLIENTES),
+                        key=lambda f: (-f[4], -f[1]))
         for d, n, _ne, emp, cli, mx, tipo, _mot in varios[:args.top]:
             print(f"  {d[:34]:34} clientes {cli:4} · empresas {emp:4} · contactos {n:6} · "
                   f"máx en una {mx:5} · {tipo or 'no está en la lista'}")
@@ -135,6 +143,38 @@ def main(argv: list[str] | None = None) -> int:
                   f"máx en una {mx:5} · {'; '.join(mot)}")
         if not propuesta:
             print("  (ninguno)")
+
+        # Empresas reales con varios códigos de cliente: un dominio propio (no de
+        # la lista) que usan contactos de 2 a 4 clientes distintos, y los NIF
+        # con varios códigos en F_CLI.
+        print("\nEMPRESAS CON DOS O MÁS CÓDIGOS DE CLIENTE (otro problema: duplicadas en "
+              "FACTUSOL)")
+        dup_dominio = sorted((f for f in filas
+                              if 2 <= f[4] < UMBRAL_CLIENTES and not f[6]),
+                             key=lambda f: (-f[4], f[0]))
+        print(f"  Por el dominio de sus contactos: {len(dup_dominio)} dominios propios con "
+              f"contactos en 2 a {UMBRAL_CLIENTES - 1} clientes distintos")
+        for d, n, _ne, _emp, cli, _mx, _t, _mot in dup_dominio[:args.top]:
+            print(f"    {d[:34]:34} clientes {cli} · contactos {n}")
+        f_cli = None
+        try:
+            f_cli = dd.leer_f_cli(s)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  Por NIF en F_CLI: sin leer FACTUSOL ({type(exc).__name__})")
+        if f_cli is not None:
+            dup_nif = dd.codigos_por_nif(f_cli)
+            print(f"  Por NIF en F_CLI: {len(dup_nif)} NIF con dos o más códigos "
+                  f"({sum(len(c) for c in dup_nif.values())} códigos en total). Sin el NIF:")
+            for cods in sorted(dup_nif.values(), key=lambda c: (-len(c), sorted(c)))[:args.top]:
+                print(f"    códigos {' · '.join(sorted(cods, key=lambda x: (len(x), x)))}")
+
+        sin = dd.clientes_sin_contactos(s)
+        print(f"\nCLIENTES DE FACTUSOL SIN NINGÚN CONTACTO (no hay a quién escribir): {len(sin)}"
+              f" · de ellos, {sum(1 for x in sin if x['despegados'])} se quedaron así por el "
+              "despegue")
+        for x in sin[:args.top]:
+            extra = f" · el despegue le quitó {x['despegados']}" if x["despegados"] else ""
+            print(f"    cliente {x['codcli']:>8} · empresa {x['company_id'][:8]}{extra}")
 
         print("\nLA LISTA HOY (tipo compartido) Y LO QUE PEGA")
         for d, tipo in sorted(lista.tipos.items()):
@@ -155,12 +195,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\nYA CLIENTE")
         yc = dd.ya_cliente(s)
         print(f"  Hoy: {yc['contactos']} contactos en {yc['empresas']} empresas")
-        try:
-            correos = dd.correos_de_factusol(s)
-        except Exception as exc:  # noqa: BLE001
-            correos = None
-            print(f"  (sin leer F_CLI de FACTUSOL: {type(exc).__name__}; la cuenta de abajo no "
-                  "descuenta a los que tienen el correo de su cliente)")
+        correos = dd.correos_de_factusol(s, filas=f_cli) if f_cli else None
+        if correos is None:
+            print("  (sin leer F_CLI de FACTUSOL: la cuenta de abajo no descuenta a los que "
+                  "tienen el correo de su cliente)")
         p = dd.plan(s, correos_factusol=correos)
         afectados = dd.ya_cliente_por_empresa(s, p)
         auto = sum(x["ya_cliente_auto"] for x in afectados)

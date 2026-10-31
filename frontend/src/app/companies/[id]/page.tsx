@@ -20,6 +20,8 @@ import {
   getCompany,
   restoreCompany,
   listCompanyContacts,
+  getDespegueEmpresa,
+  type DespegueEmpresa,
   mergeCompanies,
   updateCompany,
   viesRevalidate,
@@ -97,6 +99,9 @@ export default function CompanyDetailPage() {
   const [viesBusy, setViesBusy] = useState(false);
   const [viesError, setViesError] = useState<string | null>(null);
   const viesAutoRef = useRef<string | null>(null);
+  // Cliente de FACTUSOL sin contactos: por qué (si se los quitó el despegue de
+  // dominios compartidos), para que no se descubra al ir a escribirle.
+  const [despegue, setDespegue] = useState<DespegueEmpresa | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,6 +123,13 @@ export default function CompanyDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const sinContactos = !loading && !!company?.factusol_company_id && !company?.is_archived
+    && contacts.length === 0;
+  useEffect(() => {
+    if (!sinContactos) return;
+    getDespegueEmpresa(params.id).then(setDespegue).catch(() => setDespegue(null));
+  }, [sinContactos, params.id]);
 
   const [canSeeParque, setCanSeeParque] = useState(false);
   const [canEditParque, setCanEditParque] = useState(false);
@@ -437,6 +449,19 @@ export default function CompanyDetailPage() {
             {archiving ? "Reactivando…" : "Reactivar"}
           </button>
         </div>
+      ) : null}
+
+      {sinContactos ? (
+        <p className="form-warning" role="status">
+          Cliente de FACTUSOL sin ningún contacto: no hay a quién escribir.
+          {despegue && despegue.contactos > 0
+            ? ` Se le ${despegue.contactos === 1 ? "quitó" : "quitaron"} ${despegue.contactos} `
+              + `contacto${despegue.contactos === 1 ? "" : "s"} de ${despegue.dominios.join(", ")}`
+              + `${despegue.at ? ` el ${formatBackendDateTime(despegue.at)}` : ""}: el vínculo `
+              + "venía del dominio compartido, no de que fueran de aquí."
+            : ""}{" "}
+          Añade el contacto bueno desde la pestaña «Contactos» o desde su ficha.
+        </p>
       ) : null}
 
       {/* Cabecera bajo el nombre: NIF + localidad, y estado / vínculo FACTUSOL

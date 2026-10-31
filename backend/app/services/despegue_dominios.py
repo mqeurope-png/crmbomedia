@@ -7,9 +7,11 @@ de docentes acabaron colgados de la única empresa con ese dominio (o de una
 «Centro público» creada a partir de él). Esto los separa, sin perder lo bueno.
 
 **Qué se despega.** Un contacto con empresa cuyo correo es de un dominio
-`compartido` de la lista (no los proveedores de correo: a gmail.com nunca se
-emparejó por dominio, sus vínculos salen de otro sitio). Se queda vinculado si
-hay alguna prueba de que es de esa empresa:
+`compartido` de la lista. De un proveedor de correo, solo si su empresa lleva
+ese mismo dominio (la «Outlook» de outlook.fr, o una creada con gmail.com como
+web): eso lo pegó el dominio. Un cliente real con un contacto @gmail.com no se
+toca: ese vínculo salió de otro sitio. Se queda vinculado si hay alguna prueba
+de que es de esa empresa:
 
 - `factusol`: es él mismo un cliente de FACTUSOL (`factusol_contact_id`);
 - `pedido`: figura en un pedido del ERP de esa empresa;
@@ -175,15 +177,38 @@ def _conciliados(session: Session) -> set[tuple[str, str]]:
     return out
 
 
-def correos_de_factusol(session: Session) -> dict[str, set[str]]:
-    """Los correos de cada cliente de F_CLI (por `clave_cliente`). Solo lee
-    FACTUSOL. Lanza si no se puede leer: el que llama decide."""
-    from app.integrations.factusol.auditoria_iva import codcli_key  # noqa: PLC0415
+def leer_f_cli(session: Session) -> list[dict[str, Any]]:
+    """F_CLI entera. Solo lee FACTUSOL. Lanza si no se puede leer."""
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
     from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
-    filas = FactusolClient.from_settings().load_table(
+    return FactusolClient.from_settings().load_table(
         "F_CLI", filtro="1=1", ejercicio=ejercicio_for(session))
+
+
+def codigos_por_nif(filas: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Los NIF de F_CLI con DOS O MÁS códigos de cliente (la misma empresa
+    dada de alta varias veces en FACTUSOL). El NIF es la clave interna: no se
+    enseña."""
+    from app.integrations.factusol.auditoria_iva import codcli_key  # noqa: PLC0415
+
+    por: dict[str, set[str]] = {}
+    for f in filas:
+        nif = re.sub(r"[^0-9A-Z]", "", str(f.get("NIFCLI") or "").upper())
+        cli = codcli_key(f.get("CODCLI"))
+        if len(nif) >= 5 and cli:
+            por.setdefault(nif, set()).add(cli)
+    return {n: c for n, c in por.items() if len(c) >= 2}
+
+
+def correos_de_factusol(session: Session, *,
+                        filas: list[dict[str, Any]] | None = None) -> dict[str, set[str]]:
+    """Los correos de cada cliente de F_CLI (por código normalizado). Solo lee
+    FACTUSOL. Lanza si no se puede leer: el que llama decide."""
+    from app.integrations.factusol.auditoria_iva import codcli_key  # noqa: PLC0415
+
+    if filas is None:
+        filas = leer_f_cli(session)
     out: dict[str, set[str]] = {}
     for f in filas:
         # FACTUSOL da el CODCLI como número: `4471`, `'04471'` y `'4471.0'` son
@@ -236,7 +261,11 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
         con_empresa += 1
         e.total += 1
         dominio = lista.de_la_lista(dc.dominio_de_correo(email))
-        if dominio is None or not lista.compartido(dominio):
+        if dominio is None:
+            continue
+        if not lista.compartido(dominio) and lista.de_la_lista(e.dominio) != dominio:
+            # Proveedor de correo y empresa con otro dominio (o ninguno): el
+            # vínculo no lo hizo el dominio.
             continue
         razon = None
         cli = codcli_key(e.codcli) if e.codcli else None
@@ -568,3 +597,41 @@ def huecos_por_gama(session: Session) -> list[dict[str, Any]]:
                     "contactos_regla": int(contactos),
                     "razon": round(contactos / empresas, 1) if empresas else None})
     return out
+
+
+def despegados_de_empresa(session: Session, company_id: str) -> dict[str, Any] | None:
+    """Los contactos que el despegue (sin revertir) quitó a una empresa: para
+    que su ficha diga por qué se ha quedado sin contactos."""
+    from app.models.dominios import DespegueDominio  # noqa: PLC0415
+
+    filas = session.execute(
+        select(DespegueDominio.dominio, DespegueDominio.at).where(
+            DespegueDominio.tipo == TIPO_CONTACTO,
+            DespegueDominio.empresa_anterior == company_id,
+            DespegueDominio.revertido_at.is_(None))).all()
+    if not filas:
+        return None
+    ultimo = max((at for _d, at in filas if at), default=None)
+    return {"contactos": len(filas),
+            "dominios": sorted({d for d, _at in filas if d}),
+            "at": f"{ultimo.isoformat()}Z" if ultimo else None}
+
+
+def clientes_sin_contactos(session: Session) -> list[dict[str, Any]]:
+    """Empresas activas con cliente de FACTUSOL y ningún contacto: no hay a
+    quién escribir. Con cuántos les quitó el despegue (sin revertir)."""
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+    from app.models.dominios import DespegueDominio  # noqa: PLC0415
+
+    con_contactos = select(Contact.company_id).where(Contact.company_id.is_not(None))
+    empresas = session.execute(
+        select(Company.id, Company.factusol_company_id).where(
+            Company.factusol_company_id.is_not(None), func.trim(Company.factusol_company_id) != "",
+            Company.is_archived.is_(False), Company.id.not_in(con_contactos))).all()
+    quitados = dict(session.execute(
+        select(DespegueDominio.empresa_anterior, func.count()).where(
+            DespegueDominio.tipo == TIPO_CONTACTO, DespegueDominio.revertido_at.is_(None))
+        .group_by(DespegueDominio.empresa_anterior)).all())
+    return sorted(({"company_id": cid, "codcli": (cod or "").strip(),
+                    "despegados": int(quitados.get(cid, 0))} for cid, cod in empresas),
+                  key=lambda x: (-x["despegados"], x["codcli"]))

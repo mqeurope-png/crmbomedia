@@ -450,3 +450,97 @@ def test_f_cli_con_codcli_numerico(session_factory, monkeypatch) -> None:  # noq
         fila = next(e for e in dd.plan(s, correos_factusol=correos).empresas
                     if e.company_id == centro.id)
         assert dict(fila.quedan) == {"correo_factusol": 1} and not fila.despegar
+
+
+# --- 31/10: dominios aprobados, umbral del diagnóstico y clientes sin contactos -------------
+
+
+def test_un_proveedor_de_correo_solo_se_despega_de_la_empresa_con_ese_dominio(session_factory) -> None:  # noqa: F811,E501
+    """outlook.fr no estaba en la lista vieja: se emparejaba por dominio y hay
+    una «Outlook» con contactos pegados. Esos se despegan; un cliente real con
+    un contacto @outlook.fr, no."""
+    with session_factory() as s:
+        outlook = Company(name="Outlook", domain="outlook.fr", source="auto-domain")
+        real = Company(name="Taller figurante", domain="taller-figurante.es")
+        s.add_all([outlook, real])
+        s.flush()
+        pegados = []
+        for i in range(3):
+            c = Contact(first_name="Figurante", email=f"f{i}@outlook.fr", company_id=outlook.id,
+                        tags="")
+            s.add(c)
+            s.flush()
+            pegados.append(c.id)
+        suyo = Contact(first_name="Figurante", email="dueno@outlook.fr", company_id=real.id,
+                       tags="")
+        s.add(suyo)
+        s.commit()
+        p = dd.plan(s)
+        por = {e.company_id: e for e in p.empresas}
+        assert {c for c, _d in por[outlook.id].despegar} == set(pegados)
+        assert por[outlook.id].archivar                       # vacía y con dominio de la lista
+        assert real.id not in por                             # el cliente real no se toca
+        # Y ya no se vuelve a pegar por el dominio.
+        assert resolve_brevo_company(s, {}, fallback_email="otro@outlook.fr") is None
+
+
+def test_bomedia_net_no_empareja_con_ningun_cliente(session_factory) -> None:  # noqa: F811
+    with session_factory() as s:
+        s.add(Company(name="Cliente figurante", domain="bomedia.net"))
+        s.commit()
+        assert resolve_brevo_company(s, {}, fallback_email="alguien@bomedia.net") is None
+        assert dc.cargar(s).compartido("bomedia.net")
+
+
+def test_el_diagnostico_no_marca_empresas_con_dos_codigos_y_las_cuenta_aparte(
+        session_factory, monkeypatch, capsys) -> None:  # noqa: F811
+    from scripts import diagnostico_dominios
+
+    with session_factory() as s:
+        # Una empresa real con dos códigos de cliente: sus contactos, en las dos.
+        for cod in ("4801", "4802"):
+            e = Company(name=f"Real figurante {cod}", factusol_company_id=cod)
+            s.add(e)
+            s.flush()
+            s.add(Contact(first_name="Figurante", email=f"c{cod}@real-figurante.es",
+                          company_id=e.id, tags=""))
+        s.add(Company(name="Sin contactos figurante", factusol_company_id="4803"))
+        s.commit()
+    engine = session_factory.kw["bind"]
+    monkeypatch.setattr("app.db.session.get_engine", lambda: engine)
+    monkeypatch.setattr(dd, "leer_f_cli", lambda _s: [
+        {"CODCLI": 4801, "NIFCLI": "B-00000001", "EMACLI": "c4801@real-figurante.es"},
+        {"CODCLI": 4802, "NIFCLI": "b00000001", "EMACLI": ""},
+        {"CODCLI": 4803, "NIFCLI": "B00000002", "EMACLI": ""}])
+    assert diagnostico_dominios.main([]) == 0
+    salida = capsys.readouterr().out
+    propuesta = salida.split("PROPUESTA")[1].split("EMPRESAS CON DOS")[0]
+    assert "real-figurante.es" not in propuesta          # 2 clientes: no es «compartido»
+    assert "1 dominios propios con contactos en 2 a 4 clientes" in salida
+    assert "Por NIF en F_CLI: 1 NIF con dos o más códigos (2 códigos en total)" in salida
+    assert "códigos 4801 · 4802" in salida and "B00000001" not in salida
+    assert "CLIENTES DE FACTUSOL SIN NINGÚN CONTACTO (no hay a quién escribir): " in salida
+    assert "cliente     4803" in salida
+
+
+def test_la_ficha_sabe_por_que_un_cliente_se_quedo_sin_contactos(http, session_factory) -> None:  # noqa: F811,E501
+    esc = _escenario(session_factory)
+    with session_factory() as s:
+        solo = Company(name="Centro figurante", factusol_company_id="4805")
+        s.add(solo)
+        s.flush()
+        s.add(Contact(first_name="Figurante", email="unico@xtec.cat", company_id=solo.id,
+                      tags=""))
+        s.commit()
+        solo_id = solo.id
+        dd.aplicar(s, dd.plan(s), por="test")
+        sin = {x["company_id"]: x for x in dd.clientes_sin_contactos(s)}
+        assert sin[solo_id]["despegados"] == 1
+        assert esc["cliente"] not in sin                   # le quedan los suyos
+    r = http.get(f"/api/crm/despegue-dominios/empresa/{solo_id}",
+                 headers=auth_headers(http, "user"))
+    assert r.status_code == 200
+    assert r.json()["contactos"] == 1 and r.json()["dominios"] == ["xtec.cat"]
+    r = http.get(f"/api/crm/despegue-dominios/empresa/{esc['propia']}",
+                 headers=auth_headers(http, "user"))
+    assert r.json() == {"contactos": 0, "dominios": [], "at": None}

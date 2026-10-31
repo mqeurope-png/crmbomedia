@@ -299,10 +299,10 @@ def test_resolve_brevo_company_creates_from_empresa_attrs(
             {
                 "EMPRESA": "Bomedia",
                 "CIF": "B12345678",
-                "WEB": "https://bomedia.net",
+                "WEB": "https://taller-figurante.es",
                 "CIUDAD": "Barcelona",
             },
-            fallback_email="bart@bomedia.net",
+            fallback_email="bart@taller-figurante.es",
         )
         session.commit()
     with db.factory() as session:
@@ -310,7 +310,9 @@ def test_resolve_brevo_company_creates_from_empresa_attrs(
         assert company is not None
         assert company.name == "Bomedia"
         assert company.tax_id == "B12345678"
-        assert company.domain == "bomedia.net"
+        # 1/11/2026: bomedia.net (el de casa) está en la lista y no empareja;
+        # el ejemplo es un dominio figurante.
+        assert company.domain == "taller-figurante.es"
         assert company.source == "brevo"
 
 
@@ -366,7 +368,7 @@ def test_backfill_links_brevo_and_domain_paths(db: _Fixture) -> None:
                 ),
                 Contact(
                     first_name="Domain",
-                    email="d@bomedia.net",
+                    email="d@taller-figurante.es",
                     tags="",
                     commercial_status="new",
                 ),
@@ -398,6 +400,6 @@ def test_backfill_links_brevo_and_domain_paths(db: _Fixture) -> None:
         contacts = list(session.scalars(select(Contact)))
         by_email = {c.email: c for c in contacts}
         assert by_email["b@th-containers.es"].company_id is not None
-        assert by_email["d@bomedia.net"].company_id is not None
+        assert by_email["d@taller-figurante.es"].company_id is not None
         assert by_email["p@gmail.com"].company_id is None
     _ = _user_id  # silence pyflakes when the fixture isn't used directly

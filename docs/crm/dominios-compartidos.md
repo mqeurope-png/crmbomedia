@@ -55,7 +55,10 @@ docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
 Lista los dominios por contactos y por clientes de FACTUSOL distintos. Marca como
 sospechoso el que cumple alguna de estas:
 
-- lo usan varios clientes de FACTUSOL;
+- lo usan **cinco o más** clientes de FACTUSOL. Con dos a cuatro suele ser una
+  empresa real dada de alta varias veces en FACTUSOL: sale aparte, en
+  «Empresas con dos o más códigos de cliente», por dominio y por NIF en F_CLI
+  (el NIF no se enseña, solo los códigos);
 - tiene en una sola empresa más de 3 veces el percentil 99 de contactos por
   empresa real;
 - parece de administración o educación;
@@ -68,8 +71,22 @@ Termina con:
 - la comparación «huecos por gama»: empresas de la pestaña frente a contactos
   de la regla.
 
+Lista también los **clientes de FACTUSOL sin ningún contacto** (no hay a quién
+escribir), y cuántos se quedaron así por el despegue.
+
 Sin nombres de personas ni de empresas: las empresas salen por id corto y código
 de cliente.
+
+### Ampliación del 31/10 (migración 0167)
+
+Lo que aprobó Bart tras el primer diagnóstico:
+
+- 33 proveedores de correo (outlook.fr, live.de, gmx.net…);
+- 16 de administración y educación (gva.es, ub.edu…);
+- `bomedia.net`, el dominio de casa: los de Bomedia no son de ningún cliente.
+
+Se quedaron fuera a propósito empresas reales como flux3dp.com (el fabricante de
+las Flux).
 
 ## Despegar lo que ya está pegado
 
@@ -86,8 +103,11 @@ de cliente.
 ```
 
 **Se despega** un contacto con empresa cuyo correo es de un dominio **compartido**
-de la lista. Los proveedores de correo no entran: a `gmail.com` nunca se emparejó
-por dominio, así que sus vínculos salen de otro sitio.
+de la lista. Uno de un **proveedor de correo** solo se despega si su empresa
+lleva ese mismo dominio. Por ejemplo, la «Outlook» de outlook.fr, que no estaba
+en la lista vieja y sí emparejaba, o una creada con gmail.com como web. Un
+cliente real con un contacto @gmail.com no se toca: ese vínculo salió de otro
+sitio.
 
 **Se queda** con su empresa si hay alguna prueba de que es de ella:
 
@@ -114,6 +134,12 @@ guarda en el contacto (y «Centro público» la declaran cientos de centros).
   lista o ninguno, y no tienen pedidos, ofertas, tareas ni máquinas a mano.
 - Una empresa con cliente de FACTUSOL no se archiva nunca. Conserva su vínculo,
   su parque y su histórico; solo pierde los contactos que no eran suyos.
+
+**Un cliente de FACTUSOL que se queda sin contactos** (el único que tenía era,
+por ejemplo, un `@xtec.cat` que no coincidía con F_CLI) no se revierte: ese
+vínculo venía del dominio. Pero su ficha lo avisa («no hay a quién escribir»,
+con cuántos contactos y de qué dominio se le quitaron), y el `--apply` dice
+cuántos hay.
 
 **Revertir:** cada contacto vuelve a su empresa anterior y cada empresa archivada
 se desarchiva. No se toca, y se cuenta:

@@ -163,6 +163,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nAplicado. Lote {lote}: {p.hechos['contactos']} contactos despegados, "
               f"{p.hechos['empresas']} empresas archivadas. Para deshacerlo: "
               f"--revertir {lote} --yes")
+        sin = dd.clientes_sin_contactos(s)
+        print(f"Clientes de FACTUSOL sin ningún contacto tras el despegue (contando todos los "
+              f"lotes): {sum(1 for x in sin if x['despegados'])}. Su ficha lo avisa; la lista, "
+              "en el diagnóstico.")
         print("Recalculando el resumen por empresa y las etiquetas…")
         empresa_erp.recalcular(s)
         yc = dd.ya_cliente(s)

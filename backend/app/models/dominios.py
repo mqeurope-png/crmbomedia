@@ -55,13 +55,31 @@ SEMILLA_COMPARTIDOS = (
 )
 
 
+#: Lo que aprobó Bart tras el diagnóstico del 31/10 (en producción, la 0167).
+AMPLIACION_CORREO = (
+    "outlook.fr", "outlook.de", "outlook.be", "outlook.pt",
+    "live.fr", "live.nl", "live.de", "live.be",
+    "hotmail.de", "hotmail.be", "hotmail.ch", "hotmail.co.uk",
+    "gmx.at", "gmx.net", "gmx.ch", "yahoo.de", "yahoo.com.ar",
+    "t-online.de", "wanadoo.fr", "bluewin.ch", "sapo.pt", "home.nl", "skynet.be",
+    "ono.com", "orange.com", "mail.de", "mail.telepac.pt", "laposte.net", "sfr.fr",
+    "euskalnet.net", "infonegocio.com", "gmail.de", "gmail.con",
+)
+AMPLIACION_COMPARTIDOS = (
+    "edu.gva.es", "gva.es", "edu.xunta.es", "canariaseducacion.es", "mecd.es", "mde.es",
+    "ub.edu", "upc.edu", "mondragon.edu", "ie.edu", "fundacio.urv.cat", "eua.edu.es",
+    "easo.eus", "ac-montpellier.fr", "andorra.ad", "icab.cat",
+    "bomedia.net",          # el de casa: los de Bomedia no son de ningún cliente
+)
+
+
 @event.listens_for(DominioCompartido.__table__, "after_create")
 def _sembrar(target, connection, **_kw) -> None:  # noqa: ANN001
     connection.execute(insert(target), [
         *({"dominio": d, "tipo": TIPO_CORREO, "nota": "Proveedor de correo personal"}
-          for d in SEMILLA_CORREO),
-        *({"dominio": d, "tipo": TIPO_COMPARTIDO, "nota": "Consejería de educación"}
-          for d in SEMILLA_COMPARTIDOS),
+          for d in SEMILLA_CORREO + AMPLIACION_CORREO),
+        *({"dominio": d, "tipo": TIPO_COMPARTIDO, "nota": "Administración o educación"}
+          for d in SEMILLA_COMPARTIDOS + AMPLIACION_COMPARTIDOS),
     ])
 
 

@@ -372,3 +372,29 @@ def test_0166_dominios_compartidos_sembrados_y_sin_despegar_nada(alembic_setup):
     command.downgrade(cfg, "20261101_0165")
     tablas = set(inspect(engine).get_table_names())
     assert "dominios_compartidos" not in tablas and "crm_despegue_dominio" not in tablas
+
+
+def test_0167_anade_los_aprobados_sin_pisar_y_baja_solo_los_suyos(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0166")
+    with engine.begin() as c:
+        # Uno que alguien ya añadió a mano en la pantalla: no se pisa.
+        c.exec_driver_sql("INSERT INTO dominios_compartidos (dominio, tipo, nota, por) VALUES "
+                          "('gva.es', 'compartido', 'puesto a mano', 'admin@ejemplo.test')")
+    command.upgrade(cfg, "20261101_0167")
+    with engine.connect() as c:
+        filas = {d: (t, por) for d, t, por in c.exec_driver_sql(
+            "SELECT dominio, tipo, por FROM dominios_compartidos")}
+    assert filas["gva.es"] == ("compartido", "admin@ejemplo.test")
+    assert filas["outlook.fr"][0] == "correo" and filas["ub.edu"][0] == "compartido"
+    assert filas["bomedia.net"][0] == "compartido"
+    assert "flux3dp.com" not in filas and "casadellibro.com" not in filas
+    # 0166 (46) + el de a mano + 33 de correo + 15 de administración (gva.es
+    # ya estaba) + bomedia.net.
+    assert len(filas) == 46 + 1 + 33 + 15 + 1
+    command.downgrade(cfg, "20261101_0166")
+    with engine.connect() as c:
+        quedan = {r[0] for r in c.exec_driver_sql("SELECT dominio FROM dominios_compartidos")}
+    assert "gva.es" in quedan and "outlook.fr" not in quedan and len(quedan) == 47
