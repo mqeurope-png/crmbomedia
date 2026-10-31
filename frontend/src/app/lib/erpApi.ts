@@ -8120,6 +8120,49 @@ export async function downloadHistoricoCompradoresCsv(f: HistoricoFiltro): Promi
   return apiDownloadBlob(`/api/erp/historico/compradores.csv${qs({ ...f })}`);
 }
 
+// --- Dormidos y huecos (1/11/2026) -------------------------------------------
+
+export type DormidosAjustes = { meses_dormido: number; meses_gracia_hueco: number };
+
+type ConsultaCliente = {
+  codcli: string; nombre: string | null; empresa: { id: string; nombre: string } | null;
+  gama: string; gama_nombre: string; maquinas: number; articulos: string[];
+  ultima_maquina: string | null;
+};
+
+export type Dormido = ConsultaCliente & {
+  ultima_compra: string; meses_sin_comprar: number; compraba_12_meses: number;
+};
+
+export type Hueco = ConsultaCliente & { meses_con_maquina: number | null; solo_recambios: boolean };
+
+export type DormidosHuecos = {
+  ajustes: DormidosAjustes;
+  hoy: string;
+  resumen: {
+    clientes_con_maquina: number;
+    maquinas_sin_gama: number;
+    por_gama: { gama: string; gama_nombre: string; clientes: number; con_consumible: number;
+                dormidos: number; huecos: number }[];
+  };
+  dormidos: Dormido[];
+  huecos: Hueco[];
+};
+
+export async function getDormidosHuecos(): Promise<DormidosHuecos> {
+  return apiFetch("/api/erp/historico/parque/dormidos-huecos");
+}
+
+export async function guardarAjustesDormidos(a: Partial<DormidosAjustes>): Promise<DormidosHuecos> {
+  return apiFetch("/api/erp/historico/parque/dormidos-ajustes", {
+    method: "PUT", body: JSON.stringify(a),
+  });
+}
+
+export async function downloadDormidosHuecosCsv(tipo: "dormidos" | "huecos"): Promise<Blob> {
+  return apiDownloadBlob(`/api/erp/historico/parque/${tipo}.csv`);
+}
+
 // --- Ficha de un documento (factura, albarán, proforma) de cualquier año -----
 
 export type HistoricoTipoDocumento = "factura" | "albaran" | "proforma";

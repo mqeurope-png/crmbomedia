@@ -37,6 +37,7 @@ jest.mock("../../components/erp/ArticulosClasePanel", () => ({ ArticulosClasePan
 jest.mock("../../components/erp/MaquinasPanel", () => ({ MaquinasPanel: () => null }));
 jest.mock("../../components/erp/SeriesVentaPanel", () => ({ SeriesVentaPanel: () => null }));
 jest.mock("../../components/erp/EquivalenciasPanel", () => ({ EquivalenciasPanel: () => null }));
+jest.mock("../../components/erp/DormidosHuecosPanel", () => ({ DormidosHuecosPanel: () => null }));
 jest.mock("../../lib/api", () => ({ getCurrentUser: jest.fn() }));
 
 function api() {

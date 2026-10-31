@@ -222,26 +222,24 @@ def _pedidas_en_proformas(session: Session, filas: list[Any], canon: Any = None,
     return out
 
 
-def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, Any]]:
-    """Las máquinas de las ventas volcadas de un cliente, una por línea (con
-    su cantidad), sin contar dos veces el albarán y su factura."""
-    codigos = codigos_cliente(codcli)
-    if not codigos:
-        return []
+def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list[Any]:
+    """Las líneas de máquina (marcadas) de factura y albarán de esos clientes
+    (o de todos, con `codigos` None), de las series que cuentan."""
     art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
-    eq = equivalencias.cargar(session)
     maquinas = _codigos_maquina(session, eq)
     if not maquinas:
         return []
     filas = session.execute(
-        select(lin.ejercicio, doc.tipo, doc.serie, doc.codigo, doc.fecha, doc.fecha_original,
-               doc.estado, lin.posicion, lin.codart, lin.descripcion.label("lin_desc"),
+        select(doc.codcli, lin.ejercicio, doc.tipo, doc.serie, doc.codigo, doc.fecha,
+               doc.fecha_original, doc.estado, lin.posicion, lin.codart,
+               lin.descripcion.label("lin_desc"),
                lin.cantidad, art.descripcion.label("art_desc"), art.familia, fam.gama,
                lin.origen_tipo, lin.origen_serie, lin.origen_codigo)
         .join(doc, doc.id == lin.documento_id)
         .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
         .outerjoin(fam, fam.codigo == art.familia)
-        .where(doc.codcli.in_(codigos), doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
+        .where(*([doc.codcli.in_(codigos)] if codigos is not None else []),
+               doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
                lin.es_producto.is_(True),
                # Máquina SOLO si el artículo está marcado (31/10/2026): la clase
                # de la familia ya no basta. Un código equivalente sin decisión
@@ -250,11 +248,53 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
                *([doc.serie.notin_(sorted(fuera))] if (fuera := series_excluidas(session))
                  else []))
     ).all()
-    canon = eq.canonico
-    proformas = _pedidas_en_proformas(session, filas, canon)
-    queda, cubre = _emparejar(filas, proformas, canon)
-    enlazados = set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
-        HistoricoEjercicio.con_enlaces.is_(True))))
+    return filas
+
+
+def _contexto(session: Session, filas: list[Any], eq: Any) -> dict[str, Any]:
+    return {"canon": eq.canonico,
+            "proformas": _pedidas_en_proformas(session, filas, eq.canonico),
+            "enlazados": set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
+                HistoricoEjercicio.con_enlaces.is_(True))))}
+
+
+def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, Any]]:
+    """Las máquinas de las ventas volcadas de un cliente, una por línea (con
+    su cantidad), sin contar dos veces el albarán y su factura."""
+    codigos = codigos_cliente(codcli)
+    if not codigos:
+        return []
+    eq = equivalencias.cargar(session)
+    filas = _filas_maquina(session, codigos, eq)
+    if not filas:
+        return []
+    return _de_un_cliente(filas, _contexto(session, filas, eq))
+
+
+def clave_cliente(codcli: str | None) -> str:
+    """El cliente sin ceros a la izquierda (`00412` y `412` son el mismo)."""
+    c = (codcli or "").strip()
+    return str(int(c)) if c.isdigit() else c
+
+
+def maquinas_de_todos(session: Session) -> dict[str, list[dict[str, Any]]]:
+    """Las máquinas volcadas de TODOS los clientes, por `clave_cliente`, con
+    las mismas reglas que la ficha (emparejado, abonos, equivalencias). Una
+    consulta, no una por cliente."""
+    eq = equivalencias.cargar(session)
+    filas = _filas_maquina(session, None, eq)
+    if not filas:
+        return {}
+    ctx = _contexto(session, filas, eq)
+    por_cliente: dict[str, list[Any]] = {}
+    for f in filas:
+        por_cliente.setdefault(clave_cliente(f.codcli), []).append(f)
+    return {k: _de_un_cliente(v, ctx) for k, v in por_cliente.items() if k}
+
+
+def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    canon, enlazados = ctx["canon"], ctx["enlazados"]
+    queda, cubre = _emparejar(filas, ctx["proformas"], canon)
     # Un abono (línea en negativo) anula la venta más reciente de ese artículo.
     abonado: dict[str, float] = {}
     for f in filas:
