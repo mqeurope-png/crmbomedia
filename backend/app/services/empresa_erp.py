@@ -97,7 +97,7 @@ def _compras(session: Session, eq: Any) -> tuple[dict[str, dict[str, Compra]], d
     )
     if fuera := series_excluidas(session):
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
-    elegido: dict[tuple[str, str], tuple[str, str]] = {}
+    elegido: dict[tuple[str, str], tuple[bool, str, str]] = {}
     compras: dict[str, dict[str, Compra]] = {}
     ultima: dict[str, date] = {}
     for (codcli, codart, familia, clase_fam, clase_propia, fecha, ej_sin_fecha,
@@ -111,7 +111,9 @@ def _compras(session: Session, eq: Any) -> tuple[dict[str, dict[str, Compra]], d
             clase = CLASE_MAQUINA
         else:
             clase = clase_efectiva_py(clase_propia, clase_fam)
-        orden = (str(ej or ""), familia or "")
+        # Manda la familia CONOCIDA más reciente: si el artículo ya no está
+        # en el catálogo de su último ejercicio, la de antes (como el respaldo).
+        orden = (familia is not None, str(ej or ""), familia or "")
         if (cli, k) not in elegido or orden > elegido[(cli, k)]:
             elegido[(cli, k)] = orden
             compras.setdefault(cli, {})[k] = (codart, familia, clase, eq.canonico(codart))
