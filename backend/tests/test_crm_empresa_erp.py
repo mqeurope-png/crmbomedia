@@ -397,8 +397,9 @@ def test_la_ultima_compra_sin_fecha_cuenta_el_1_de_enero(session_factory) -> Non
 
     emp = _con_contactos(session_factory)
     with session_factory() as s:
-        for d in s.scalars(select(HistoricoDocumento).where(
-                HistoricoDocumento.codcli == SOLO_RECAMBIO, HistoricoDocumento.ejercicio == "2023")):
+        doc = HistoricoDocumento
+        for d in s.scalars(select(doc).where(doc.codcli == SOLO_RECAMBIO,
+                                             doc.ejercicio == "2023")):
             d.fecha = None
         s.commit()
     _recalcular(session_factory)
