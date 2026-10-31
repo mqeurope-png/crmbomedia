@@ -294,14 +294,22 @@ def _sustituir(
     return cuentas
 
 
-def cargar_familias(session: Session, client: Any, ejercicio: str) -> int:
+def cargar_familias(session: Session, client: Any, ejercicio: str,
+                    otros: list[str] | tuple[str, ...] = ()) -> int:
     """Las familias (`F_FAM` del ejercicio en curso), conservando la clase que
-    haya puesto Bart. Devuelve cuántas. Si falla, no toca nada."""
+    haya puesto Bart. Devuelve cuántas.
+
+    1/11/2026: las familias que solo usan artículos de años anteriores (p. ej.
+    una «19» borrada de FACTUSOL) entran SIEMPRE en la tabla, también si
+    `F_FAM` falla; antes, si fallaba, se quedaban fuera y sus artículos sin
+    familia que casara. Y si no tienen nombre, se toma el de la `F_FAM` de los
+    otros ejercicios cargados (`otros`), sin pisar ninguno. Los códigos se
+    guardan tal cual: «014» y «14» son familias distintas."""
     try:
         filas = client.load_table("F_FAM", filtro="1=1", ejercicio=str(ejercicio))
     except Exception as exc:  # noqa: BLE001
         logger.info("historico: familias sin cargar (%s)", type(exc).__name__)
-        return 0
+        filas = []
     try:
         actuales = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
         for r in filas:
@@ -319,8 +327,30 @@ def cargar_familias(session: Session, client: Any, ejercicio: str) -> int:
         # ventas no saldrían al filtrar por clase o gama.
         usadas = set(session.scalars(select(HistoricoArticulo.familia).distinct()
                                      .where(HistoricoArticulo.familia.is_not(None))))
-        for codigo in usadas - set(actuales):
-            session.add(HistoricoFamilia(codigo=codigo, descripcion=None))
+        vistas = {c.strip().upper() for c in actuales}
+        for codigo in sorted(usadas):
+            if codigo.strip().upper() in vistas:
+                continue    # sin distinguir mayúsculas, como la clave en MySQL
+            vistas.add(codigo.strip().upper())
+            fam = HistoricoFamilia(codigo=codigo, descripcion=None)
+            session.add(fam)
+            actuales[codigo] = fam
+        # Sin nombre: el de la F_FAM de su año, si lo tiene.
+        for otro in otros:
+            if not any(f.descripcion is None for f in actuales.values()):
+                break
+            if str(otro) == str(ejercicio):
+                continue
+            try:
+                viejas = client.load_table("F_FAM", filtro="1=1", ejercicio=str(otro))
+            except Exception as exc:  # noqa: BLE001
+                logger.info("historico: familias de %s sin cargar (%s)", otro,
+                            type(exc).__name__)
+                continue
+            for r in viejas:
+                fam = actuales.get(_texto(r.get("CODFAM"), 32) or "")
+                if fam is not None and fam.descripcion is None:
+                    fam.descripcion = _texto(r.get("DESFAM"), 255)
         session.commit()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
@@ -335,7 +365,7 @@ def cargar(
     """Carga los ejercicios pedidos (uno que falla no para a los demás) y las
     familias."""
     out = [cargar_ejercicio(session, client, e) for e in ejercicios]
-    cargar_familias(session, client, en_curso)
+    cargar_familias(session, client, en_curso, otros=sorted(ejercicios, reverse=True))
     return out
 
 
@@ -471,7 +501,14 @@ def compradores(
         .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA))
     )
     if codart:
-        stmt = stmt.where(lin.codart == codart)
+        # También las ventas de sus códigos equivalentes (el mismo modelo con
+        # el código de la web o el interno, 1/11/2026).
+        from app.erp import historico_equivalencias  # noqa: PLC0415
+
+        grupo = historico_equivalencias.cargar(session).grupo(codart)
+        stmt = stmt.where(func.upper(lin.codart).in_(
+            sorted({historico_equivalencias.clave(c) for c in grupo})) if len(grupo) > 1
+            else lin.codart == codart)
     if q:
         stmt = stmt.where(or_(lin.codart == q.strip(),
                               art.descripcion.ilike(_like(q.strip()), escape="/")))
@@ -503,6 +540,9 @@ def compradores(
     if not (codart or q or familia or clase or gama):
         return []
 
+    from app.erp import historico_equivalencias as _eq  # noqa: PLC0415
+
+    modelo = _eq.cargar(session).canonico
     clientes: dict[str, dict[str, Any]] = {}
     for (c_art, cant, ej, tipo, serie, codigo, fecha, fecha_orig, codcli, nombre,
          art_desc, _familia, lin_desc) in session.execute(stmt):
@@ -512,7 +552,9 @@ def compradores(
             "ultima": None, "_orden": None,
         })
         # Por artículo y tipo: unidades y documentos (se elige al final).
-        pa = cl["por_articulo"].setdefault(c_art, {
+        # Por MODELO: un albarán con el código interno y su factura con el de
+        # la web (códigos equivalentes) son la misma venta.
+        pa = cl["por_articulo"].setdefault(modelo(c_art), {
             TIPO_FACTURA: [0.0, set()], TIPO_ALBARAN: [0.0, set()]})
         pa[tipo][0] += float(cant or 0)
         pa[tipo][1].add((ej, tipo, serie, codigo))

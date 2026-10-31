@@ -244,3 +244,47 @@ def test_0162_clasifica_las_tres_sin_clase_y_no_toca_uv_ni_lo_de_bart(alembic_se
     assert familias() == {"071": (None, None), "251": ("recambio", "laser"),
                           "118": (None, None), "UV": ("otro", None),
                           "021": ("maquina", "laser")}
+
+
+def test_0163_equivalencias_y_familias_que_faltan_sin_tocar_nada_de_bart(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0162")
+    with engine.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO historico_familias (codigo, descripcion, clase, gama, clase_por) VALUES "
+            "('019', 'SPARE PARTS ROLLCOATER', 'recambio', NULL, 'bart'), "
+            "('UV', 'UV', 'consumible', 'uv-led', 'bart')")
+        c.exec_driver_sql(
+            "INSERT INTO historico_articulos (ejercicio, codart, descripcion, familia) VALUES "
+            "('2017', '60995', 'FLUX BEAMBOX 40W', '19'), "
+            "('2026', 'R1', 'RODILLO', '019')")
+        c.exec_driver_sql("INSERT INTO historico_articulos_clase (codart, clase, por) "
+                          "VALUES ('60995', 'maquina', 'bart'), ('X1', 'no_maquina', 'bart')")
+        c.exec_driver_sql("INSERT INTO historico_series (serie, cuenta, por) "
+                          "VALUES ('3', 0, 'bart')")
+
+    def foto():
+        with engine.connect() as c:
+            return (
+                sorted(c.exec_driver_sql(
+                    "SELECT codigo, descripcion, clase, gama FROM historico_familias").all()),
+                sorted(c.exec_driver_sql(
+                    "SELECT codart, clase, por FROM historico_articulos_clase").all()),
+                c.exec_driver_sql("SELECT serie, cuenta FROM historico_series").all(),
+            )
+
+    antes = foto()
+    command.upgrade(cfg, "20261101_0163")
+    fams, marcas, series = foto()
+    assert marcas == antes[1] and series == antes[2]
+    # La «19» entra sin clase; la «019» de Bart sigue como estaba.
+    assert fams == sorted([*antes[0], ("19", None, None, None)])
+    with engine.connect() as c:
+        pares = sorted(c.exec_driver_sql(
+            "SELECT canonico, codart FROM historico_equivalencias").all())
+    assert pares == sorted([("60995", "34"), ("61000", "234"), ("60997", "1398"),
+                            ("BT2EYB", "4173"), ("61403", "4174")])
+    command.downgrade(cfg, "20261101_0162")
+    assert foto() == antes

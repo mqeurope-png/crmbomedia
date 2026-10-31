@@ -127,14 +127,23 @@ test("la casilla «palabra entera» de una pista", async () => {
   expect(api().cambiarPalabraEnteraPista).toHaveBeenCalledWith(1, true);
 });
 
-test("lo vendido que no está en ningún catálogo se cuenta, para que se vea el agujero", async () => {
+test("los dos agujeros del catálogo, separados; los de ceros solo se enseñan", async () => {
   api().getHistoricoMaquinas.mockResolvedValue({
-    ...DATOS, sin_catalogo: { articulos: 2, lineas: 9, items: [
-      { codart: "BORRADO9", descripcion: "ARTICULO BORRADO FIGURANTE", lineas: 7 },
-      { codart: "BORRADO8", descripcion: null, lineas: 2 }] },
+    ...DATOS, sin_catalogo: {
+      articulos: 2, lineas: 9, items: [
+        { codart: "BORRADO9", descripcion: "ARTICULO BORRADO FIGURANTE", lineas: 7 },
+        { codart: "0712", descripcion: null, lineas: 2 }],
+      con_ceros: [{ codart: "0712", descripcion: null, lineas: 2, parecidos: ["712"] }],
+      sin_familia: { articulos: 3, lineas: 40, familias: [
+        { familia: "19", motivo: "no_esta", articulos: 2, lineas: 30, ejemplos: ["5001", "5002"] },
+        { familia: "14", motivo: "sin_clase", articulos: 1, lineas: 10, ejemplos: ["5003"] }] },
+    },
   });
   render(<MaquinasPanel puedeEditar />);
-  expect(await screen.findByText("2 artículos vendidos no están en ningún catálogo")).toBeInTheDocument();
-  expect(screen.getByText(/\(9 líneas\)/)).toBeInTheDocument();
-  expect(screen.getByText("BORRADO9")).toBeInTheDocument();
+  expect(await screen.findByText("Sin catálogo: 2 artículos vendidos")).toBeInTheDocument();
+  expect(screen.getByText("Con catálogo y sin familia que case: 3 artículos")).toBeInTheDocument();
+  expect(screen.getByText("no está en la tabla de familias")).toBeInTheDocument();
+  expect(within(screen.getByRole("list", { name: "Casarían quitando ceros" })).getByText("712"))
+    .toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /juntar|aplicar/i })).not.toBeInTheDocument();
 });

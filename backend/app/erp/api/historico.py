@@ -92,7 +92,8 @@ def _por(user: User) -> str:
 def _no_existe(exc: LookupError, que: str = "familia") -> HTTPException:
     detalle = {"familia": "Esa familia no está en el histórico.",
                "regla": "Esa regla ya no existe.",
-               "articulo": "Ese artículo no está en ningún catálogo volcado."}[que]
+               "articulo": "Ese artículo no está en ningún catálogo volcado.",
+               "equivalencia": "Ese código no tiene ninguna equivalencia declarada."}[que]
     return HTTPException(status.HTTP_404_NOT_FOUND, {"code": f"{que}_no_existe",
                                                      "detail": detalle})
 
@@ -109,6 +110,10 @@ _NO_VALIDO = {
     "pista_existe": "Esa pista ya está en la lista.",
     "serie": "Falta la serie.",
     "umbral": "El umbral tiene que ser un importe positivo.",
+    "mismo_codigo": "Escribe dos códigos distintos.",
+    "sin_catalogo": "Los dos códigos tienen que estar en algún catálogo volcado.",
+    "ya_declarado": "Esos dos códigos ya son equivalentes.",
+    "ya_en_otro_grupo": "El segundo código ya va con otro grupo: quítalo de ahí primero.",
 }
 
 
@@ -524,6 +529,57 @@ def marcar_serie(
     except ValueError as exc:
         raise _no_valido(exc) from exc
     return historico_maquinas.series(session)
+
+
+class EquivalenciaIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canonico: str = Field(..., max_length=64)
+    codart: str = Field(..., max_length=64)
+
+
+def _equivalencias(session: Session) -> dict[str, Any]:
+    from app.erp import historico_equivalencias  # noqa: PLC0415
+
+    return {"items": historico_equivalencias.listar(session)}
+
+
+@router.get("/equivalencias")
+def equivalencias(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_office_view),
+) -> dict[str, Any]:
+    return _equivalencias(session)
+
+
+@router.post("/equivalencias")
+def declarar_equivalencia(
+    body: EquivalenciaIn,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_equivalencias  # noqa: PLC0415
+
+    try:
+        historico_equivalencias.declarar(session, body.canonico, body.codart, por=_por(user))
+    except ValueError as exc:
+        raise _no_valido(exc) from exc
+    return _equivalencias(session)
+
+
+@router.delete("/equivalencias/{codart:path}")
+def quitar_equivalencia(
+    codart: str = Path(..., max_length=64),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    from app.erp import historico_equivalencias  # noqa: PLC0415
+
+    try:
+        historico_equivalencias.quitar(session, codart)
+    except LookupError as exc:
+        raise _no_existe(exc, "equivalencia") from exc
+    return _equivalencias(session)
 
 
 def _compradores(

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { ArticulosClasePanel } from "../../components/erp/ArticulosClasePanel";
 import { MaquinasPanel } from "../../components/erp/MaquinasPanel";
+import { EquivalenciasPanel } from "../../components/erp/EquivalenciasPanel";
 import { SeriesVentaPanel } from "../../components/erp/SeriesVentaPanel";
 import { getCurrentUser, type User } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
@@ -660,6 +661,7 @@ function FamiliasPanel({
         </form>
       ) : null}
       <MaquinasPanel puedeEditar={puedeClasificar} />
+      <EquivalenciasPanel puedeEditar={puedeClasificar} />
       <SeriesVentaPanel puedeEditar={puedeClasificar} />
       <ArticulosClasePanel puedeEditar={puedeClasificar} />
       <ReglasPanel gamas={gamas} puedeEditar={puedeClasificar} onCambio={onRecargar} />

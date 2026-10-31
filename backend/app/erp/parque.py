@@ -55,6 +55,7 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from app.erp import historico_equivalencias as equivalencias
 from app.erp.historico_maquinas import series_excluidas
 from app.erp.models.historico import (
     TIPO_ALBARAN,
@@ -135,7 +136,7 @@ def _dias(a: Any, b: Any) -> int:
 
 
 def _emparejar(filas: list[Any], proformas: dict[tuple[str, int, str], float],
-               ) -> tuple[dict[int, float], dict[int, list[Any]]]:
+               canon: Any = None) -> tuple[dict[int, float], dict[int, list[Any]]]:
     """Qué parte de cada línea de albarán está ya en una factura, por el
     enlace que guarda FACTUSOL en las líneas:
 
@@ -148,7 +149,11 @@ def _emparejar(filas: list[Any], proformas: dict[tuple[str, int, str], float],
     varias candidatas, la de fecha más cercana. En el 2, si la proforma pedía
     unidades para todo (`proformas`: lo pedido por proforma y artículo), son
     entregas distintas y no se casan. Devuelve las unidades de cada albarán
-    que quedan sin factura y, por factura, los albaranes que cubre."""
+    que quedan sin factura y, por factura, los albaranes que cubre.
+
+    «Mismo artículo» es el mismo MODELO (`canon`, 1/11/2026): un albarán con
+    el código interno y su factura con el de la web también se casan."""
+    canon = canon or (lambda c: c)
     facturas = [f for f in filas if f.tipo == TIPO_FACTURA and (f.cantidad or 0) > 0]
     albaranes = [f for f in filas if f.tipo == TIPO_ALBARAN and (f.cantidad or 0) > 0]
     queda = {id(a): float(a.cantidad) for a in albaranes}
@@ -171,15 +176,17 @@ def _emparejar(filas: list[Any], proformas: dict[tuple[str, int, str], float],
     # Primero el enlace directo (factura → albarán), después el origen común.
     for f, o in con_origen:
         if o and o[0] == "A":
-            casar(f, [a for a in albaranes if a.codart == f.codart
+            casar(f, [a for a in albaranes if canon(a.codart) == canon(f.codart)
                       and (a.serie, int(a.codigo)) == (o[1], o[2])])
     for f, o in con_origen:
         if o and o[0] in ("P", "C"):
-            mismas = [a for a in albaranes if a.codart == f.codart and _origen(a) == o]
-            pedidas = proformas.get((o[1], o[2], f.codart or "")) if o[0] == "P" else None
+            mismas = [a for a in albaranes if canon(a.codart) == canon(f.codart)
+                      and _origen(a) == o]
+            pedidas = (proformas.get((o[1], o[2], canon(f.codart) or "")) if o[0] == "P"
+                       else None)
             if mismas and pedidas is not None:
                 servidas = sum(float(x.cantidad) for x in facturas + albaranes
-                               if x.codart == f.codart and _origen(x) == o)
+                               if canon(x.codart) == canon(f.codart) and _origen(x) == o)
                 if servidas <= pedidas:
                     # Una proforma de dos máquinas: un albarán de una y la
                     # factura de la otra son dos entregas, no la misma.
@@ -188,24 +195,30 @@ def _emparejar(filas: list[Any], proformas: dict[tuple[str, int, str], float],
     return queda, cubre
 
 
-def _pedidas_en_proformas(session: Session, filas: list[Any]) -> dict[tuple[str, int, str], float]:
-    """Unidades de cada artículo en las proformas de las que salen las líneas
-    (`P`, serie, número). Si un número se repite en dos años, el mayor."""
+def _pedidas_en_proformas(session: Session, filas: list[Any], canon: Any = None,
+                          ) -> dict[tuple[str, int, str], float]:
+    """Unidades de cada modelo (`canon`) en las proformas de las que salen las
+    líneas (`P`, serie, número). Si un número se repite en dos años, el mayor."""
+    canon = canon or (lambda c: c)
     refs = {(o[1], o[2]) for f in filas if (o := _origen(f)) and o[0] == "P"}
     if not refs:
         return {}
     lin, doc = HistoricoLinea, HistoricoDocumento
-    out: dict[tuple[str, int, str], float] = {}
-    for serie, codigo, codart, total in session.execute(
-        select(doc.serie, doc.codigo, lin.codart, func.sum(lin.cantidad))
+    por_anio: dict[tuple[str, str, int, str], float] = {}
+    for ejercicio, serie, codigo, codart, total in session.execute(
+        select(doc.ejercicio, doc.serie, doc.codigo, lin.codart, func.sum(lin.cantidad))
         .join(doc, doc.id == lin.documento_id)
         .where(doc.tipo == TIPO_PRESUPUESTO, doc.codigo.in_(sorted({c for _, c in refs})),
                lin.es_producto.is_(True))
         .group_by(doc.ejercicio, doc.serie, doc.codigo, lin.codart)
     ):
         if (serie, int(codigo)) in refs:
-            k = (serie, int(codigo), codart or "")
-            out[k] = max(out.get(k, 0.0), float(total or 0))
+            k = (ejercicio, serie, int(codigo), canon(codart) or "")
+            por_anio[k] = por_anio.get(k, 0.0) + float(total or 0)
+    out: dict[tuple[str, int, str], float] = {}
+    for (_ej, serie, codigo, modelo), total in por_anio.items():
+        k = (serie, codigo, modelo)
+        out[k] = max(out.get(k, 0.0), total)
     return out
 
 
@@ -216,7 +229,10 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
     if not codigos:
         return []
     art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
-    propia = HistoricoArticuloClase
+    eq = equivalencias.cargar(session)
+    maquinas = _codigos_maquina(session, eq)
+    if not maquinas:
+        return []
     filas = session.execute(
         select(lin.ejercicio, doc.tipo, doc.serie, doc.codigo, doc.fecha, doc.fecha_original,
                doc.estado, lin.posicion, lin.codart, lin.descripcion.label("lin_desc"),
@@ -225,26 +241,27 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
         .join(doc, doc.id == lin.documento_id)
         .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == lin.codart))
         .outerjoin(fam, fam.codigo == art.familia)
-        .outerjoin(propia, propia.codart == lin.codart)
         .where(doc.codcli.in_(codigos), doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
                lin.es_producto.is_(True),
                # Máquina SOLO si el artículo está marcado (31/10/2026): la clase
-               # de la familia ya no basta. Y solo las series que cuentan.
-               propia.clase == CLASE_MAQUINA,
+               # de la familia ya no basta. Un código equivalente sin decisión
+               # propia va con su grupo. Y solo las series que cuentan.
+               func.upper(lin.codart).in_(sorted(maquinas)),
                *([doc.serie.notin_(sorted(fuera))] if (fuera := series_excluidas(session))
                  else []))
     ).all()
-    proformas = _pedidas_en_proformas(session, filas)
-    queda, cubre = _emparejar(filas, proformas)
+    canon = eq.canonico
+    proformas = _pedidas_en_proformas(session, filas, canon)
+    queda, cubre = _emparejar(filas, proformas, canon)
     enlazados = set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
         HistoricoEjercicio.con_enlaces.is_(True))))
     # Un abono (línea en negativo) anula la venta más reciente de ese artículo.
     abonado: dict[str, float] = {}
     for f in filas:
         if (f.cantidad or 0) < 0:
-            abonado[f.codart] = abonado.get(f.codart, 0.0) - float(f.cantidad)
+            abonado[canon(f.codart)] = abonado.get(canon(f.codart), 0.0) - float(f.cantidad)
     facturas = [f for f in filas if f.tipo == TIPO_FACTURA and (f.cantidad or 0) > 0]
-    facturados = {f.codart for f in facturas}
+    facturados = {canon(f.codart) for f in facturas}
     filas = sorted(filas, key=lambda f: (f.fecha is not None, f.fecha or date.min), reverse=True)
     out = []
     for f in filas:
@@ -260,7 +277,7 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
                 # Año aún sin recargar (sin el enlace de las líneas): la regla
                 # de antes, para no duplicar mientras tanto.
                 if f.estado == ALBARAN_FACTURADO or (f.estado is None
-                                                     and f.codart in facturados):
+                                                     and canon(f.codart) in facturados):
                     continue
             # Con el enlace, manda el emparejado: un `ESTALB` 1 puede venir
             # heredado de la proforma sin que haya factura. Lo que no se casa
@@ -270,16 +287,16 @@ def maquinas_volcadas(session: Session, codcli: str | None) -> list[dict[str, An
             # Cualquier factura del artículo cerca (31/10/2026): también la que
             # ya cubre otro albarán. Un segundo albarán suelto junto a una
             # factura ya emparejada es justo el duplicado que hay que ver.
-            cerca = [x for x in facturas if x.codart == f.codart
+            cerca = [x for x in facturas if canon(x.codart) == canon(f.codart)
                      and f not in cubre.get(id(x), [])     # no su propia factura
                      and _dias(x, f) <= DIAS_MISMA_VENTA]
             if cerca:
                 x = min(cerca, key=lambda x: _dias(x, f))
                 sospecha = {"tipo": x.tipo, "serie": x.serie, "codigo": x.codigo,
                             "ejercicio": x.ejercicio, "numero": _ref(x)}
-        if abonado.get(f.codart, 0) > 0:
-            anula = min(cantidad, abonado[f.codart])
-            abonado[f.codart] -= anula
+        if abonado.get(canon(f.codart), 0) > 0:
+            anula = min(cantidad, abonado[canon(f.codart)])
+            abonado[canon(f.codart)] -= anula
             cantidad -= anula
             if cantidad <= 0:
                 continue
@@ -321,7 +338,7 @@ def _mismo_modelo(a: str | None, b: str | None) -> bool:
     return bool(pa) and pa == pb and bool(wa & wb)
 
 
-def avisar_mismo_modelo(rows: list[dict[str, Any]]) -> None:
+def avisar_mismo_modelo(rows: list[dict[str, Any]], eq: Any = None) -> None:
     """A cada máquina en servicio le apunta las otras del mismo cliente que
     parecen el mismo modelo con OTRO código (la de FACTUSOL y la de la web)."""
     activas = [r for r in rows if r["baja"] is None and r.get("codart")]
@@ -331,6 +348,8 @@ def avisar_mismo_modelo(rows: list[dict[str, Any]]) -> None:
         for b in activas[i + 1:]:
             if (a["codart"] or "").strip().upper() == (b["codart"] or "").strip().upper():
                 continue
+            if eq is not None and eq.declarado(a["codart"], b["codart"]):
+                continue    # par declarado: ya se emparejan; no se avisa
             if not _mismo_modelo(a["articulo"], b["articulo"]):
                 continue
             for x, y in ((a, b), (b, a)):
@@ -338,6 +357,23 @@ def avisar_mismo_modelo(rows: list[dict[str, Any]]) -> None:
                     "codart": y["codart"], "articulo": y["articulo"],
                     "documento": y.get("documento"), "ejercicio": y.get("ejercicio"),
                 })
+
+
+def _codigos_maquina(session: Session, eq: Any) -> set[str]:
+    """Los códigos (en mayúsculas) que cuentan como máquina: los marcados, y
+    los equivalentes de un marcado que no tengan decisión propia (si Bart
+    dijo que uno del grupo no es máquina, eso manda)."""
+    marcas = {equivalencias.clave(p.codart): p.clase
+              for p in session.scalars(select(HistoricoArticuloClase))}
+    out: set[str] = set()
+    for k, clase in marcas.items():
+        if clase != CLASE_MAQUINA:
+            continue
+        for c in eq.grupo(k):
+            kc = equivalencias.clave(c)
+            if marcas.get(kc, CLASE_MAQUINA) == CLASE_MAQUINA:
+                out.add(kc)
+    return out
 
 
 def parque(session: Session, company: Any) -> dict[str, Any]:
@@ -351,9 +387,11 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         select(ParqueBaja).where(ParqueBaja.clave.in_(claves)))} if claves else {}
     rows: list[dict[str, Any]] = []
     for m in volcadas:
-        # La baja de la fila o la de uno de sus albaranes (dada cuando el
-        # albarán aún salía solo, antes de emparejarlo con su factura).
-        b = next((bajas[c] for c in _claves_de(m) if c in bajas), None)
+        # La baja de la fila o la de uno de sus albaranes del MISMO código
+        # (dada cuando el albarán aún salía solo, antes de emparejarlo). La de
+        # un albarán con el código equivalente no se hereda: antes de declarar
+        # el par salían como dos y esa baja era la del duplicado (1/11/2026).
+        b = next((bajas[c] for c in _claves_heredables(m) if c in bajas), None)
         rows.append({**m, "id": None, "gama_nombre": gamas.get(m["gama"] or "", m["gama"]),
                      "baja": _baja(b.at, b.motivo, b.por) if b else None})
     for m in session.scalars(select(ParqueMaquinaManual).where(
@@ -370,7 +408,7 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
     # Activas primero; dentro, las más recientes arriba.
     rows.sort(key=lambda r: (r["fecha"] or f"{r['ejercicio'] or '0000'}-00-00"), reverse=True)
     rows.sort(key=lambda r: r["baja"] is not None)
-    avisar_mismo_modelo(rows)
+    avisar_mismo_modelo(rows, equivalencias.cargar(session))
     activas = [r for r in rows if r["baja"] is None]
     return {
         "codcli": codcli,
@@ -380,6 +418,12 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         "maquinas": rows,
         "activas": len(activas),
     }
+
+
+def _claves_heredables(m: dict[str, Any]) -> list[str]:
+    mio = equivalencias.clave(m["codart"])
+    return [m["clave"], *(a["clave"] for a in m.get("albaranes") or []
+                          if equivalencias.clave(a["clave"].rsplit("|", 1)[-1]) == mio)]
 
 
 def _claves_de(m: dict[str, Any]) -> list[str]:
@@ -453,7 +497,7 @@ def reactivar(session: Session, company: Any, *, clave: str | None = None,
         # cliente vinculado, la empresa que la ve es la que puede deshacerla.
         fila = next((x for x in maquinas_volcadas(session, company.factusol_company_id)
                      if x["clave"] == clave), None)
-        borrar = [b for c in (_claves_de(fila) if fila else [])
+        borrar = [b for c in (_claves_heredables(fila) if fila else [])
                   if (b := session.get(ParqueBaja, c)) is not None]
         if not borrar:
             raise LookupError("maquina")
