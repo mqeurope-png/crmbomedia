@@ -102,6 +102,20 @@ def _to_read(session: Session, row: Company) -> CompanyRead:
     return read
 
 
+def _sector_valido(payload: CompanyWrite, actual: str | None) -> None:
+    """El sector, de la lista (1/11/2026). El texto anterior de una empresa
+    se conserva si no se toca. 422 si es otro texto."""
+    from app.services.sectores import valida_sector  # noqa: PLC0415
+
+    try:
+        payload.sector = valida_sector(payload.sector, actual)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Ese sector no está en la lista: elige uno de la lista de sectores.",
+        ) from exc
+
+
 def _apply(row: Company, payload: CompanyWrite) -> None:
     """Snapshot-style update — clears NULL when the operator
     explicitly sends an empty value. Matches the v2.4d draft
@@ -251,6 +265,7 @@ def create_company(
             },
         )
     row = Company(name=payload.name)
+    _sector_valido(payload, None)
     _apply(row, payload)
     session.add(row)
     # Fase VIES: empresa de la UE con NIF-IVA → se valida al vuelo (timeout
@@ -503,6 +518,7 @@ def update_company(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Ya existe otra empresa con ese dominio.",
             )
+    _sector_valido(payload, row.sector)
     _apply(row, payload)
     # Fase VIES: si cambió el NIF-IVA (o toca revalidar) se consulta VIES;
     # con el mismo NIF-IVA y un resultado reciente no se vuelve a llamar.
@@ -791,6 +807,9 @@ class CompanyBulkResult(BaseModel):
     action: CompanyBulkAction
     affected_count: int
     company_ids: list[str]
+    #: `change_sector` sin sobrescribir: las que ya tenían OTRO sector y no
+    #: se han tocado.
+    skipped_count: int = 0
 
 
 @router.post("/bulk-action", response_model=CompanyBulkResult)
@@ -826,6 +845,7 @@ def bulk_company_action(
     )
 
     affected: list[str] = []
+    skipped = 0
     metadata: dict[str, Any] = {"action": payload.action}
 
     if payload.action in ("activate", "deactivate"):
@@ -836,18 +856,35 @@ def bulk_company_action(
                 affected.append(row.id)
         metadata["is_active"] = target
     elif payload.action == "change_sector":
+        from app.services.sectores import valida_sector  # noqa: PLC0415
+
         sector = payload.payload.get("sector")
         if not isinstance(sector, str) or not sector.strip():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="`payload.sector` is required for change_sector.",
             )
-        sector = sector.strip()
+        try:
+            sector = valida_sector(sector)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ese sector no está en la lista: elige uno de la lista de sectores.",
+            ) from exc
+        # Por defecto NO pisa (1/11/2026): solo rellena las que no tienen
+        # sector. Con `sobrescribir`, cambia también las que tienen otro.
+        sobrescribir = bool(payload.payload.get("sobrescribir"))
         for row in rows:
-            if row.sector != sector:
-                row.sector = sector
-                affected.append(row.id)
+            if row.sector == sector:
+                continue
+            if (row.sector or "").strip() and not sobrescribir:
+                skipped += 1
+                continue
+            row.sector = sector
+            affected.append(row.id)
         metadata["sector"] = sector
+        metadata["sobrescribir"] = sobrescribir
+        metadata["omitidas"] = skipped
     else:  # pragma: no cover — Literal exhausts this
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -869,4 +906,5 @@ def bulk_company_action(
         action=payload.action,
         affected_count=len(affected),
         company_ids=affected,
+        skipped_count=skipped,
     )

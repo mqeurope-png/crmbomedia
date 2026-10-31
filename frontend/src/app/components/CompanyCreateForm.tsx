@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { SECTORES } from "../lib/sectores";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Cap, can } from "../lib/capabilities";
 import { getCurrentUser } from "../lib/api";
@@ -575,8 +576,10 @@ export function CompanyCreateForm({
           </label>
           <label className="field">
             <span>Sector</span>
-            <input type="text" value={sector} maxLength={120}
-                   onChange={(e) => setSector(e.target.value)} />
+            <select value={sector} aria-label="Sector" onChange={(e) => setSector(e.target.value)}>
+              <option value="">Sin sector</option>
+              {SECTORES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
           </label>
         </div>
         <label className="field">

@@ -1,6 +1,7 @@
 "use client";
 
 import { Building2, FileText, Save, Users } from "lucide-react";
+import { SECTORES, esSectorDeLaLista } from "../../lib/sectores";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -708,11 +709,18 @@ export default function CompanyDetailPage() {
             </label>
             <label className="field">
               Sector
-              <input
-                type="text"
+              <select
                 value={company.sector ?? ""}
+                aria-label="Sector"
                 onChange={(e) => onChange("sector", e.target.value || null)}
-              />
+              >
+                <option value="">Sin sector</option>
+                {SECTORES.map((s) => <option key={s} value={s}>{s}</option>)}
+                {/* Lo escrito antes de la lista se conserva mientras no se cambie. */}
+                {company.sector && !esSectorDeLaLista(company.sector) ? (
+                  <option value={company.sector}>{company.sector} (texto anterior)</option>
+                ) : null}
+              </select>
             </label>
             <label className="field">
               País

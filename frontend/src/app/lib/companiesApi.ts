@@ -206,6 +206,8 @@ export type CompanyBulkResult = {
   action: CompanyBulkAction;
   affected_count: number;
   company_ids: string[];
+  /** `change_sector` sin sustituir: las que ya tenían otro sector. */
+  skipped_count?: number;
 };
 
 export async function bulkCompanyAction(
