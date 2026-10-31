@@ -203,3 +203,44 @@ def test_0161_palabra_entera_en_hexa_y_lamina(alembic_setup):
     command.downgrade(cfg, "20261101_0160")
     assert "palabra_entera" not in {c["name"] for c in inspect(engine).get_columns(
         "historico_reglas_articulo")}
+
+
+def test_0162_clasifica_las_tres_sin_clase_y_no_toca_uv_ni_lo_de_bart(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0161")
+    with engine.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO historico_familias (codigo, descripcion, clase, gama, clase_por) VALUES "
+            "('071', 'Fluxlasers', NULL, NULL, NULL), "
+            "('251', 'Flux no en la web', NULL, NULL, NULL), "
+            "('118', 'GENERAL', NULL, NULL, NULL), "
+            "('UV', 'UV', 'otro', NULL, 'bart'), "
+            "('021', 'FLUX', 'maquina', 'laser', 'bart')")
+        c.exec_driver_sql("INSERT INTO historico_articulos_clase (codart, clase, por) "
+                          "VALUES ('A1', 'maquina', 'bart')")
+    command.upgrade(cfg, "20261101_0162")
+
+    def familias():
+        with engine.connect() as c:
+            return {k: (cl, g) for k, cl, g in c.exec_driver_sql(
+                "SELECT codigo, clase, gama FROM historico_familias").all()}
+
+    assert familias() == {"071": ("maquina", "laser"), "251": ("consumible", "laser"),
+                          "118": ("otro", None), "UV": ("otro", None),
+                          "021": ("maquina", "laser")}
+    with engine.connect() as c:
+        negativas = {p for (p,) in c.exec_driver_sql(
+            "SELECT patron FROM historico_reglas_articulo WHERE orden = 162 "
+            "AND tipo = 'no_maquina'").all()}
+        marcas = c.exec_driver_sql("SELECT COUNT(*) FROM historico_articulos_clase").scalar()
+    assert negativas == {"MODULE", "MÓDULO", "ROTATORIO"} and marcas == 1
+    # Bart cambia la 251 después: el downgrade no la toca.
+    with engine.begin() as c:
+        c.exec_driver_sql("UPDATE historico_familias SET clase = 'recambio', clase_por = 'bart' "
+                          "WHERE codigo = '251'")
+    command.downgrade(cfg, "20261101_0161")
+    assert familias() == {"071": (None, None), "251": ("recambio", "laser"),
+                          "118": (None, None), "UV": ("otro", None),
+                          "021": ("maquina", "laser")}

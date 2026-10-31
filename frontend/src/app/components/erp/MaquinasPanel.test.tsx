@@ -126,3 +126,15 @@ test("la casilla «palabra entera» de una pista", async () => {
   await user.click(screen.getByLabelText("Palabra entera LENS"));
   expect(api().cambiarPalabraEnteraPista).toHaveBeenCalledWith(1, true);
 });
+
+test("lo vendido que no está en ningún catálogo se cuenta, para que se vea el agujero", async () => {
+  api().getHistoricoMaquinas.mockResolvedValue({
+    ...DATOS, sin_catalogo: { articulos: 2, lineas: 9, items: [
+      { codart: "BORRADO9", descripcion: "ARTICULO BORRADO FIGURANTE", lineas: 7 },
+      { codart: "BORRADO8", descripcion: null, lineas: 2 }] },
+  });
+  render(<MaquinasPanel puedeEditar />);
+  expect(await screen.findByText("2 artículos vendidos no están en ningún catálogo")).toBeInTheDocument();
+  expect(screen.getByText(/\(9 líneas\)/)).toBeInTheDocument();
+  expect(screen.getByText("BORRADO9")).toBeInTheDocument();
+});

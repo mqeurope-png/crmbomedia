@@ -76,6 +76,9 @@ export default function HistoricoPage() {
   const [familias, setFamilias] = useState<HistoricoFamilia[]>([]);
   const [gamas, setGamas] = useState<HistoricoGama[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /** No se pudo leer quién es el usuario: la tabla queda en solo lectura y se
+   *  dice (antes se quedaba en texto plano sin explicar por qué). */
+  const [sinUsuario, setSinUsuario] = useState(false);
 
   const cargarEstado = useCallback(async () => {
     try {
@@ -95,7 +98,7 @@ export default function HistoricoPage() {
   }, []);
 
   useEffect(() => {
-    getCurrentUser().then(setUsuario).catch(() => undefined);
+    getCurrentUser().then(setUsuario).catch(() => setSinUsuario(true));
     void cargarEstado();
     void cargarFamilias();
   }, [cargarEstado, cargarFamilias]);
@@ -161,6 +164,7 @@ export default function HistoricoPage() {
           familias={familias}
           gamas={gamas}
           puedeClasificar={can(usuario, Cap.CONFIG)}
+          motivoSoloLectura={sinUsuario ? "sin_usuario" : usuario ? "sin_permiso" : null}
           onRecargar={cargarFamilias}
         />
       ) : null}
@@ -436,11 +440,13 @@ const ESTADO_PROPUESTA: Record<string, { texto: string; tono: string }> = {
 };
 
 function FamiliasPanel({
-  familias, gamas, puedeClasificar, onRecargar,
+  familias, gamas, puedeClasificar, motivoSoloLectura = null, onRecargar,
 }: {
   familias: HistoricoFamilia[];
   gamas: HistoricoGama[];
   puedeClasificar: boolean;
+  /** Por qué la tabla no se puede editar (si no se puede). */
+  motivoSoloLectura?: "sin_usuario" | "sin_permiso" | null;
   onRecargar: () => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -489,6 +495,13 @@ function FamiliasPanel({
         consumible); la gama, en una máquina, qué es, y en lo demás, para qué máquina sirve.
         Se conservan al recargar.
       </p>
+      {!puedeClasificar && motivoSoloLectura ? (
+        <p className="form-hint" role="note">
+          {motivoSoloLectura === "sin_usuario"
+            ? "Solo lectura: no se ha podido comprobar tu usuario. Recarga la página para poder clasificar."
+            : "Solo lectura: clasificar las familias y marcar las máquinas es de quien tiene «Configuración ERP» (hoy, el administrador)."}
+        </p>
+      ) : null}
       {puedeClasificar ? (
         <div className="erp-historico-acciones erp-historico-propuestas">
           <button
@@ -584,7 +597,8 @@ function FamiliasPanel({
                       <>
                         <span className={`badge ${marca.tono}`}>{marca.texto}</span>{" "}
                         {textoPropuesta(f)}
-                        {puedeClasificar && p && (p.estado === "revisar" || p.estado === "propuesta") ? (
+                        {puedeClasificar && p
+                          && (p.estado === "revisar" || p.estado === "propuesta" || p.estado === "descartada") ? (
                           <span className="erp-historico-acciones">
                             <button
                               type="button"

@@ -78,6 +78,8 @@ MARCA_LOTE = "(dar por revisadas {familia})"
 #: (abren la palabra que ensucian: HEXAGONAL, LAMINADORA).
 PISTAS_MAQUINA_0161 = ("LAMINADORA", "ENCELOFANADORA")
 PALABRA_ENTERA_0161 = ("HEXA", "LAMINA")
+#: 0162: negativas de módulos y rotatorios que empiezan por BEAMBOX o ADOR.
+PISTAS_NO_0162 = ("MODULE", "MÓDULO", "ROTATORIO")
 PISTA_SI, PISTA_NO = "maquina", "no_maquina"
 PROPUESTA_SI, PROPUESTA_NO, PROPUESTA_DUDOSA = "maquina", "no_maquina", "dudoso"
 
@@ -119,14 +121,35 @@ def series_excluidas(session: Session) -> set[str]:
         HistoricoSerie.cuenta.is_(False))))
 
 
+def nombres_de_serie(session: Session) -> dict[str, str]:
+    """El nombre de cada serie, como lo enseña Ajustes ERP (1/11/2026): el
+    nombre puesto a la serie; si no, el de la empresa emisora de esa serie;
+    si no, su abreviatura. Antes solo se miraba el primero, que casi nunca
+    se rellena, y todas salían «sin nombre»."""
+    from app.erp.factusol_pdf import merge_companies  # noqa: PLC0415
+    from app.erp.seguimiento import series_abbreviations_config  # noqa: PLC0415
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        series_config,
+        series_names,
+    )
+
+    cfg = series_config(session)
+    out = {str(k): v for k, v in series_abbreviations_config(
+        cfg.get("series_abbreviations")).items() if v}
+    for k, comp in merge_companies(cfg.get("companies")).items():
+        nombre = str((comp or {}).get("nombre") or "").strip()
+        if nombre:
+            out[str(k)] = nombre
+    out.update({str(k): v for k, v in series_names(session).items()})
+    return out
+
+
 def series(session: Session) -> dict[str, Any]:
     """Las series de las ventas volcadas, con su nombre (Ajustes ERP) si lo
     tiene, cuántos documentos y líneas tienen, y si cuentan. Y lo que se
     queda fuera con lo marcado."""
-    from app.integrations.factusol.service import series_names  # noqa: PLC0415
-
     doc, lin = HistoricoDocumento, HistoricoLinea
-    nombres = {str(k): v for k, v in series_names(session).items()}
+    nombres = nombres_de_serie(session)
     fuera = series_excluidas(session)
     docs = dict(session.execute(
         select(doc.serie, func.count(doc.id)).where(doc.tipo.in_(TIPOS_VENTA))
@@ -301,19 +324,82 @@ def guardar_umbral(session: Session, valor: float) -> float:
 # --- los artículos de las familias de máquinas -------------------------------------------
 
 
-def _vacio(session: Session) -> dict[str, Any]:
+def _k(codart: str | None) -> str:
+    """La clave de un código de artículo: sin mayúsculas ni espacios."""
+    # Sin tildes, como la colación de MySQL (que tampoco las distingue).
+    t = unicodedata.normalize("NFKD", codart or "").encode("ascii", "ignore").decode()
+    return t.strip().upper()
+
+
+def _vendidas(session: Session, fuera: set[str], solo: set[str] | None = None,
+              ) -> dict[str, tuple[int, float | None]]:
+    """Por código de artículo (tal cual viene en las líneas): líneas de venta
+    de producto de las series que cuentan, y el precio unitario máximo EN
+    VALOR ABSOLUTO (1/11/2026): un artículo del que solo hay devoluciones
+    tiene todas las líneas en negativo y es la misma máquina. Nunca la media:
+    hay líneas a 0 € de garantías y reposiciones."""
+    lin, doc = HistoricoLinea, HistoricoDocumento
+    stmt = (
+        select(lin.codart, func.count(lin.id), func.max(func.abs(lin.precio)))
+        .join(doc, doc.id == lin.documento_id)
+        .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA),
+               lin.codart.is_not(None))
+        .group_by(lin.codart)
+    )
+    if fuera:
+        stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
+    if solo is not None and session.get_bind().dialect.name == "mysql":
+        # MySQL ya compara sin mayúsculas ni tildes: se filtra por el índice
+        # de `codart` en vez de agregar todo el histórico. (En sqlite, que
+        # distingue mayúsculas, se agrega todo y se filtra en Python.)
+        if not solo:
+            return {}
+        stmt = stmt.where(lin.codart.in_(sorted(solo)))
+    return {c: (int(n), float(p) if p is not None else None)
+            for c, n, p in session.execute(stmt) if c and c.strip()}
+
+
+def sin_catalogo(session: Session,
+                 vendidas: dict[str, tuple[int, float | None]] | None = None) -> dict[str, Any]:
+    """Lo vendido cuyo código no está en NINGÚN catálogo volcado (1/11/2026):
+    no tiene familia, así que no sale en «Máquinas, artículo a artículo» ni
+    en las búsquedas por familia, y no puede entrar en el parque. Se cuenta
+    para que se vea el agujero; las más vendidas, con el nombre de la línea."""
+    lin, doc = HistoricoLinea, HistoricoDocumento
+    if vendidas is None:
+        vendidas = _vendidas(session, series_excluidas(session))
+    conocidos = {_k(c) for c in session.scalars(select(HistoricoArticulo.codart).distinct())}
+    faltan: dict[str, list[Any]] = {}
+    for c, (n, _p) in vendidas.items():
+        if _k(c) not in conocidos:
+            fila = faltan.setdefault(_k(c), [c, 0])
+            fila[1] += n
+    top = sorted(faltan.values(), key=lambda x: (-x[1], x[0]))[:50]
+    nombres = dict(session.execute(
+        select(lin.codart, func.max(lin.descripcion)).join(doc, doc.id == lin.documento_id)
+        .where(lin.codart.in_([c for c, _ in top]), doc.tipo.in_(TIPOS_VENTA))
+        .group_by(lin.codart)).all()) if top else {}
+    return {
+        "articulos": len(faltan),
+        "lineas": sum(n for _, n in faltan.values()),
+        "items": [{"codart": c, "descripcion": nombres.get(c), "lineas": n} for c, n in top],
+    }
+
+
+def _vacio(session: Session, con_sin_catalogo: bool) -> dict[str, Any]:
     return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0,
-            "umbral": umbral(session), "colisiones": 0}
+            "umbral": umbral(session), "colisiones": 0,
+            **({"sin_catalogo": sin_catalogo(session)} if con_sin_catalogo else {})}
 
 
-def articulos(session: Session) -> dict[str, Any]:
+def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, Any]:
     """Los artículos vendidos que hay que mirar: los que HOY (en el catálogo
     más reciente que los tiene) están en una familia de clase máquina, y los
     ya marcados como máquina en cualquier familia (para poder desmarcarlos).
     Una familia que fue de máquinas en un catálogo antiguo no cuenta: manda
     la clasificación actual. Por familia y por líneas vendidas (de las series
     que cuentan), con la propuesta y el estado. Y el recuento."""
-    art, lin, doc, fam = HistoricoArticulo, HistoricoLinea, HistoricoDocumento, HistoricoFamilia
+    art, fam = HistoricoArticulo, HistoricoFamilia
     propia = HistoricoArticuloClase
     fuera = series_excluidas(session)
     familias = {f.codigo: f for f in session.scalars(select(fam))}
@@ -328,49 +414,57 @@ def articulos(session: Session) -> dict[str, Any]:
     }
     candidatos |= set(session.scalars(select(propia.codart).where(
         propia.clase == CLASE_MAQUINA)))
+    # Los códigos se comparan SIN mayúsculas (1/11/2026): FACTUSOL guarda el
+    # artículo como «ADR1-3DVD» y la línea puede llevar «ADR1-3dvd». MySQL ya
+    # los casa, pero aquí se buscaban en diccionarios y salían sin familia.
+    crudos = candidatos
+    candidatos = {_k(c) for c in candidatos}
     if not candidatos:
-        return _vacio(session)
-    stmt = (
-        # El precio unitario MÁXIMO, nunca la media: hay líneas a 0 € de
-        # garantías y reposiciones.
-        select(lin.codart, func.count(lin.id), func.max(lin.precio))
-        .join(doc, doc.id == lin.documento_id)
-        .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA),
-               lin.codart.in_(sorted(candidatos)))
-        .group_by(lin.codart)
-    )
-    if fuera:
-        stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
-    filas = session.execute(stmt).all()
-    vendidos = {c: n for c, n, _ in filas}
-    precios = {c: (float(p) if p is not None else None) for c, _, p in filas}
+        return _vacio(session, con_sin_catalogo)
+    vendidas = _vendidas(session, fuera, solo=crudos)
+    vendidos: dict[str, int] = {}
+    precios: dict[str, float | None] = {}
+    nombre_de: dict[str, str] = {}
+    for c, (n, p) in vendidas.items():
+        if _k(c) not in candidatos:
+            continue
+        # Una misma referencia con dos grafías se junta en la primera.
+        c0 = nombre_de.setdefault(_k(c), c)
+        vendidos[c0] = vendidos.get(c0, 0) + n
+        if p is not None:
+            precios[c0] = max(precios.get(c0) or 0.0, p)
+        else:
+            precios.setdefault(c0, None)
     if not vendidos:
-        return _vacio(session)
+        return _vacio(session, con_sin_catalogo)
     # Nombre y familia: los del catálogo más reciente que lo tenga.
     catalogo: dict[str, HistoricoArticulo] = {}
-    for a in session.scalars(select(art).where(art.codart.in_(list(vendidos)))
-                             .order_by(art.ejercicio)):
-        catalogo[a.codart] = a
-    propias = {p.codart: p.clase for p in session.scalars(
-        select(propia).where(propia.codart.in_(list(vendidos))))}
+    for a in session.scalars(select(art).where(
+            func.upper(art.codart).in_(sorted(_k(c) for c in vendidos)))
+            .order_by(art.ejercicio)):
+        catalogo[_k(a.codart)] = a
+    filas_propias = list(session.scalars(select(propia).where(
+        func.upper(propia.codart).in_(sorted(_k(c) for c in vendidos)))))
+    propias = {_k(p.codart): p.clase for p in filas_propias}
+    lotes = {_k(p.codart): p.por for p in filas_propias}
     todas = reglas(session)
     si = _compilar([(r["patron"], r["palabra_entera"]) for r in todas if r["tipo"] == PISTA_SI])
     no = _compilar([(r["patron"], r["palabra_entera"]) for r in todas if r["tipo"] == PISTA_NO])
     corte = umbral(session)
-    lotes = {p.codart: p.por for p in session.scalars(
-        select(propia).where(propia.codart.in_(list(vendidos))))}
     items = []
     for codart, n in vendidos.items():
-        a = catalogo.get(codart)
+        a = catalogo.get(_k(codart))
         f = familias.get(a.familia) if a and a.familia else None
-        clase = propias.get(codart)
+        clase = propias.get(_k(codart))
         estado = (MARCADA if clase == CLASE_MAQUINA else
                   SIN_REVISAR if clase is None else NO_MAQUINA)
         hoy = proponer(a.descripcion if a else None, si, no,
                        precio_max=precios.get(codart), umbral=corte)
         revisada = estado != SIN_REVISAR
         items.append({
-            "codart": codart, "descripcion": a.descripcion if a else None,
+            # El código del catálogo (no la grafía de la línea): es con el que
+            # se guarda la marca y con el que la buscan las demás pantallas.
+            "codart": a.codart if a else codart, "descripcion": a.descripcion if a else None,
             "familia": a.familia if a else None,
             "familia_nombre": f.descripcion if f else None, "gama": f.gama if f else None,
             "familia_clase": f.clase if f else None,
@@ -388,7 +482,7 @@ def articulos(session: Session) -> dict[str, Any]:
                            else None),
             # Dada por revisada con el botón de SU familia de hoy (lo que
             # deshace ese mismo botón).
-            "en_lote": bool(a and a.familia and (lotes.get(codart) or "").endswith(
+            "en_lote": bool(a and a.familia and (lotes.get(_k(codart)) or "").endswith(
                 MARCA_LOTE.format(familia=a.familia))),
         })
     items.sort(key=lambda i: (i["familia"] or "~", -i["lineas"], i["codart"]))
@@ -399,6 +493,7 @@ def articulos(session: Session) -> dict[str, Any]:
         "sin_revisar": sum(1 for i in items if i["estado"] == SIN_REVISAR),
         "umbral": corte,
         "colisiones": sum(1 for i in items if i["propondria"]),
+        **({"sin_catalogo": sin_catalogo(session)} if con_sin_catalogo else {}),
         # Lo que «Aceptar todas» aplicaría: sin revisar Y con propuesta clara.
         "propuestas": sum(1 for i in items if i["estado"] == SIN_REVISAR
                           and i["propuesta"] in (PROPUESTA_SI, PROPUESTA_NO)),
@@ -412,7 +507,7 @@ def marcar(session: Session, codart: str, es_maquina: bool, *, por: str,
     «No es una máquina» del parque), que se respeta."""
     codart = (codart or "").strip()
     if session.scalar(select(HistoricoArticulo.codart).where(
-            HistoricoArticulo.codart == codart).limit(1)) is None:
+            func.upper(HistoricoArticulo.codart) == _k(codart)).limit(1)) is None:
         raise LookupError("articulo")
     fila = session.get(HistoricoArticuloClase, codart)
     if solo_sin_revisar and fila is not None:

@@ -336,7 +336,7 @@ class SerieCuentaIn(BaseModel):
 def _maquinas(session: Session) -> dict[str, Any]:
     from app.erp import historico_maquinas  # noqa: PLC0415
 
-    return {**historico_maquinas.articulos(session),
+    return {**historico_maquinas.articulos(session, con_sin_catalogo=True),
             "reglas": historico_maquinas.reglas(session)}
 
 
