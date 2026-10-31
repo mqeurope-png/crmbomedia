@@ -387,9 +387,11 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         select(ParqueBaja).where(ParqueBaja.clave.in_(claves)))} if claves else {}
     rows: list[dict[str, Any]] = []
     for m in volcadas:
-        # La baja de la fila o la de uno de sus albaranes (dada cuando el
-        # albarán aún salía solo, antes de emparejarlo con su factura).
-        b = next((bajas[c] for c in _claves_de(m) if c in bajas), None)
+        # La baja de la fila o la de uno de sus albaranes del MISMO código
+        # (dada cuando el albarán aún salía solo, antes de emparejarlo). La de
+        # un albarán con el código equivalente no se hereda: antes de declarar
+        # el par salían como dos y esa baja era la del duplicado (1/11/2026).
+        b = next((bajas[c] for c in _claves_heredables(m) if c in bajas), None)
         rows.append({**m, "id": None, "gama_nombre": gamas.get(m["gama"] or "", m["gama"]),
                      "baja": _baja(b.at, b.motivo, b.por) if b else None})
     for m in session.scalars(select(ParqueMaquinaManual).where(
@@ -416,6 +418,12 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         "maquinas": rows,
         "activas": len(activas),
     }
+
+
+def _claves_heredables(m: dict[str, Any]) -> list[str]:
+    mio = equivalencias.clave(m["codart"])
+    return [m["clave"], *(a["clave"] for a in m.get("albaranes") or []
+                          if equivalencias.clave(a["clave"].rsplit("|", 1)[-1]) == mio)]
 
 
 def _claves_de(m: dict[str, Any]) -> list[str]:
@@ -489,7 +497,7 @@ def reactivar(session: Session, company: Any, *, clave: str | None = None,
         # cliente vinculado, la empresa que la ve es la que puede deshacerla.
         fila = next((x for x in maquinas_volcadas(session, company.factusol_company_id)
                      if x["clave"] == clave), None)
-        borrar = [b for c in (_claves_de(fila) if fila else [])
+        borrar = [b for c in (_claves_heredables(fila) if fila else [])
                   if (b := session.get(ParqueBaja, c)) is not None]
         if not borrar:
             raise LookupError("maquina")

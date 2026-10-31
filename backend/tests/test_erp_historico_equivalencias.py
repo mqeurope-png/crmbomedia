@@ -149,3 +149,31 @@ def test_la_migracion_siembra_los_cinco_pares() -> None:
     modulo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     assert modulo.PARES == eq.PARES_FLUX
+
+
+# --- lo que encontró la revisión -------------------------------------------------------
+
+
+def test_quien_compro_que_no_cuenta_dos_veces_la_misma_venta(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        uno = next(c for c in historico.compradores(s, codart=INTERNO) if c["codcli"] == UNO)
+        assert (uno["unidades"], uno["compras"]) == (1, 1)
+
+
+def test_la_baja_del_duplicado_no_se_hereda_al_declarar_el_par(session_factory) -> None:  # noqa: F811
+    ids = _preparar(session_factory, pares=())
+    with session_factory() as s:
+        empresa = s.get(Company, ids["uno"])
+        alb = next(m for m in _maquinas(s, ids["uno"]) if m["codart"] == INTERNO)
+        parque.dar_baja(s, empresa, clave=alb["clave"], motivo="duplicado", por="bart")
+        eq.declarar(s, INTERNO, WEB, por="bart")
+        r = parque.parque(s, empresa)
+        assert r["activas"] == 1 and r["maquinas"][0]["codart"] == WEB
+
+
+def test_quitar_el_canonico_deshace_el_grupo(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        eq.quitar(s, INTERNO)
+        assert eq.listar(s) == []

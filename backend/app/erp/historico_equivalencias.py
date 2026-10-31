@@ -129,9 +129,13 @@ def declarar(session: Session, canonico: str, codart: str, *, por: str) -> None:
 
 
 def quitar(session: Session, codart: str) -> None:
-    fila = next((e for e in session.scalars(select(HistoricoEquivalencia))
-                 if clave(e.codart) == clave(codart)), None)
-    if fila is None:
+    """Quita la equivalencia de `codart`. Si `codart` es el canónico de un
+    grupo (no tiene fila propia), deshace el grupo entero."""
+    todas = list(session.scalars(select(HistoricoEquivalencia)))
+    filas = [e for e in todas if clave(e.codart) == clave(codart)] or \
+            [e for e in todas if clave(e.canonico) == clave(codart)]
+    if not filas:
         raise LookupError("equivalencia")
-    session.delete(fila)
+    for f in filas:
+        session.delete(f)
     session.commit()

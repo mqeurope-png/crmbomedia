@@ -540,6 +540,9 @@ def compradores(
     if not (codart or q or familia or clase or gama):
         return []
 
+    from app.erp import historico_equivalencias as _eq  # noqa: PLC0415
+
+    modelo = _eq.cargar(session).canonico
     clientes: dict[str, dict[str, Any]] = {}
     for (c_art, cant, ej, tipo, serie, codigo, fecha, fecha_orig, codcli, nombre,
          art_desc, _familia, lin_desc) in session.execute(stmt):
@@ -549,7 +552,9 @@ def compradores(
             "ultima": None, "_orden": None,
         })
         # Por artículo y tipo: unidades y documentos (se elige al final).
-        pa = cl["por_articulo"].setdefault(c_art, {
+        # Por MODELO: un albarán con el código interno y su factura con el de
+        # la web (códigos equivalentes) son la misma venta.
+        pa = cl["por_articulo"].setdefault(modelo(c_art), {
             TIPO_FACTURA: [0.0, set()], TIPO_ALBARAN: [0.0, set()]})
         pa[tipo][0] += float(cant or 0)
         pa[tipo][1].add((ej, tipo, serie, codigo))
