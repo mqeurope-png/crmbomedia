@@ -324,6 +324,7 @@ class ReglaArticuloIn(BaseModel):
     patron: str = Field(min_length=1, max_length=64)
     #: `maquina` (el nombre dice que lo es) o `no_maquina` (delata que no).
     tipo: str = Field(default="no_maquina", pattern="^(maquina|no_maquina)$")
+    palabra_entera: bool = False
 
 
 class SerieCuentaIn(BaseModel):
@@ -452,9 +453,33 @@ def crear_regla_articulo(
     from app.erp import historico_maquinas  # noqa: PLC0415
 
     try:
-        historico_maquinas.guardar_regla(session, body.patron, body.tipo)
+        historico_maquinas.guardar_regla(session, body.patron, body.tipo,
+                                         palabra_entera=body.palabra_entera)
     except ValueError as exc:
         raise _no_valido(exc) from exc
+    return _maquinas(session)
+
+
+class PalabraEnteraIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    palabra_entera: bool
+
+
+@router.put("/reglas-articulo/{regla_id}")
+def cambiar_regla_articulo(
+    regla_id: int,
+    body: PalabraEnteraIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_config),
+) -> dict[str, Any]:
+    """La casilla «palabra entera» de una pista."""
+    from app.erp import historico_maquinas  # noqa: PLC0415
+
+    try:
+        historico_maquinas.cambiar_palabra_entera(session, regla_id, body.palabra_entera)
+    except LookupError as exc:
+        raise _no_existe(exc, "regla") from exc
     return _maquinas(session)
 
 

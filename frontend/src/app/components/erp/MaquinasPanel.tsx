@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   aceptarPropuestasMaquinas,
   borrarPistaArticulo,
+  cambiarPalabraEnteraPista,
   cambiarUmbralMaquinas,
   crearPistaArticulo,
   darPorRevisadasFamilia,
@@ -58,6 +59,7 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
   const [confirmarLote, setConfirmarLote] = useState(false);
   const [pista, setPista] = useState("");
   const [tipoPista, setTipoPista] = useState<"maquina" | "no_maquina">("maquina");
+  const [entera, setEntera] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
 
   useEffect(() => {
@@ -263,7 +265,9 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
           <details className="erp-maquinas-pistas">
             <summary>Pistas de la propuesta ({datos.reglas.length})</summary>
             <p className="form-hint">
-              Trozos de la descripción (sin mayúsculas ni acentos: «ARTIS» casa con «ARTISJET»). Para proponer
+              Casan al principio de una palabra, sin mayúsculas ni acentos: «ARTIS» coge
+              «ARTISJET» pero «ADOR» no coge «ALIMENTADOR». Con «palabra entera», solo la
+              palabra exacta (HEXA no coge HEXAGONAL). Para proponer
               «máquina» hace falta una que diga que lo es; las que delatan un recambio, accesorio o
               consumible van después. Proponen; no deciden.
             </p>
@@ -274,6 +278,14 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
                   {datos.reglas.filter((r) => r.tipo === tipo).map((r) => (
                     <li key={r.id}>
                       <span className="mono">{r.patron}</span>
+                      <label className="small" title="Solo como palabra entera">
+                        <input type="checkbox" checked={!!r.palabra_entera}
+                               aria-label={`Palabra entera ${r.patron}`}
+                               disabled={!puedeEditar || ocupado}
+                               onChange={(e) => void hacer(() => cambiarPalabraEnteraPista(r.id, e.target.checked),
+                                 "No se ha podido cambiar la pista.")} />
+                        {" "}entera
+                      </label>
                       {puedeEditar ? (
                         <button type="button" className="button small secondary" disabled={ocupado}
                                 aria-label={`Quitar la pista ${r.patron}`}
@@ -290,8 +302,9 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
             {puedeEditar ? (
               <form className="erp-historico-acciones" onSubmit={(e) => {
                 e.preventDefault();
-                void hacer(() => crearPistaArticulo(pista.trim(), tipoPista), "No se ha podido añadir la pista.")
-                  .then((ok) => { if (ok) setPista(""); });
+                void hacer(() => crearPistaArticulo(pista.trim(), tipoPista, entera),
+                  "No se ha podido añadir la pista.")
+                  .then((ok) => { if (ok) { setPista(""); setEntera(false); } });
               }}>
                 <label className="field">
                   <span>Nueva pista</span>
@@ -304,6 +317,10 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
                     <option value="maquina">es una máquina</option>
                     <option value="no_maquina">no es una máquina</option>
                   </select>
+                </label>
+                <label className="field-toggle">
+                  <input type="checkbox" checked={entera} onChange={(e) => setEntera(e.target.checked)} />
+                  <span>Palabra entera</span>
                 </label>
                 <button type="submit" className="button small secondary" disabled={ocupado || !pista.trim()}>
                   Añadir

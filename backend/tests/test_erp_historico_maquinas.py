@@ -245,9 +245,13 @@ def test_el_aviso_no_apunta_a_la_factura_del_propio_albaran(session_factory) -> 
 # --- la propuesta exige evidencia positiva (31/10/2026) ------------------------------------
 
 
+def _pistas(lista) -> list[tuple[str, bool]]:
+    return [(p, p in hm.PALABRA_ENTERA_0161) for p in lista]
+
+
 def _propuesta(desc: str, precio: float | None = None, umbral: float = 2000) -> str | None:
-    si = hm._compilar(list(hm.PISTAS_MAQUINA + hm.PISTAS_MAQUINA_0160))
-    no = hm._compilar(list(hm.PISTAS_INICIALES + hm.PISTAS_NO_0159))
+    si = hm._compilar(_pistas(hm.PISTAS_MAQUINA + hm.PISTAS_MAQUINA_0160 + hm.PISTAS_MAQUINA_0161))
+    no = hm._compilar(_pistas(hm.PISTAS_INICIALES + hm.PISTAS_NO_0159))
     return hm.proponer(desc, si, no, precio_max=precio, umbral=umbral)["propuesta"]
 
 
@@ -423,3 +427,53 @@ def test_no_es_maquina_desde_una_pantalla_vieja_no_pisa_una_marca(session_factor
         hm.marcar(s, BEAMBOX, True, por="bart")              # en otra pestaña
         hm.marcar(s, BEAMBOX, False, por="otro", solo_sin_revisar=True)
         assert s.get(HistoricoArticuloClase, BEAMBOX).clase == "maquina"
+
+
+
+# --- al principio de palabra y «palabra entera» (1/11/2026) --------------------------------
+
+
+def test_al_principio_de_palabra_casa_el_modelo_y_no_la_pista_enterrada() -> None:
+    for desc in ("ARTISJET A3000U", "EPSON PP100", "ADR1-10DVD", "ADR 3.1 USB PRODUCER",
+                 "ADR SD PRODUCER", "FLUX HEXA 60W", "LAMINADORA A3 FIGURANTE",
+                 "ENCELOFANADORA FIGURANTE"):
+        assert _propuesta(desc) == "maquina", desc
+    # Positivas enterradas en otra palabra: ya no proponen máquina (ADAPTADOR
+    # es además una negativa: «no»).
+    for desc in ("ALIMENTADOR DE HOJAS", "ADAPTADOR USB", "CUADRO ELECTRICO", "TAMBOR",
+                 "TORNILLO HEXAGONAL"):
+        assert _propuesta(desc) not in ("maquina", "dudoso"), desc
+    # Negativas enterradas: ya no proponen «no».
+    for desc in ("PRODUCTO FIGURANTE", "SOLID STATE", "RECOVERY TOOL"):
+        assert _propuesta(desc) is None, desc
+    # LAMINA como palabra entera sigue cogiendo la lámina (y las láminas);
+    # HEXA coge el modelo con número pegado.
+    assert _propuesta("LÁMINA SILICONADA A4") == "no_maquina"
+    assert _propuesta("LÁMINAS SILICONADAS A4") == "no_maquina"
+    assert _propuesta("FLUX HEXA60W") == "maquina"
+    assert _propuesta("HEXA2 PRO") == "maquina"
+
+
+def test_positiva_y_negativa_a_la_vez_sigue_siendo_dudosa() -> None:
+    assert _propuesta("HEXA Reflect Mirror") == "dudoso"
+    assert _propuesta("SPARE PARTS BEAMBOX") == "dudoso"
+
+
+def test_la_casilla_palabra_entera_es_un_dato(session_factory) -> None:  # noqa: F811
+    with session_factory() as s:
+        r = hm.guardar_regla(s, "HEXA", hm.PISTA_SI)
+        assert r["palabra_entera"] is False
+        rx = hm._compilar([("HEXA", False)])
+        assert hm.pista("TORNILLO HEXAGONAL", rx) == "HEXA"
+        hm.cambiar_palabra_entera(s, r["id"], True)
+        assert hm.reglas(s)[0]["palabra_entera"] is True
+
+
+def test_la_migracion_0161() -> None:
+    ruta = next(Path(__file__).resolve().parents[1].glob(
+        "alembic/versions/20261101_0161_*.py"))
+    spec = importlib.util.spec_from_file_location("m0161", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    assert modulo.POSITIVAS == hm.PISTAS_MAQUINA_0161
+    assert modulo.PALABRA_ENTERA == hm.PALABRA_ENTERA_0161

@@ -184,3 +184,22 @@ def test_0160_umbral_y_positivas_sin_tocar_lo_marcado(alembic_setup):
     assert umbral == "2000" and adr == "maquina"
     command.downgrade(cfg, "20261031_0159")
     assert "historico_ajustes" not in inspect(engine).get_table_names()
+
+
+def test_0161_palabra_entera_en_hexa_y_lamina(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0161")
+    with engine.connect() as c:
+        enteras = {p for (p,) in c.exec_driver_sql(
+            "SELECT patron FROM historico_reglas_articulo WHERE palabra_entera").all()}
+        n_encelo = c.exec_driver_sql("SELECT COUNT(*) FROM historico_reglas_articulo "
+                                     "WHERE patron = 'ENCELOFANADORA'").scalar()
+        laminadora = c.exec_driver_sql("SELECT tipo FROM historico_reglas_articulo "
+                                       "WHERE patron = 'LAMINADORA'").scalar()
+    assert enteras == {"HEXA", "LAMINA"}
+    assert n_encelo == 1 and laminadora == "maquina"        # sin duplicar la de la 0159
+    command.downgrade(cfg, "20261101_0160")
+    assert "palabra_entera" not in {c["name"] for c in inspect(engine).get_columns(
+        "historico_reglas_articulo")}
