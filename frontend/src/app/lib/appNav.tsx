@@ -8,6 +8,7 @@ import {
   FileCheck,
   FileText,
   FormInput,
+  Globe,
   History,
   Kanban,
   LayoutTemplate,
@@ -269,6 +270,14 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     href: "/admin/custom-fields",
     label: "Custom fields",
     icon: Sliders,
+    scope: "crm",
+    allowedRoles: ["admin"],
+  },
+  {
+    // Los dominios de correo que nunca vinculan un contacto a una empresa.
+    href: "/admin/dominios-compartidos",
+    label: "Dominios compartidos",
+    icon: Globe,
     scope: "crm",
     allowedRoles: ["admin"],
   },

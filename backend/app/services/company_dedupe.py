@@ -44,7 +44,8 @@ UNIQUE_FILL_FIELDS: tuple[str, ...] = ("domain", "website")
 
 #: Hosts que NO son el dominio de una empresa: redes sociales, marketplaces y
 #: acortadores. No se heredan (aunque no romperían el índice, ensucian la
-#: ficha). Los free-mail salen de `company_extraction.PERSONAL_DOMAINS`.
+#: ficha). Los free-mail y los compartidos salen de la lista
+#: `dominios_compartidos` (un dato).
 GARBAGE_DOMAINS: frozenset[str] = frozenset({
     "instagram.com", "facebook.com", "m.facebook.com", "fb.com",
     "linkedin.com", "twitter.com", "x.com", "youtube.com", "youtu.be",
@@ -62,18 +63,19 @@ _BARE_DOMAIN_RE = re.compile(
 )
 
 
-def _usable_domain(value: Any) -> str | None:
+def _usable_domain(value: Any, no_emparejan: Any = None) -> str | None:
     """Normaliza un dominio/URL y devuelve el host SOLO si es un dominio de
     empresa aprovechable; None para vacío, basura (`ww`, `instagram.com`),
-    free-mail o markdown. Así un dominio basura de la absorbida no se hereda —
-    y nunca puede romper la fusión."""
-    from app.services.company_extraction import (  # noqa: PLC0415
-        PERSONAL_DOMAINS,
-        normalise_domain,
-    )
+    un dominio de la lista que no empareja (gmail.com, xtec.cat: heredarlo
+    convertiría a la superviviente en el imán de todo el que lo use) o
+    markdown. Así un dominio basura de la absorbida no se hereda — y nunca
+    puede romper la fusión."""
+    from app.services.company_extraction import normalise_domain  # noqa: PLC0415
 
     host = normalise_domain(value)
-    if not host or host in PERSONAL_DOMAINS or host in GARBAGE_DOMAINS:
+    if not host or host in GARBAGE_DOMAINS:
+        return None
+    if no_emparejan is not None and no_emparejan.contiene(host):
         return None
     return host if _BARE_DOMAIN_RE.match(host) else None
 
@@ -324,7 +326,9 @@ def _merge_into(
     from app.erp.models.ofertas import Oferta  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
     from app.models.crm import AuditLog, Contact, Task  # noqa: PLC0415
+    from app.services import dominios_compartidos  # noqa: PLC0415
 
+    no_emparejan = dominios_compartidos.cargar(session)
     moved = {"contacts_moved": 0, "orders_moved": 0, "tasks_moved": 0,
              "ofertas_moved": 0, "parque_moved": 0, "timeline_moved": 0}
     discarded_codclis: list[str] = []
@@ -386,7 +390,7 @@ def _merge_into(
             if field in inherit_unique or str(getattr(keep, field, None) or "").strip():
                 continue
             raw = getattr(other, field, None)
-            host = _usable_domain(raw)
+            host = _usable_domain(raw, no_emparejan)
             if host is None:
                 continue
             value = host if field == "domain" else str(raw).strip()

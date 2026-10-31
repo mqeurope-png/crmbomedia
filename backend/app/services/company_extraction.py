@@ -1,58 +1,22 @@
 """Heuristics for deriving a company from a contact's email/website.
 
-Used by the backfill script and the Brevo mapper. Single home so
-the personal-domain blocklist stays in one place and the title-case
-rule for "th-containers" → "TH Containers" doesn't drift between
-the cron and the live sync.
+Used by the backfill script and the Brevo mapper. Single home so the
+title-case rule for "th-containers" → "TH Containers" doesn't drift
+between the cron and the live sync. Which domains never identify a
+company (gmail.com, xtec.cat…) is data: `dominios_compartidos`.
 """
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-# Free-mail / personal domains we never lift into a company row.
-# Curated from observed data; extend cautiously — adding a niche
-# corporate ISP here orphans every contact who used it.
-PERSONAL_DOMAINS: frozenset[str] = frozenset(
-    {
-        "gmail.com",
-        "googlemail.com",
-        "yahoo.com",
-        "yahoo.es",
-        "yahoo.co.uk",
-        "yahoo.fr",
-        "hotmail.com",
-        "hotmail.es",
-        "hotmail.fr",
-        "outlook.com",
-        "outlook.es",
-        "live.com",
-        "msn.com",
-        "icloud.com",
-        "me.com",
-        "protonmail.com",
-        "proton.me",
-        "mail.com",
-        "aol.com",
-        "gmx.com",
-        "gmx.es",
-        "gmx.de",
-        "web.de",
-        "free.fr",
-        "orange.fr",
-        "wanadoo.es",
-        "telefonica.net",
-        "movistar.es",
-        "vodafone.es",
-        "qq.com",
-        "163.com",
-        "naver.com",
-        "yandex.com",
-        "yandex.ru",
-        "tutanota.com",
-    }
-)
+if TYPE_CHECKING:
+    from app.services.dominios_compartidos import Lista
 
+# Los dominios que NO identifican una empresa (gmail.com, xtec.cat…) ya no
+# viven aquí: son un dato, la tabla `dominios_compartidos`
+# (`app/services/dominios_compartidos.py`), que se edita sin tocar código.
 
 _WWW_PREFIX_RE = re.compile(r"^www\.", flags=re.IGNORECASE)
 _TOKEN_SPLIT_RE = re.compile(r"[-_]+")
@@ -80,16 +44,18 @@ def normalise_domain(raw: str | None) -> str | None:
     return host or None
 
 
-def extract_company_domain(email: str | None) -> str | None:
-    """Extract the company domain from an email. Returns None for
-    a free-mail address (which should NOT spawn a Company row) or
-    for an obviously malformed input."""
+def extract_company_domain(email: str | None, no_emparejan: Lista) -> str | None:
+    """Extract the company domain from an email. Returns None for a
+    domain of the list that never identifies a company (free-mail,
+    shared by many organisations: `no_emparejan`, read with
+    `dominios_compartidos.cargar`) — those should NOT spawn or match a
+    Company row — or for an obviously malformed input."""
     if not email or "@" not in email:
         return None
     domain = email.split("@", 1)[1].lower().strip()
     if not domain:
         return None
-    if domain in PERSONAL_DOMAINS:
+    if no_emparejan.contiene(domain):
         return None
     return domain
 
