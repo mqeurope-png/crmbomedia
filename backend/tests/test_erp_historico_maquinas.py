@@ -394,13 +394,13 @@ def test_api_umbral_y_familia(http, session_factory) -> None:  # noqa: F811
     h = auth_headers(http, "admin")
     r = http.put("/api/erp/historico/maquinas-umbral", json={"umbral": 500}, headers=h)
     assert r.status_code == 200 and r.json()["umbral"] == 500
-    assert http.post("/api/erp/historico/maquinas-familias/FLX/revisar", json={},
+    assert http.post("/api/erp/historico/maquinas-familias/revisar", json={"familia": "FLX"},
                      headers=h).status_code == 400
-    r = http.post("/api/erp/historico/maquinas-familias/FLX/revisar", json={"confirm": True},
-                  headers=h)
+    r = http.post("/api/erp/historico/maquinas-familias/revisar",
+                  json={"familia": "FLX", "confirm": True}, headers=h)
     assert r.status_code == 200 and r.json()["revisadas"] == 4
-    r = http.post("/api/erp/historico/maquinas-familias/FLX/deshacer", json={"confirm": True},
-                  headers=h)
+    r = http.post("/api/erp/historico/maquinas-familias/deshacer",
+                  json={"familia": "FLX", "confirm": True}, headers=h)
     assert r.json()["deshechas"] == 4
     assert http.put("/api/erp/historico/maquinas-umbral", json={"umbral": 1},
                     headers=auth_headers(http, "pedidos")).status_code == 403
@@ -414,3 +414,12 @@ def test_la_migracion_0160_siembra_umbral_y_positivas() -> None:
     spec.loader.exec_module(modulo)
     assert modulo.POSITIVAS == hm.PISTAS_MAQUINA_0160
     assert float(modulo.UMBRAL) == hm.UMBRAL_POR_DEFECTO
+
+
+
+def test_no_es_maquina_desde_una_pantalla_vieja_no_pisa_una_marca(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        hm.marcar(s, BEAMBOX, True, por="bart")              # en otra pestaña
+        hm.marcar(s, BEAMBOX, False, por="otro", solo_sin_revisar=True)
+        assert s.get(HistoricoArticuloClase, BEAMBOX).clase == "maquina"

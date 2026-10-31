@@ -354,7 +354,10 @@ def articulos(session: Session) -> dict[str, Any]:
             "propondria": (hoy["propuesta"] if estado == NO_MAQUINA
                            and hoy["propuesta"] in (PROPUESTA_SI, PROPUESTA_DUDOSA)
                            else None),
-            "en_lote": bool(lotes.get(codart) and "(dar por revisadas" in lotes[codart]),
+            # Dada por revisada con el botón de SU familia de hoy (lo que
+            # deshace ese mismo botón).
+            "en_lote": bool(a and a.familia and (lotes.get(codart) or "").endswith(
+                MARCA_LOTE.format(familia=a.familia))),
         })
     items.sort(key=lambda i: (i["familia"] or "~", -i["lineas"], i["codart"]))
     return {
@@ -370,7 +373,8 @@ def articulos(session: Session) -> dict[str, Any]:
     }
 
 
-def marcar(session: Session, codart: str, es_maquina: bool, *, por: str) -> None:
+def marcar(session: Session, codart: str, es_maquina: bool, *, por: str,
+           solo_sin_revisar: bool = False) -> None:
     """La casilla «es máquina». Marcarla: clase propia máquina. Quitarla:
     `no_maquina` (revisado), salvo que ya tuviera otra clase propia (la del
     «No es una máquina» del parque), que se respeta."""
@@ -379,6 +383,10 @@ def marcar(session: Session, codart: str, es_maquina: bool, *, por: str) -> None
             HistoricoArticulo.codart == codart).limit(1)) is None:
         raise LookupError("articulo")
     fila = session.get(HistoricoArticuloClase, codart)
+    if solo_sin_revisar and fila is not None:
+        # «No es máquina» desde una pantalla vieja: alguien ya lo revisó (o
+        # marcó) mientras tanto; no se pisa.
+        return
     if es_maquina:
         fila = fila or HistoricoArticuloClase(codart=codart)
         fila.clase = CLASE_MAQUINA
@@ -437,10 +445,12 @@ def dar_por_revisadas(session: Session, familia: str, *, por: str) -> int:
 def deshacer_revisadas(session: Session, familia: str) -> int:
     """Vuelve a «sin revisar» lo que dio por revisado el botón de esa familia
     (solo lo que sigue tal cual: si luego se marcó a mano, no se toca)."""
-    marca = MARCA_LOTE.format(familia=familia)
-    filas = [p for p in session.scalars(select(HistoricoArticuloClase).where(
-        HistoricoArticuloClase.clase == CLASE_NO_MAQUINA,
-        HistoricoArticuloClase.por.like(f"%{marca}"))) if (p.por or "").endswith(marca)]
+    # Lo mismo que cuenta la pantalla: los de esa familia (la de hoy) que dio
+    # por revisados su botón y siguen como «no es máquina».
+    codarts = [i["codart"] for i in articulos(session)["items"]
+               if i["familia"] == familia and i["en_lote"] and i["estado"] == NO_MAQUINA]
+    filas = [p for c in codarts if (p := session.get(HistoricoArticuloClase, c)) is not None
+             and p.clase == CLASE_NO_MAQUINA]
     for p in filas:
         session.delete(p)
     session.commit()

@@ -71,7 +71,7 @@ test("«No es máquina» por fila y el filtro de las revisadas que hoy se propon
   await screen.findByText("1 de 5");
   const fila = screen.getByText("EMBUDO FIGURANTE").closest("tr")!;
   await user.click(within(fila).getByRole("button", { name: "No es máquina" }));
-  expect(api().marcarHistoricoMaquina).toHaveBeenCalledWith("5005", false);
+  expect(api().marcarHistoricoMaquina).toHaveBeenCalledWith("5005", false, true);
   await user.selectOptions(screen.getByLabelText("Ver"), "colisiones");
   await waitFor(() => expect(codigos()).toEqual(["5004"]));
   expect(screen.getByText(/hoy se propondría: dudosa/)).toBeInTheDocument();

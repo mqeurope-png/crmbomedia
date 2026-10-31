@@ -248,7 +248,7 @@ export function MaquinasPanel({ puedeEditar }: { puedeEditar: boolean }) {
                       {puedeEditar && i.estado === "sin_revisar" ? (
                         <div>
                           <button type="button" className="button small secondary" disabled={ocupado}
-                                  onClick={() => void hacer(() => marcarHistoricoMaquina(i.codart, false),
+                                  onClick={() => void hacer(() => marcarHistoricoMaquina(i.codart, false, true),
                                     "No se ha podido guardar.")}>
                             No es máquina
                           </button>

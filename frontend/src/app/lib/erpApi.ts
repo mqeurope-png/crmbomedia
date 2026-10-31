@@ -7823,10 +7823,10 @@ export async function getHistoricoMaquinas(): Promise<MaquinasResumen> {
 }
 
 export async function marcarHistoricoMaquina(
-  codart: string, esMaquina: boolean,
+  codart: string, esMaquina: boolean, soloSinRevisar = false,
 ): Promise<MaquinasResumen> {
   return apiFetch(`/api/erp/historico/maquinas/${encodeURIComponent(codart)}`, {
-    method: "PUT", body: JSON.stringify({ es_maquina: esMaquina }),
+    method: "PUT", body: JSON.stringify({ es_maquina: esMaquina, solo_sin_revisar: soloSinRevisar }),
   });
 }
 
@@ -7842,14 +7842,14 @@ export async function cambiarUmbralMaquinas(umbral: number): Promise<MaquinasRes
 
 /** «Dar por revisadas las que quedan» de una familia (confirmado en pantalla). */
 export async function darPorRevisadasFamilia(familia: string): Promise<MaquinasResumen> {
-  return apiFetch(`/api/erp/historico/maquinas-familias/${encodeURIComponent(familia)}/revisar`, {
-    method: "POST", body: JSON.stringify({ confirm: true }),
+  return apiFetch("/api/erp/historico/maquinas-familias/revisar", {
+    method: "POST", body: JSON.stringify({ familia, confirm: true }),
   });
 }
 
 export async function deshacerRevisadasFamilia(familia: string): Promise<MaquinasResumen> {
-  return apiFetch(`/api/erp/historico/maquinas-familias/${encodeURIComponent(familia)}/deshacer`, {
-    method: "POST", body: JSON.stringify({ confirm: true }),
+  return apiFetch("/api/erp/historico/maquinas-familias/deshacer", {
+    method: "POST", body: JSON.stringify({ familia, confirm: true }),
   });
 }
 

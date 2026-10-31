@@ -314,6 +314,8 @@ class EsMaquinaIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     es_maquina: bool
+    #: «No es máquina» de una fila sin revisar: si ya está revisada, no se toca.
+    solo_sin_revisar: bool = False
 
 
 class ReglaArticuloIn(BaseModel):
@@ -358,7 +360,8 @@ def marcar_maquina(
     from app.erp import historico_maquinas  # noqa: PLC0415
 
     try:
-        historico_maquinas.marcar(session, codart, body.es_maquina, por=_por(user))
+        historico_maquinas.marcar(session, codart, body.es_maquina, por=_por(user),
+                                  solo_sin_revisar=body.solo_sin_revisar)
     except LookupError as exc:
         raise _no_existe(exc, "articulo") from exc
     return _maquinas(session)
@@ -383,9 +386,11 @@ class UmbralIn(BaseModel):
     umbral: float = Field(ge=0)
 
 
-class ConfirmIn(BaseModel):
+class FamiliaLoteIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    #: En el cuerpo (no en la URL): un código con «/» no rompe la ruta.
+    familia: str = Field(min_length=1, max_length=32)
     confirm: bool = False
 
 
@@ -403,10 +408,9 @@ def cambiar_umbral(
     return _maquinas(session)
 
 
-@router.post("/maquinas-familias/{familia}/revisar")
+@router.post("/maquinas-familias/revisar")
 def dar_por_revisadas(
-    body: ConfirmIn,
-    familia: str = Path(..., max_length=32),
+    body: FamiliaLoteIn,
     session: Session = Depends(get_session),
     user: User = Depends(require_config),
 ) -> dict[str, Any]:
@@ -418,14 +422,13 @@ def dar_por_revisadas(
     if not body.confirm:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "confirmation_required", "detail": "Hace falta confirmarlo."})
-    hechas = historico_maquinas.dar_por_revisadas(session, familia, por=_por(user))
+    hechas = historico_maquinas.dar_por_revisadas(session, body.familia, por=_por(user))
     return {**_maquinas(session), "revisadas": hechas}
 
 
-@router.post("/maquinas-familias/{familia}/deshacer")
+@router.post("/maquinas-familias/deshacer")
 def deshacer_revisadas(
-    body: ConfirmIn,
-    familia: str = Path(..., max_length=32),
+    body: FamiliaLoteIn,
     session: Session = Depends(get_session),
     _: User = Depends(require_config),
 ) -> dict[str, Any]:
@@ -436,7 +439,7 @@ def deshacer_revisadas(
     if not body.confirm:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "confirmation_required", "detail": "Hace falta confirmarlo."})
-    vueltas = historico_maquinas.deshacer_revisadas(session, familia)
+    vueltas = historico_maquinas.deshacer_revisadas(session, body.familia)
     return {**_maquinas(session), "deshechas": vueltas}
 
 
