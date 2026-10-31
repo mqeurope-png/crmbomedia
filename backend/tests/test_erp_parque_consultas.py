@@ -207,3 +207,11 @@ def test_las_maquinas_sin_gama_se_ensenan(session_factory) -> None:  # noqa: F81
         sin = r["resumen"]["sin_gama"]
         assert r["resumen"]["maquinas_sin_gama"] == len(sin) == 2
         assert {m["familia"] for m in sin} == {"UVM"} and {m["codart"] for m in sin} == {UV}
+
+
+def test_el_sector_cuenta_clientes_no_filas(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        r = pc.informe(s, hoy=HOY)
+        filas = {f["codcli"] for f in (*r["dormidos"], *r["huecos"])}
+        assert sum(x["clientes"] for x in r["resumen"]["sectores"]) == len(filas)

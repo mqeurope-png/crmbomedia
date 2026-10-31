@@ -43,6 +43,11 @@ function numero(v: string): number | undefined {
   return v.trim() && Number.isFinite(n) ? n : undefined;
 }
 
+function entero(v: string): number | undefined {
+  const n = numero(v);
+  return n === undefined ? undefined : Math.round(n);
+}
+
 export function DormidosHuecosPanel({ puedeEditar }: { puedeEditar: boolean }) {
   const [datos, setDatos] = useState<DormidosHuecos | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +80,7 @@ export function DormidosHuecosPanel({ puedeEditar }: { puedeEditar: boolean }) {
   function filtro(): FiltroDormidos {
     return {
       gama: gama || undefined, sector: sector || undefined,
-      meses_min: numero(mesesMin), meses_max: numero(mesesMax), gasto_min: numero(gastoMin),
+      meses_min: entero(mesesMin), meses_max: entero(mesesMax), gasto_min: numero(gastoMin),
     };
   }
 

@@ -110,6 +110,9 @@ def _fecha(m: dict[str, Any]) -> date | None:
 def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
     """Por cliente (`clave_cliente`): sus máquinas en servicio, volcadas y a
     mano, con gama y fecha."""
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_fam = historico_alias.familias(session)
     volcadas = parque.maquinas_de_todos(session)
     bajas = set(session.scalars(select(ParqueBaja.clave)))
     out: dict[str, list[dict[str, Any]]] = {}
@@ -119,7 +122,11 @@ def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
                 continue
             out.setdefault(cli, []).append({
                 "codart": m["codart"], "articulo": m["articulo"], "gama": m["gama"],
-                "familia": m.get("familia"), "fecha": _fecha(m), "origen": m["origen"]})
+                # La familia que manda (con el respaldo de otro ejercicio y la
+                # caja / el fantasma del cero resueltos): la que hay que tocar.
+                "familia": al_fam.del_articulo(m.get("codart_catalogo") or m["codart"],
+                                               m.get("familia")),
+                "fecha": _fecha(m), "origen": m["origen"]})
     from app.models.crm import Company  # noqa: PLC0415
 
     for man, codcli in session.execute(
@@ -296,9 +303,11 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
     for fila in (*dormidos, *huecos, *sin_gama):
         fila.update(clientes.get(fila["codcli"], {"nombre": None, "empresa": None,
                                                   "sector": None}))
-    sectores: dict[str, int] = {}
+    # Clientes distintos por sector (un cliente puede salir en dos gamas).
+    por_sector: dict[str, set[str]] = {}
     for fila in (*dormidos, *huecos):
-        sectores[fila["sector"] or ""] = sectores.get(fila["sector"] or "", 0) + 1
+        por_sector.setdefault(fila["sector"] or "", set()).add(fila["codcli"])
+    sectores = {k: len(v) for k, v in por_sector.items()}
     return {
         "ajustes": aj,
         "hoy": hoy.isoformat(),
