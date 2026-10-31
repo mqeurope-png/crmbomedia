@@ -446,8 +446,12 @@ def test_al_principio_de_palabra_casa_el_modelo_y_no_la_pista_enterrada() -> Non
     # Negativas enterradas: ya no proponen «no».
     for desc in ("PRODUCTO FIGURANTE", "SOLID STATE", "RECOVERY TOOL"):
         assert _propuesta(desc) is None, desc
-    # LAMINA como palabra entera sigue cogiendo la lámina.
+    # LAMINA como palabra entera sigue cogiendo la lámina (y las láminas);
+    # HEXA coge el modelo con número pegado.
     assert _propuesta("LÁMINA SILICONADA A4") == "no_maquina"
+    assert _propuesta("LÁMINAS SILICONADAS A4") == "no_maquina"
+    assert _propuesta("FLUX HEXA60W") == "maquina"
+    assert _propuesta("HEXA2 PRO") == "maquina"
 
 
 def test_positiva_y_negativa_a_la_vez_sigue_siendo_dudosa() -> None:

@@ -216,7 +216,9 @@ def _compilar(patrones: list[str | tuple[str, bool]]) -> list[tuple[str, re.Patt
     con «ARTISJET», «EPSON PP» con «EPSON PP100» y «ADR» con «ADR1-10DVD»,
     pero no la pista enterrada en otra palabra («ADOR» en ALIMENTADOR, «MBO»
     en TAMBOR, «DUCT» en PRODUCTO). Con `palabra_entera` (dato, por pista)
-    exige también el final: «HEXA» suelta HEXAGONAL, «LAMINA» la LAMINADORA.
+    exige también el final (sin otra letra detrás; número o plural en «S»
+    valen): «HEXA» coge HEXA60W y suelta HEXAGONAL, «LAMINA» coge LÁMINAS y
+    suelta la LAMINADORA.
     Acepta el patrón solo o `(patrón, palabra_entera)`."""
     out = []
     for item in patrones:
@@ -224,7 +226,10 @@ def _compilar(patrones: list[str | tuple[str, bool]]) -> list[tuple[str, re.Patt
         plano = _plano(patron)
         if not plano:
             continue
-        cola = r"(?![A-Z0-9])" if entera else ""
+        # Palabra entera: que no siga OTRA LETRA (un número pegado vale:
+        # HEXA60W, HEXA2; y una «S» de plural: LAMINAS). HEXAGONAL y
+        # LAMINADORA, fuera.
+        cola = r"S?(?![A-Z])" if entera else ""
         out.append((patron, re.compile(rf"(?<![A-Z0-9]){re.escape(plano)}{cola}")))
     return out
 
