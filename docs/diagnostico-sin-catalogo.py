@@ -97,3 +97,59 @@ with Session(get_engine()) as s:
         parecidos = sorted({repr(c) for _, c, _ in catalogo
                             if re.sub(r"[^A-Z0-9]", "", k(c)) == re.sub(r"[^A-Z0-9]", "", caso)})
         print(f"   {caso}: en el catálogo con otra puntuación: {parecidos}")
+
+    # --- 1/11/2026, segunda vuelta -------------------------------------------------------
+    from app.erp import historico_maquinas as hm
+    from app.erp.models.historico import HistoricoArticuloClase
+
+    print("5) ¿Está desplegado el #593?", hasattr(hm, "_vendidas"),
+          "· dialecto:", s.get_bind().dialect.name)
+    r = hm.articulos(s)
+    print(f"   Pantalla de máquinas: total {r['total']}, marcadas {r['marcadas']}")
+    for caso in CASOS:
+        items = [i for i in r["items"] if k(i["codart"]) == caso]
+        print(f"   {caso}: en la pantalla -> "
+              f"{[(i['codart'], i['familia'], i['estado'], i['lineas']) for i in items]}")
+        if items:
+            continue
+        filas = sorted((ej, c, fam) for ej, c, fam in catalogo if k(c) == caso)
+        ult = filas[-1] if filas else None
+        f = familias.get(ult[2]) if ult else None
+        print(f"     último catálogo: {ult and (ult[0], repr(ult[1]), repr(ult[2]))} -> familia "
+              f"{f and (repr(f.codigo), f.clase, f.gama)}")
+        propias = [(repr(p.codart), p.clase, p.por) for p in s.scalars(select(HistoricoArticuloClase))
+                   if k(p.codart) == caso]
+        print(f"     clase propia: {propias}")
+        con = [c for c in hm._vendidas(s, fuera, solo={ult[1]} if ult else set())]
+        sin = [c for c in hm._vendidas(s, fuera) if k(c) == caso]
+        print(f"     ventas que ve la pantalla: {con} · sin filtrar: {sin}")
+
+    print("6) Artículos cuya familia del último catálogo no tiene clase, por familia:")
+    por_fam = Counter()
+    for c, fam in ultimo.items():
+        f = familias.get(fam) if fam else None
+        if fam and (f is None or not f.clase):
+            por_fam[(fam, "no está en la tabla" if f is None else "sin clasificar")] += 1
+    for (fam, motivo), n in sorted(por_fam.items(), key=lambda x: -x[1]):
+        print(f"   familia {fam!r}: {n} artículos ({motivo})")
+    print(f"   total: {sum(por_fam.values())}")
+
+    print("7) La familia '19': en qué ejercicios la usan los artículos")
+    uso = Counter(ej for ej, _, fam in catalogo if fam == "19")
+    print(f"   {dict(sorted(uso.items()))} · en la tabla de familias: {'19' in familias}")
+    print("   Familias usadas por artículos que NO están en la tabla, con sus ejercicios:")
+    falta = {}
+    for ej, _, fam in catalogo:
+        if fam and fam not in familias:
+            falta.setdefault(fam, set()).add(ej)
+    for fam, ejs in sorted(falta.items()):
+        print(f"   {fam!r}: {sorted(ejs)}")
+
+    print("8) Los códigos vendidos sin catálogo que casan quitando ceros (uno a uno):")
+    por_ceros_cod = {}
+    for _, c, _ in catalogo:
+        por_ceros_cod.setdefault(sin_ceros(c), set()).add(c)
+    desc = {c: d for c, d in s.execute(select(art.codart, art.descripcion))}
+    for c, n in sorted(rec.items(), key=lambda x: -x[1]):
+        cands = sorted(por_ceros_cod.get(sin_ceros(c), ()))
+        print(f"   línea {c!r} ({n} líneas) -> catálogo {[(x, desc.get(x)) for x in cands]}")
