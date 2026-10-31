@@ -19,7 +19,15 @@ export const SECTORES: ReadonlyArray<string> = [
   "Otro",
 ];
 
+/** El sector de la lista que es `valor` (sin mirar mayúsculas ni espacios),
+ *  o null si es un texto de antes que no está en la lista. */
+export function sectorDeLaLista(valor: string | null | undefined): string | null {
+  if (!valor) return null;
+  const v = valor.trim().toLowerCase();
+  return SECTORES.find((s) => s.toLowerCase() === v) ?? null;
+}
+
 /** ¿Es un sector de la lista, o un texto de antes? */
 export function esSectorDeLaLista(valor: string | null | undefined): boolean {
-  return !!valor && SECTORES.some((s) => s.toLowerCase() === valor.trim().toLowerCase());
+  return sectorDeLaLista(valor) !== null;
 }

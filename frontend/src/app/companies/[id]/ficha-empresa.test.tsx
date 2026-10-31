@@ -535,5 +535,12 @@ describe("Sector de la empresa (lista, 1/11/2026)", () => {
     expect(opciones).toContain("Vending");
     expect(opciones).toContain("Fabricante figurante de palas (texto anterior)");
   });
-});
 
+  it("un sector de la lista con otra grafía sale como el de la lista, no como «Sin sector»", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({ ...COMPANY, sector: " vending" });
+    render(<CompanyDetailPage />);
+    const sector = (await screen.findByLabelText("Sector")) as HTMLSelectElement;
+    expect(sector.value).toBe("Vending");
+    expect(Array.from(sector.options).map((o) => o.textContent)).not.toContain(" vending (texto anterior)");
+  });
+});

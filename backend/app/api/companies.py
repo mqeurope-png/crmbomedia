@@ -873,11 +873,19 @@ def bulk_company_action(
             ) from exc
         # Por defecto NO pisa (1/11/2026): solo rellena las que no tienen
         # sector. Con `sobrescribir`, cambia también las que tienen otro.
-        sobrescribir = bool(payload.payload.get("sobrescribir"))
+        bandera = payload.payload.get("sobrescribir")
+        sobrescribir = bandera is True or (isinstance(bandera, str)
+                                           and bandera.strip().lower() in ("true", "1", "sí", "si"))
         for row in rows:
-            if row.sector == sector:
+            actual = (row.sector or "").strip()
+            if actual.casefold() == sector.casefold():
+                # El mismo sector con otra grafía («vending», « Vending»): se
+                # deja como el de la lista.
+                if row.sector != sector:
+                    row.sector = sector
+                    affected.append(row.id)
                 continue
-            if (row.sector or "").strip() and not sobrescribir:
+            if actual and not sobrescribir:
                 skipped += 1
                 continue
             row.sector = sector

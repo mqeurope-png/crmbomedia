@@ -28,6 +28,9 @@
  */
 import Link from "next/link";
 import { SECTORES } from "../lib/sectores";
+
+/** Lo que admite `POST /api/companies/bulk-action` por llamada. */
+const BULK_MAX = 1000;
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ErrorState } from "../components/ErrorState";
@@ -463,11 +466,15 @@ export default function CompaniesListPage() {
   ) {
     if (selected.size === 0) return;
     try {
-      const result = await bulkCompanyAction(
-        Array.from(selected),
-        action,
-        payload,
-      );
+      // Por bloques del tamaño que admite el backend: con «Seleccionar las N
+      // que cumplen el filtro» pueden ser miles (1/11/2026).
+      const ids = Array.from(selected);
+      const result = { affected_count: 0, skipped_count: 0 };
+      for (let i = 0; i < ids.length; i += BULK_MAX) {
+        const r = await bulkCompanyAction(ids.slice(i, i + BULK_MAX), action, payload);
+        result.affected_count += r.affected_count;
+        result.skipped_count += r.skipped_count ?? 0;
+      }
       const verb =
         action === "activate"
           ? "activadas"
@@ -871,7 +878,9 @@ function CompaniesBulkBar({
               <option value="">Elige un sector…</option>
               {SECTORES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
-            <label className="small" title="Si no, solo se pone a las que no tienen sector">
+            <label className="small" title="Si no, solo se pone a las que no tienen sector"
+                   style={{ color: "inherit", display: "inline-flex", gap: 4, alignItems: "center",
+                            whiteSpace: "nowrap" }}>
               <input
                 type="checkbox"
                 checked={sobrescribir}
@@ -893,6 +902,7 @@ function CompaniesBulkBar({
               onClick={() => {
                 setSectorMode(false);
                 setSector("");
+                setSobrescribir(false);
               }}
             >
               Cancelar

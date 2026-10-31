@@ -1,7 +1,7 @@
 "use client";
 
 import { Building2, FileText, Save, Users } from "lucide-react";
-import { SECTORES, esSectorDeLaLista } from "../../lib/sectores";
+import { SECTORES, esSectorDeLaLista, sectorDeLaLista } from "../../lib/sectores";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -710,7 +710,7 @@ export default function CompanyDetailPage() {
             <label className="field">
               Sector
               <select
-                value={company.sector ?? ""}
+                value={sectorDeLaLista(company.sector) ?? company.sector ?? ""}
                 aria-label="Sector"
                 onChange={(e) => onChange("sector", e.target.value || null)}
               >

@@ -221,3 +221,16 @@ def test_la_ficha_conserva_el_texto_anterior_y_no_admite_uno_nuevo(client: TestC
     res = client.put(f"/api/companies/{cid}", headers=headers,
                      json={**cuerpo, "sector": "Industria y fabricación"})
     assert res.json()["sector"] == "Industria y fabricación"
+
+
+def test_tanda_corrige_grafia_y_sobrescribir_texto_falso_no_pisa(client: TestClient) -> None:
+    factory = client._factory  # type: ignore[attr-defined]
+    ids = _con_sector(factory, ["vending", " Vending ", "Vending", "Otro"])
+    headers = auth_headers(client, "user")
+    res = client.post("/api/companies/bulk-action", headers=headers, json={
+        "company_ids": ids, "action": "change_sector",
+        "payload": {"sector": "Vending", "sobrescribir": "false"}})
+    assert (res.json()["affected_count"], res.json()["skipped_count"]) == (2, 1)
+    with factory() as session:
+        por_id = {r.id: r.sector for r in session.scalars(select(Company))}
+    assert [por_id[i] for i in ids] == ["Vending", "Vending", "Vending", "Otro"]
