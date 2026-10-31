@@ -733,9 +733,46 @@ def list_company_contacts(
             "phone": c.phone,
             "commercial_status": c.commercial_status,
             "owner_user_id": c.owner_user_id,
+            "contacto_principal": bool(c.contacto_principal),
         }
         for c in rows
     ]
+
+
+class ContactoPrincipalPayload(BaseModel):
+    #: El contacto que pasa a ser el principal; None = ninguno.
+    contact_id: str | None = None
+
+
+@router.post("/{company_id}/contacto-principal")
+def set_contacto_principal(
+    company_id: str,
+    payload: ContactoPrincipalPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """1/11/2026: marca el contacto principal de la empresa (uno por
+    empresa: los demás se desmarcan). Manda en «un contacto por empresa»."""
+    if session.get(Company, company_id) is None:
+        raise not_found("Company")
+    if payload.contact_id is not None:
+        elegido = session.get(Contact, payload.contact_id)
+        if elegido is None or elegido.company_id != company_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail="Ese contacto no es de esta empresa.")
+    anteriores = list(session.scalars(select(Contact.id).where(
+        Contact.company_id == company_id, Contact.contacto_principal.is_(True))))
+    for c in session.scalars(select(Contact).where(Contact.company_id == company_id,
+                                                   Contact.contacto_principal.is_(True))):
+        c.contacto_principal = False
+    if payload.contact_id is not None:
+        session.get(Contact, payload.contact_id).contacto_principal = True
+    record_event(session, action=Action.CONTACT_UPDATED, target_type="company",
+                 target_id=company_id, actor=current_user,
+                 metadata={"field": "contacto_principal", "from": anteriores,
+                           "to": payload.contact_id})
+    session.commit()
+    return {"company_id": company_id, "contacto_principal": payload.contact_id}
 
 
 # --- contact-side endpoint ------------------------------------------

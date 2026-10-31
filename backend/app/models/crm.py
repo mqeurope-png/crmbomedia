@@ -378,6 +378,11 @@ class Contact(TimestampMixin, Base):
     factusol_is_primary: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    #: 1/11/2026 — el contacto principal de su empresa, marcado a mano en la
+    #: ficha de empresa (uno por empresa). Manda en «un contacto por empresa».
+    contacto_principal: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
     notes: Mapped[list["Note"]] = relationship(
@@ -923,6 +928,12 @@ class Segment(TimestampMixin, Base):
     rules_json: Mapped[str | None] = mapped_column(Text)
     is_dynamic: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     static_contact_ids: Mapped[str | None] = mapped_column(Text)
+    #: 1/11/2026 — un solo contacto por empresa (el primero según
+    #: `orden_contacto`, coma-separado; vacío = el orden de siempre).
+    uno_por_empresa: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
+    orden_contacto: Mapped[str | None] = mapped_column(String(120))
     owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     color: Mapped[str | None] = mapped_column(String(7))

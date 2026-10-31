@@ -176,7 +176,19 @@ export type CompanyContact = {
   phone: string | null;
   commercial_status: string;
   owner_user_id: string | null;
+  /** El contacto principal de la empresa (uno por empresa, 1/11/2026). */
+  contacto_principal?: boolean;
 };
+
+/** Marca el contacto principal de la empresa (los demás se desmarcan);
+ *  `null` = ninguno. Manda en «un contacto por empresa». */
+export async function setContactoPrincipal(
+  companyId: string, contactId: string | null,
+): Promise<{ company_id: string; contacto_principal: string | null }> {
+  return apiFetch(`/api/companies/${companyId}/contacto-principal`, {
+    method: "POST", body: JSON.stringify({ contact_id: contactId }),
+  });
+}
 
 export async function listCompanyContacts(
   id: string,

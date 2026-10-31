@@ -129,6 +129,10 @@ export type EntitySearchRequest = {
   /** Limpieza de empresas: incluir las archivadas (toggle «Ver archivadas»);
    *  por defecto quedan fuera. */
   include_archived?: boolean;
+  /** Contactos (1/11/2026): un solo contacto por empresa, con este orden de
+   *  preferencia. */
+  uno_por_empresa?: boolean;
+  orden?: string[] | null;
 };
 
 export type EntitySearchPage<T = Record<string, unknown>> = {
@@ -136,6 +140,8 @@ export type EntitySearchPage<T = Record<string, unknown>> = {
   total: number;
   limit: number;
   offset: number;
+  /** Contactos: cuántos cumplen, de cuántas empresas, cuántos sin empresa. */
+  recuentos?: { contactos: number; empresas: number; sin_empresa: number } | null;
 };
 
 export type EntitySearchIdsResult = {

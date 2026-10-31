@@ -24,7 +24,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import ROLE_LEVELS, require_viewer
@@ -36,6 +36,7 @@ from app.services.entities import (
     list_entities,
     list_fields_for_entity,
 )
+from app.services.segments import columnas_empresa, un_por_empresa
 from app.services.segments.engine import SegmentRuleError, build_entity_filter
 
 router = APIRouter(prefix="/api/entities", tags=["entities"])
@@ -57,6 +58,10 @@ class EntitySearchRequest(BaseModel):
     #: Limpieza de empresas: por defecto se OCULTAN las archivadas (entidades
     #: con `is_archived`). El toggle «Ver archivadas» del listado lo pone True.
     include_archived: bool = False
+    #: 1/11/2026 (contactos): un solo contacto por empresa, el primero según
+    #: `orden` (ver `services/segments/un_por_empresa.py`).
+    uno_por_empresa: bool = False
+    orden: list[str] | None = None
 
 
 class EntitySearchPage(BaseModel):
@@ -64,6 +69,9 @@ class EntitySearchPage(BaseModel):
     total: int
     limit: int
     offset: int
+    #: Contactos: cuántos cumplen, de cuántas empresas y cuántos sin empresa
+    #: (con «uno por empresa», esos quedan fuera).
+    recuentos: dict[str, int] | None = None
 
 
 class EntitySearchIdsResult(BaseModel):
@@ -228,14 +236,27 @@ def entity_search(
     column, sort_dir = _resolve_sort(descriptor, payload)
     order_by = column.asc() if sort_dir == "asc" else column.desc()
 
-    total = session.scalar(
-        select(func.count()).select_from(descriptor.base_model).where(clause, *visibility)
-    ) or 0
+    es_contacto = descriptor.key == "contact"
+    recuentos = None
+    if es_contacto:
+        base = and_(clause, *visibility)
+        recuentos = un_por_empresa.recuentos(session, base)
+        clause, visibility = un_por_empresa.filtro(
+            base, uno_por_empresa=payload.uno_por_empresa, orden=payload.orden), []
+
+    if es_contacto and payload.uno_por_empresa:
+        # Uno por empresa: tantos como empresas con algún contacto que cumple
+        # (ya contado en los recuentos; no hace falta otra pasada).
+        total = recuentos["empresas"]
+    else:
+        total = session.scalar(
+            select(func.count()).select_from(descriptor.base_model).where(clause, *visibility)
+        ) or 0
 
     stmt = (
         select(descriptor.base_model)
         .where(clause, *visibility)
-        .order_by(order_by)
+        .order_by(order_by, descriptor.id_column)
         .offset(payload.offset)
         .limit(payload.limit)
     )
@@ -263,8 +284,16 @@ def entity_search(
             stmt = stmt.options(loader)
     rows = list(session.scalars(stmt).unique())
     items = [descriptor.serialize_row(row) for row in rows]
+    if es_contacto:
+        columnas_empresa.rellenar(session, items)
+        if payload.uno_por_empresa:
+            por = un_por_empresa.motivos(session, base, payload.orden,
+                                         [i["id"] for i in items])
+            for i in items:
+                i["contacto_elegido_por"] = (por.get(i["id"]) or {}).get("texto")
     return EntitySearchPage(
-        items=items, total=int(total), limit=payload.limit, offset=payload.offset
+        items=items, total=int(total), limit=payload.limit, offset=payload.offset,
+        recuentos=recuentos,
     )
 
 
@@ -298,6 +327,9 @@ def entity_search_ids(
         *_visibility_clauses(descriptor, include_archived=payload.include_archived),
         *_alcance_del_usuario(descriptor, session, current_user),
     ]
+    if descriptor.key == "contact" and payload.uno_por_empresa:
+        clause, visibility = un_por_empresa.clausula(
+            and_(clause, *visibility), payload.orden), []
     rows = list(
         session.scalars(
             select(descriptor.id_column).where(clause, *visibility).limit(MAX_IDS + 1)

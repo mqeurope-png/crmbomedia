@@ -13,6 +13,8 @@ import { useModalBehaviour } from "./useModalBehaviour";
 type Props = {
   viewName: string;
   contactsCount: number;
+  /** La vista va «un contacto por empresa» (1/11/2026). */
+  unoPorEmpresa?: boolean;
   /** Submit handler — resolves to the count of contacts that landed
    * in the queue so the parent can show a confirmation toast. */
   onSubmit: (payload: {
@@ -29,6 +31,7 @@ type Props = {
 export function PushViewToBrevoModal({
   viewName,
   contactsCount,
+  unoPorEmpresa = false,
   onSubmit,
   onClose,
 }: Props) {
@@ -102,6 +105,13 @@ export function PushViewToBrevoModal({
           <p className="muted small">
             Vista: <strong>{viewName}</strong> · {contactsCount} contacto
             {contactsCount === 1 ? "" : "s"}
+          </p>
+          <p className="muted small">
+            La lista se recalcula en cada sincronización (es dinámica, no una foto)
+            {unoPorEmpresa
+              ? ": un contacto por empresa, con el orden de la vista, elegido entre los que tienen"
+                + " email. El número puede cambiar un poco por eso."
+              : "."}
           </p>
         </header>
         {error ? <p className="form-error">{error}</p> : null}

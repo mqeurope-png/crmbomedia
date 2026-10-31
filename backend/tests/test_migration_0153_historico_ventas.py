@@ -398,3 +398,24 @@ def test_0167_anade_los_aprobados_sin_pisar_y_baja_solo_los_suyos(alembic_setup)
     with engine.connect() as c:
         quedan = {r[0] for r in c.exec_driver_sql("SELECT dominio FROM dominios_compartidos")}
     assert "gva.es" in quedan and "outlook.fr" not in quedan and len(quedan) == 47
+
+
+def test_0168_uno_por_empresa_solo_esquema(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    with engine.begin() as c:
+        # La base de este test arranca sellada en la 0152: tablas mínimas.
+        c.exec_driver_sql("CREATE TABLE contacts (id VARCHAR(36) PRIMARY KEY)")
+        c.exec_driver_sql("CREATE TABLE segments (id VARCHAR(36) PRIMARY KEY)")
+        c.exec_driver_sql("INSERT INTO contacts (id) VALUES ('c1')")
+        c.exec_driver_sql("INSERT INTO segments (id) VALUES ('s1')")
+    command.upgrade(cfg, "20261101_0167")
+    command.upgrade(cfg, "20261101_0168")
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT contacto_principal FROM contacts").scalar() in (0, False)
+        fila = c.exec_driver_sql("SELECT uno_por_empresa, orden_contacto FROM segments").one()
+        assert fila[0] in (0, False) and fila[1] is None
+    command.downgrade(cfg, "20261101_0167")
+    cols = {col["name"] for col in inspect(engine).get_columns("segments")}
+    assert "uno_por_empresa" not in cols

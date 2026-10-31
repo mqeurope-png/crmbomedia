@@ -66,6 +66,11 @@ import { useModalBehaviour } from "../components/useModalBehaviour";
 import { EntityFilterBuilder } from "../components/entity/EntityFilterBuilder";
 import { ResumenErpEstado } from "../components/crm/ResumenErpEstado";
 import {
+  UnoPorEmpresa,
+  tieneReglasDeEmpresa,
+  type Recuentos,
+} from "../components/crm/UnoPorEmpresa";
+import {
   EntityTable,
   type SortState,
 } from "../components/entity/EntityTable";
@@ -166,6 +171,14 @@ export default function ContactsListPage() {
   // el input + pierda foco (decisión §3.8 / PR-Cc).
   const [builderKey, setBuilderKey] = useState(0);
 
+  // Un contacto por empresa (1/11/2026). `unoPref` null = el de siempre: sí
+  // cuando las reglas miran la empresa (empresa, parque o compras), no en
+  // las vistas de siempre. `orden` null = el orden de preferencia de siempre.
+  const [unoPref, setUnoPref] = useState<boolean | null>(null);
+  const [orden, setOrden] = useState<string[] | null>(null);
+  const [recuentos, setRecuentos] = useState<Recuentos | null>(null);
+  const uno = unoPref ?? tieneReglasDeEmpresa(rules);
+
   // Resultados
   const [rows, setRows] = useState<ContactRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -197,6 +210,9 @@ export default function ContactsListPage() {
     const treeFromView =
       (filters?.rules_json as Record<string, unknown> | undefined) ?? {};
     setRules(treeFromView);
+    setUnoPref(typeof filters?.uno_por_empresa === "boolean"
+      ? (filters.uno_por_empresa as boolean) : null);
+    setOrden(Array.isArray(filters?.orden) ? (filters.orden as string[]) : null);
     setQ((filters?.q as string) ?? "");
     setSearchInput((filters?.q as string) ?? "");
     if (view.sort?.sort_by) {
@@ -394,8 +410,10 @@ export default function ContactsListPage() {
         owner: currentUser?.id ?? null,
         sort,
         offset,
+        uno,
+        orden,
       }),
-    [rules, q, assignedToMe, currentUser, sort, offset],
+    [rules, q, assignedToMe, currentUser, sort, offset, uno, orden],
   );
 
   useEffect(() => {
@@ -421,11 +439,14 @@ export default function ContactsListPage() {
       sort_dir: sort?.direction ?? "desc",
       limit: PAGE_SIZE,
       offset,
+      uno_por_empresa: uno,
+      orden: uno ? orden : null,
     })
       .then((page) => {
         if (cancelled) return;
         setRows(page.items);
         setTotal(page.total);
+        setRecuentos(page.recuentos ?? null);
         // Drop selecciones que ya no estén visibles.
         const visible = new Set(page.items.map((r) => String(r.id)));
         setSelected((prev) => {
@@ -461,6 +482,9 @@ export default function ContactsListPage() {
       filters: {
         q: q || null,
         rules_json: Object.keys(rules).length > 0 ? rules : null,
+        // Solo si se eligió a mano: si no, el de siempre según las reglas.
+        ...(unoPref === null ? {} : { uno_por_empresa: unoPref }),
+        ...(orden === null ? {} : { orden }),
       },
       columns: { visible: visibleColumns, order: visibleColumns, widths: {} },
       sort: sort
@@ -648,6 +672,8 @@ export default function ContactsListPage() {
         : {};
       const result = await searchEntityIds("contact", {
         rules_json: Object.keys(pruned).length ? pruned : null,
+        uno_por_empresa: uno,
+        orden: uno ? orden : null,
       });
       setSelected(new Set(result.ids));
       if (result.truncated) {
@@ -672,10 +698,19 @@ export default function ContactsListPage() {
       if (field.key === "name") {
         const name = String(row.name ?? "").trim();
         const email = String(row.email ?? "");
+        const elegido = typeof row.contacto_elegido_por === "string"
+          ? row.contacto_elegido_por : null;
         return (
-          <strong className="contact-name-cell">
-            {name || email || "—"}
-          </strong>
+          <>
+            <strong className="contact-name-cell">
+              {name || email || "—"}
+            </strong>
+            {elegido ? (
+              <span className="muted small" style={{ display: "block" }}>
+                Elegido: {elegido}
+              </span>
+            ) : null}
+          </>
         );
       }
       if (field.key === "owner_user_id") {
@@ -943,8 +978,26 @@ export default function ContactsListPage() {
         ) : null}
         {error ? <p className="form-error">{error}</p> : null}
 
+        <UnoPorEmpresa
+          uno={uno}
+          onUnoChange={(v) => {
+            setUnoPref(v);
+            setOffset(0);
+            setSelected(new Set());
+          }}
+          orden={orden}
+          onOrdenChange={(next) => {
+            setOrden(next);
+            setOffset(0);
+          }}
+          recuentos={recuentos}
+          total={total}
+          seleccionados={selected.size}
+        />
+
         <ContactsBulkBar
           selectedIds={Array.from(selected)}
+          columnas={visibleColumns}
           currentUser={currentUser}
           onAfterAction={(action, affected) => {
             setMessage(
@@ -1029,6 +1082,7 @@ export default function ContactsListPage() {
         <PushViewToBrevoModal
           viewName={activeView.name}
           contactsCount={total}
+          unoPorEmpresa={uno}
           onClose={() => setShowBrevoModal(false)}
           onSubmit={handlePushToBrevo}
         />

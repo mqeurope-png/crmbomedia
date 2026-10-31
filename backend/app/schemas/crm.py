@@ -1657,6 +1657,9 @@ class SegmentRead(BaseModel):
     static_contact_ids: list[str] = Field(default_factory=list)
     cached_count: int | None = None
     last_evaluated_at: datetime | None = None
+    #: 1/11/2026: un contacto por empresa (y el orden de preferencia).
+    uno_por_empresa: bool = False
+    orden_contacto: str | None = None
     # Set on Brevo-managed mirrors. `<system>:<account>:<external_id>`
     # — UI keys off this to hide the rule editor and show the
     # "Espejo Brevo" badge + refresh/open buttons.

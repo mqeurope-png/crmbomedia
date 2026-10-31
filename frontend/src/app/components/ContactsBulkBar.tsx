@@ -35,6 +35,8 @@ import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   selectedIds: string[];
+  /** Las columnas visibles de la lista: el CSV sale con ellas. */
+  columnas?: string[];
   currentUser: User | null;
   /** Called after a successful action so the list reloads + selection
    *  clears. `action` is widened to string so the Brevo-list flow (which
@@ -67,6 +69,7 @@ const STATUS_OPTIONS = [
  */
 export function ContactsBulkBar({
   selectedIds,
+  columnas,
   currentUser,
   onAfterAction,
   onClear,
@@ -260,7 +263,7 @@ export function ContactsBulkBar({
       setBusy(true);
       setError(null);
       try {
-        const blob = await bulkExportContactsCsv(selectedIds);
+        const blob = await bulkExportContactsCsv(selectedIds, columnas);
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;

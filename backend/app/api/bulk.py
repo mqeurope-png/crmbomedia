@@ -586,6 +586,9 @@ class BulkExportPayload(BaseModel):
     contact_ids: list[str] = Field(
         min_length=1, max_length=MAX_BULK_CONTACTS
     )
+    #: 1/11/2026: las columnas que se ven en la lista (sus claves, en orden).
+    #: Sin ellas, las columnas básicas de siempre.
+    columns: list[str] | None = Field(default=None, max_length=80)
 
 
 class OwnershipPreviewPayload(BaseModel):
@@ -616,6 +619,41 @@ def bulk_ownership_preview(
     }
 
 
+def _csv_con_columnas(session: Session, contacts: list[Contact], columnas: list[str],
+                      orden_ids: list[str]) -> str:
+    """El CSV con las columnas de la lista: cabecera con su nombre en
+    pantalla y los mismos valores (las de la empresa, del resumen ERP). Con
+    el módulo csv (comillas donde hagan falta) y en el orden de la selección."""
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    from app.services.entities.registry import get_entity  # noqa: PLC0415
+    from app.services.segments import columnas_empresa  # noqa: PLC0415
+
+    descriptor = get_entity("contact")
+    specs = descriptor.field_specs
+    claves = [c for c in columnas if c in specs and specs[c].displayable] or list(_CSV_COLUMNS)
+    filas = columnas_empresa.rellenar(session, [descriptor.serialize_row(c) for c in contacts])
+    pos = {cid: i for i, cid in enumerate(orden_ids)}
+    filas.sort(key=lambda f: pos.get(f.get("id"), len(pos)))
+
+    def texto(v: Any) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, list):
+            return "; ".join(texto(x.get("name") if isinstance(x, dict) else x) for x in v)
+        if isinstance(v, bool):
+            return "sí" if v else "no"
+        return str(v)
+
+    salida = io.StringIO()
+    w = csv.writer(salida)
+    w.writerow([specs[c].label if c in specs else c for c in claves])
+    for f in filas:
+        w.writerow([texto(f.get(c)) for c in claves])
+    return salida.getvalue()
+
+
 @router.post("/bulk-export-csv")
 def bulk_export_csv(
     body: BulkExportPayload,
@@ -642,17 +680,21 @@ def bulk_export_csv(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ningún contacto válido en la selección.",
         )
-    lines = [",".join(_CSV_COLUMNS)]
-    for c in contacts:
-        row = []
-        for col in _CSV_COLUMNS:
-            val = getattr(c, col, None)
-            text = "" if val is None else str(val)
-            # Strip embedded commas y newlines — patrón usado también
-            # en /audit-logs/export para evitar parser caprichosos.
-            text = text.replace(",", " ").replace("\n", " ").replace("\r", " ")
-            row.append(text)
-        lines.append(",".join(row))
+    if body.columns:
+        contenido = _csv_con_columnas(session, contacts, body.columns, body.contact_ids)
+        lines = None
+    else:
+        lines = [",".join(_CSV_COLUMNS)]
+        for c in contacts:
+            row = []
+            for col in _CSV_COLUMNS:
+                val = getattr(c, col, None)
+                text = "" if val is None else str(val)
+                # Strip embedded commas y newlines — patrón usado también
+                # en /audit-logs/export para evitar parser caprichosos.
+                text = text.replace(",", " ").replace("\n", " ").replace("\r", " ")
+                row.append(text)
+            lines.append(",".join(row))
     record_event(
         session,
         action=Action.CONTACT_UPDATED,
@@ -668,7 +710,7 @@ def bulk_export_csv(
     )
     session.commit()
     return Response(
-        content="\n".join(lines) + "\n",
+        content=contenido if lines is None else "\n".join(lines) + "\n",
         media_type="text/csv",
         headers={
             "Content-Disposition": "attachment; filename=contacts.csv",
