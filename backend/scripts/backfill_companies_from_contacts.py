@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
 from app.models.crm import Company, Contact
+from app.services import dominios_compartidos
 from app.services.company_extraction import (
     derive_company_name_from_domain,
     extract_company_domain,
@@ -76,15 +77,30 @@ def _resolve_from_brevo(
     postal_code: str | None,
     country: str | None,
     region: str | None,
-) -> Company:
+    email: str | None = None,
+) -> Company | None:
     """Find an existing company by CIF or domain, else create one
-    with the Brevo data flagged `source='brevo'`."""
+    with the Brevo data flagged `source='brevo'`. A domain of the
+    `dominios_compartidos` list never matches nor is stored; without
+    CIF and with a domain of the list (web) or a shared email → None
+    (the declared name doesn't identify a company; the caller then
+    tries the email domain)."""
+    lista = dominios_compartidos.cargar(session)
     company: Company | None = None
     if cif:
         company = session.scalar(
             select(Company).where(Company.tax_id == cif)
         )
     domain = normalise_domain(web)
+    web_en_lista = bool(domain) and lista.contiene(domain)
+    if web_en_lista:
+        domain = None
+    if company is None and not cif and not domain and (
+        web_en_lista or lista.compartido(dominios_compartidos.dominio_de_correo(email))
+    ):
+        # Sin CIF y con web o correo de un dominio de la lista: la empresa
+        # declarada no se identifica; el que llama prueba el correo.
+        return None
     if company is None and domain:
         company = session.scalar(
             select(Company).where(Company.domain == domain)
@@ -131,9 +147,10 @@ def _decode_refs(raw: str | None) -> dict[str, Any]:
 def _resolve_from_email_domain(
     session: Session, *, email: str
 ) -> Company | None:
-    """Auto-link by email domain. Returns None when the address is
-    free-mail (gmail.com etc.) so the caller can record the skip."""
-    domain = extract_company_domain(email)
+    """Auto-link by email domain. Returns None when the domain is in the
+    `dominios_compartidos` list (gmail.com, xtec.cat…) so the caller can
+    record the skip."""
+    domain = extract_company_domain(email, dominios_compartidos.cargar(session))
     if not domain:
         return None
     company = session.scalar(
@@ -193,16 +210,26 @@ def backfill(
                     postal_code=_brevo_value(cf, "CODIGO_POSTAL"),
                     country=contact.address_country,
                     region=_brevo_value(cf, "PAIS_REGION"),
+                    email=contact.email,
                 )
-                counts["linked_brevo"] += 1
-                if before_id is None and company.id is not None:
-                    counts["companies_created"] += 1
+                if company is None:
+                    company = _resolve_from_email_domain(
+                        session, email=contact.email or "")
+                    if company is None:
+                        counts["skipped_personal_domain"] += 1
+                    else:
+                        counts["linked_domain"] += 1
+                else:
+                    counts["linked_brevo"] += 1
+                    if before_id is None and company.id is not None:
+                        counts["companies_created"] += 1
             else:
                 pre_domain = (
                     session.scalar(
                         select(Company.id).where(
                             Company.domain
-                            == extract_company_domain(contact.email)
+                            == extract_company_domain(
+                                contact.email, dominios_compartidos.cargar(session))
                         )
                     )
                     if contact.email

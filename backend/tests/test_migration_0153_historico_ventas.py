@@ -351,3 +351,24 @@ def test_0165_resumen_por_empresa_y_el_sector_de_padel(alembic_setup):
             "crm_resumen_estado", "crm_etiqueta_auto"} <= tablas
     command.downgrade(cfg, "20261101_0164")
     assert "crm_empresa_erp" not in set(inspect(engine).get_table_names())
+
+
+def test_0166_dominios_compartidos_sembrados_y_sin_despegar_nada(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261101_0165")
+    command.upgrade(cfg, "20261101_0166")
+    with engine.connect() as c:
+        filas = dict(c.exec_driver_sql("SELECT dominio, tipo FROM dominios_compartidos").all())
+        apuntes = c.exec_driver_sql("SELECT COUNT(*) FROM crm_despegue_dominio").scalar()
+    # La lista que vivía en el código (gmail.com…) y la semilla de las consejerías.
+    assert filas["gmail.com"] == "correo" and filas["xtec.cat"] == "compartido"
+    assert sum(1 for t in filas.values() if t == "compartido") == 11
+    from app.models.dominios import SEMILLA_COMPARTIDOS, SEMILLA_CORREO
+
+    assert set(filas) == set(SEMILLA_CORREO) | set(SEMILLA_COMPARTIDOS)
+    assert apuntes == 0                         # la migración no despega nada
+    command.downgrade(cfg, "20261101_0165")
+    tablas = set(inspect(engine).get_table_names())
+    assert "dominios_compartidos" not in tablas and "crm_despegue_dominio" not in tablas

@@ -8,6 +8,7 @@ from app.email_templates import models as _email_templates  # noqa: F401
 from app.erp import models as _erp_models  # noqa: F401
 from app.models import brevo as _brevo  # noqa: F401
 from app.models import conocimiento as _conocimiento  # noqa: F401
+from app.models import dominios as _dominios  # noqa: F401
 from app.models import fuentes_externas as _fuentes_externas  # noqa: F401
 from app.models import ia as _ia  # noqa: F401
 from app.models import integration_settings as _integration_settings  # noqa: F401

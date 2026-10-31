@@ -1539,6 +1539,15 @@ def create_contact(
     data["origin"] = "Manual"
     data["origin_account_id"] = None
     contact = Contact(**data)
+    if contact.company_id:
+        # 1/11/2026: la empresa elegida al dar de alta es un vínculo a mano
+        # (ni la sincronización la pisa ni el despegue de dominios compartidos
+        # la quita).
+        from app.services.contact_sync_protection import (  # noqa: PLC0415
+            mark_manually_edited,
+        )
+
+        mark_manually_edited(contact, ["company_id"])
     session.add(contact)
     try:
         session.flush()

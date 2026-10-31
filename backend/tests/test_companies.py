@@ -70,11 +70,19 @@ def _user_id(session: Session, role: UserRole) -> str:
 
 
 def test_extract_company_domain_skips_personal_addresses() -> None:
-    assert extract_company_domain("bart@bomedia.net") == "bomedia.net"
-    assert extract_company_domain("bart@GMAIL.com") is None
-    assert extract_company_domain("bart@yahoo.es") is None
-    assert extract_company_domain("") is None
-    assert extract_company_domain("no-at-sign") is None
+    from app.models.dominios import SEMILLA_COMPARTIDOS, SEMILLA_CORREO
+    from app.services.dominios_compartidos import Lista
+
+    lista = Lista({**dict.fromkeys(SEMILLA_CORREO, "correo"),
+                   **dict.fromkeys(SEMILLA_COMPARTIDOS, "compartido")})
+    assert extract_company_domain("bart@bomedia.net", lista) == "bomedia.net"
+    assert extract_company_domain("bart@GMAIL.com", lista) is None
+    assert extract_company_domain("bart@yahoo.es", lista) is None
+    # 1/11/2026: un dominio compartido (y sus subdominios) tampoco.
+    assert extract_company_domain("docente@xtec.cat", lista) is None
+    assert extract_company_domain("docente@alumnes.xtec.cat", lista) is None
+    assert extract_company_domain("", lista) is None
+    assert extract_company_domain("no-at-sign", lista) is None
 
 
 def test_derive_company_name_titlecases_short_tokens_as_acronyms() -> None:
