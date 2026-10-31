@@ -154,8 +154,8 @@ def resolve_brevo_company(
     domain = normalise_domain(web)
     # 1/11/2026 — un dominio de la lista (gmail.com, xtec.cat…) no identifica
     # una empresa: ni se busca por él ni se guarda como dominio de una nueva.
-    web_compartida = lista.compartido(domain)
-    if domain and lista.contiene(domain):
+    web_en_lista = bool(domain) and lista.contiene(domain)
+    if web_en_lista:
         domain = None
     correo_compartido = lista.compartido(
         dominios_compartidos.dominio_de_correo(fallback_email))
@@ -170,14 +170,11 @@ def resolve_brevo_company(
             company = session.scalar(
                 select(Company).where(Company.domain == domain)
             )
-        if company is None:
-            if web_compartida or correo_compartido:
-                # Sin CIF y con un dominio compartido (el de la web o el del
-                # correo): la «empresa» declarada no se puede identificar
-                # (cientos de centros escriben «Centro público»). Inventarla
-                # —una nueva en cada sincronización— sería repetir el error:
-                # el contacto se queda sin empresa.
-                return None
+        if company is not None:
+            return company.id
+        if cif or not (web_en_lista or correo_compartido):
+            # Con CIF (identifica la empresa) o con una web propia: se crea,
+            # como siempre.
             refs_payload = {"brevo": {"empresa": empresa}}
             company = Company(
                 name=empresa,
@@ -195,7 +192,12 @@ def resolve_brevo_company(
             )
             session.add(company)
             session.flush()
-        return company.id
+            return company.id
+        # Sin CIF y con la web o el correo de un dominio de la lista: la
+        # «empresa» declarada no se puede identificar (cientos de centros
+        # escriben «Centro público»). Inventarla —una nueva en cada
+        # sincronización— sería repetir el error. Se prueba el dominio del
+        # correo, que si es de la lista tampoco vincula.
 
     # Fall back to the email domain. A domain of the list (free-mail,
     # shared) returns None and the contact stays company-less.

@@ -155,7 +155,13 @@ def main(argv: list[str] | None = None) -> int:
         print("\nYA CLIENTE")
         yc = dd.ya_cliente(s)
         print(f"  Hoy: {yc['contactos']} contactos en {yc['empresas']} empresas")
-        p = dd.plan(s)
+        try:
+            correos = dd.correos_de_factusol(s)
+        except Exception as exc:  # noqa: BLE001
+            correos = None
+            print(f"  (sin leer F_CLI de FACTUSOL: {type(exc).__name__}; la cuenta de abajo no "
+                  "descuenta a los que tienen el correo de su cliente)")
+        p = dd.plan(s, correos_factusol=correos)
         afectados = dd.ya_cliente_por_empresa(s, p)
         auto = sum(x["ya_cliente_auto"] for x in afectados)
         mano = sum(x["ya_cliente_a_mano"] for x in afectados)

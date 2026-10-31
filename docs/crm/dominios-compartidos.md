@@ -31,14 +31,17 @@ Un subdominio cuenta como su dominio: con `xtec.cat`, también
 
 - **Brevo**: un contacto con correo de la lista no se vincula por el dominio.
   - Una web de la lista no sirve para buscar ni para crear la empresa.
-  - Si declara una «EMPRESA» sin CIF y con correo o web de un dominio compartido,
-    se queda sin empresa. Inventarla, una nueva en cada sincronización, sería
-    repetir el error.
-  - Con CIF se sigue buscando por el CIF.
+  - Si declara una «EMPRESA» sin CIF y con web de la lista o correo compartido,
+    no se inventa la empresa: se prueba el dominio de su correo, y si también es
+    de la lista se queda sin empresa. Inventarla, una nueva en cada
+    sincronización, sería repetir el error.
+  - Con CIF se busca por el CIF y, si no existe, se crea, como siempre.
 - **El relleno de empresas** (`backfill_companies_from_contacts`) aplica la
   misma regla.
 - **Fusionar empresas**: la superviviente no hereda un dominio de la lista.
   Heredarlo la convertiría en el imán de todo el que lo use.
+- **Alta manual**: un contacto dado de alta a mano con su empresa queda marcado
+  como vínculo a mano.
 - **Lo que no hace**: no despega a quien ya está vinculado. Eso lo hace el
   script de abajo, con prueba antes.
 
@@ -91,10 +94,14 @@ por dominio, así que sus vínculos salen de otro sitio.
 | Motivo | Prueba |
 |---|---|
 | `factusol` | es él mismo un cliente de FACTUSOL (`factusol_contact_id`) |
+| `correo_factusol` | su correo es el del cliente de FACTUSOL de su empresa. El script lee F_CLI, solo lectura; si no puede leerlo se para, salvo con `--sin-factusol` |
+| `conciliado` | la conciliación con FACTUSOL por correo lo llevó a esa empresa (sus apuntes en la auditoría) |
 | `pedido` | figura en un pedido del ERP de esa empresa |
 | `oferta` | figura en una oferta de BoHub de esa empresa |
-| `a_mano` | alguien le puso esa empresa a mano: la ficha marca `company_id` como editado a mano, o la auditoría guarda la asignación (`assign-company`) |
-| `declarada` | declaró en Brevo una empresa con el mismo nombre. Solo cuenta con `--conservar-declaradas`; apagado por defecto, porque «Centro público» lo declaran cientos de centros |
+| `a_mano` | alguien le puso esa empresa a mano: la ficha marca `company_id` como editado a mano, o la auditoría guarda la asignación (`assign-company`), o se dio de alta a mano (origen «Manual») |
+
+La «EMPRESA» que declara alguien en Brevo no sirve de prueba: Brevo no la
+guarda en el contacto (y «Centro público» la declaran cientos de centros).
 
 **Al despegar:**
 
@@ -102,14 +109,17 @@ por dominio, así que sus vínculos salen de otro sitio.
 - Queda un apunte por contacto en `crm_despegue_dominio` con la empresa anterior,
   el dominio y el motivo.
 - **Empresas archivadas** (con `is_archived`, nunca borradas): las que se quedan
-  sin contactos, no tienen cliente de FACTUSOL, tienen un dominio de la lista o
-  ninguno, y no tienen pedidos, ofertas ni tareas.
+  sin contactos, no tienen cliente de FACTUSOL ni CIF, tienen un dominio de la
+  lista o ninguno, y no tienen pedidos, ofertas, tareas ni máquinas a mano.
 - Una empresa con cliente de FACTUSOL no se archiva nunca. Conserva su vínculo,
   su parque y su histórico; solo pierde los contactos que no eran suyos.
 
 **Revertir:** cada contacto vuelve a su empresa anterior y cada empresa archivada
-se desarchiva. Si a alguien le han puesto ya otra empresa, o la anterior ya no
-existe, no se toca y se cuenta.
+se desarchiva. No se toca, y se cuenta:
+
+- un contacto al que le han puesto ya otra empresa, o cuya empresa anterior ya
+  no existe;
+- una empresa que alguien ha vuelto a archivar por otro motivo.
 
 **Después del `--apply`** el script:
 

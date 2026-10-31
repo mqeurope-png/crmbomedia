@@ -82,8 +82,9 @@ def _resolve_from_brevo(
     """Find an existing company by CIF or domain, else create one
     with the Brevo data flagged `source='brevo'`. A domain of the
     `dominios_compartidos` list never matches nor is stored; without
-    CIF and with a shared domain (web or email) → None (the declared
-    name doesn't identify a company)."""
+    CIF and with a domain of the list (web) or a shared email → None
+    (the declared name doesn't identify a company; the caller then
+    tries the email domain)."""
     lista = dominios_compartidos.cargar(session)
     company: Company | None = None
     if cif:
@@ -91,12 +92,14 @@ def _resolve_from_brevo(
             select(Company).where(Company.tax_id == cif)
         )
     domain = normalise_domain(web)
-    web_compartida = lista.compartido(domain)
-    if domain and lista.contiene(domain):
+    web_en_lista = bool(domain) and lista.contiene(domain)
+    if web_en_lista:
         domain = None
-    if company is None and (
-        web_compartida or lista.compartido(dominios_compartidos.dominio_de_correo(email))
+    if company is None and not cif and (
+        web_en_lista or lista.compartido(dominios_compartidos.dominio_de_correo(email))
     ):
+        # Sin CIF y con web o correo de un dominio de la lista: la empresa
+        # declarada no se identifica; el que llama prueba el correo.
         return None
     if company is None and domain:
         company = session.scalar(
@@ -210,7 +213,12 @@ def backfill(
                     email=contact.email,
                 )
                 if company is None:
-                    counts["skipped_personal_domain"] += 1
+                    company = _resolve_from_email_domain(
+                        session, email=contact.email or "")
+                    if company is None:
+                        counts["skipped_personal_domain"] += 1
+                    else:
+                        counts["linked_domain"] += 1
                 else:
                     counts["linked_brevo"] += 1
                     if before_id is None and company.id is not None:

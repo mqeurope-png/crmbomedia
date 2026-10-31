@@ -255,6 +255,13 @@ def test_los_scripts_prueban_sin_escribir_y_aplican_con_yes(session_factory, mon
     esc = _escenario(session_factory)
     engine = session_factory.kw["bind"]
     monkeypatch.setattr("app.db.session.get_engine", lambda: engine)
+    # Sin FACTUSOL en los tests: si no se puede leer F_CLI, el script se para.
+    def sin_factusol(_s):
+        raise ConnectionError("sin FACTUSOL")
+    monkeypatch.setattr(dd, "correos_de_factusol", sin_factusol)
+    assert script.main(["--probar"]) == 3
+    capsys.readouterr()
+    monkeypatch.setattr(dd, "correos_de_factusol", lambda _s: {})
     assert diagnostico_dominios.main([]) == 0
     salida = capsys.readouterr().out
     assert "xtec.cat" in salida and "Figurante" not in salida and "Centro" not in salida
@@ -282,3 +289,127 @@ def test_la_lista_cubre_los_subdominios_y_se_lee_de_la_tabla(session_factory) ->
         assert not lista.contiene("xtec.cat.ejemplo.es")
         dc.quitar(s, "xtec.cat")
         assert not dc.cargar(s).contiene("xtec.cat")
+
+
+# --- revisión (1/11/2026) -------------------------------------------------------------------
+
+
+def test_lo_que_concilio_factusol_por_correo_se_queda(session_factory) -> None:  # noqa: F811
+    """La conciliación por correo llevó docentes de @xtec.cat a SU centro de
+    FACTUSOL: no se despegan. Por su apunte, o porque su correo es el del
+    cliente en F_CLI (cuando la conciliación no dejó apunte)."""
+    from app.models.crm import AuditLog
+
+    esc = _escenario(session_factory)
+    d1, d2, d3 = esc["ids"]["docentes"][:3]
+    with session_factory() as s:
+        centro = Company(name="Centro figurante FACTUSOL", factusol_company_id="4790")
+        s.add(centro)
+        s.flush()
+        for d in (d1, d2, d3):
+            s.get(Contact, d).company_id = centro.id
+        s.get(Contact, d1).email = "centro4790@xtec.cat"
+        s.add(AuditLog(action="erp.factusol_bulk_sync_by_email_reassign", target_type="contact",
+                       target_id=d2, metadata_json=json.dumps({"new_company_id": centro.id})))
+        s.add(Contact(first_name="Alta a mano", email="alta@xtec.cat", company_id=centro.id,
+                      origin="Manual", tags=""))
+        s.commit()
+        p = dd.plan(s, correos_factusol={"4790": {"centro4790@xtec.cat"}})
+        fila = next(e for e in p.empresas if e.company_id == centro.id)
+        assert dict(fila.quedan) == {"correo_factusol": 1, "conciliado": 1, "a_mano": 1}
+        assert [c for c, _d in fila.despegar] == [d3]
+        assert p.con_factusol
+
+
+def test_una_empresa_con_cif_o_maquinas_a_mano_no_se_archiva(session_factory) -> None:  # noqa: F811,E501
+    from app.erp.models.historico import ParqueMaquinaManual
+
+    esc = _escenario(session_factory)
+    with session_factory() as s:
+        s.get(Company, esc["generica"]).tax_id = "Q0000001J"
+        otra = Company(name="Centro figurante", domain="educa.madrid.org")
+        s.add(otra)
+        s.flush()
+        s.add(Contact(first_name="Figurante", email="m@educa.madrid.org", company_id=otra.id,
+                      tags=""))
+        s.add(ParqueMaquinaManual(company_id=otra.id, codart="L1", descripcion="Figurante",
+                                  gama="laser"))
+        s.commit()
+        por = {e.company_id: e for e in dd.plan(s).empresas}
+        assert len(por[esc["generica"]].despegar) == 3 and not por[esc["generica"]].archivar
+        assert len(por[otra.id].despegar) == 1 and not por[otra.id].archivar
+
+
+def test_revertir_no_desarchiva_lo_archivado_por_otro_motivo(session_factory) -> None:  # noqa: F811
+    esc = _escenario(session_factory)
+    with session_factory() as s:
+        lote = dd.aplicar(s, dd.plan(s), por="test")
+        empresa = s.get(Company, esc["generica"])
+        empresa.archived_reason = "Archivada a mano por otro motivo"
+        s.commit()
+        r = dd.revertir(s, lote, por="test")
+        assert r["empresas"] == 0
+        assert s.get(Company, esc["generica"]).is_archived is True
+
+
+def test_un_cambio_entre_el_plan_y_aplicar_no_se_pisa(session_factory) -> None:  # noqa: F811
+    esc = _escenario(session_factory)
+    movido = esc["ids"]["docentes"][0]
+    with session_factory() as s:
+        p = dd.plan(s)
+    with session_factory() as otra:
+        otra.get(Contact, movido).company_id = esc["propia"]
+        otra.commit()
+    with session_factory() as s:
+        dd.aplicar(s, p, por="test")
+        assert s.get(Contact, movido).company_id == esc["propia"]
+        assert s.scalar(select(DespegueDominio).where(DespegueDominio.objeto_id == movido)) is None
+
+
+def test_brevo_con_web_de_la_lista_no_inventa_empresas(session_factory) -> None:  # noqa: F811
+    with session_factory() as s:
+        antes = s.scalar(select(func.count()).select_from(Company))
+        for _ in range(3):
+            assert resolve_brevo_company(s, {"EMPRESA": "Taller", "WEB": "gmail.com"},
+                                         fallback_email="taller@gmail.com") is None
+        assert s.scalar(select(func.count()).select_from(Company)) == antes
+        # Correo propio + web de la consejería + EMPRESA: por el dominio del correo.
+        propia = resolve_brevo_company(s, {"EMPRESA": "Taller", "WEB": "xtec.cat"},
+                                       fallback_email="ana@taller-figurante.es")
+        assert s.get(Company, propia).domain == "taller-figurante.es"
+        # Con un CIF nuevo se crea la empresa (el CIF la identifica), sin el dominio.
+        nueva = resolve_brevo_company(s, {"EMPRESA": "Centro", "CIF": "Q0000002J",
+                                          "WEB": "xtec.cat"}, fallback_email="d@xtec.cat")
+        c = s.get(Company, nueva)
+        assert c.tax_id == "Q0000002J" and c.domain is None
+        assert resolve_brevo_company(s, {"EMPRESA": "Centro", "CIF": "Q0000002J"},
+                                     fallback_email="d2@xtec.cat") == nueva
+
+
+def test_las_vistas_de_la_pantalla_se_miden(session_factory) -> None:  # noqa: F811
+    from app.models.crm import ContactView, User
+
+    _escenario(session_factory)
+    with session_factory() as s:
+        ee.recalcular(s, hoy=HOY)
+        dueno = s.scalar(select(User.id).limit(1))
+        s.add(ContactView(name="Vista láser figurante", owner_user_id=dueno,
+                          filters_json=json.dumps({"rules_json": {
+                              "operator": "AND", "children": [
+                                  {"type": "rule", "field": "parque_gama", "comparator": "in",
+                                   "value": ["laser"]}]}})))
+        s.commit()
+        riesgo = {x["nombre"]: x for x in dd.en_riesgo(s, dd.plan(s))}
+        assert riesgo["Vista láser figurante"]["se_despegan"] == 6
+
+
+def test_el_alta_manual_con_empresa_queda_marcada(http, session_factory) -> None:  # noqa: F811
+    with session_factory() as s:
+        cid = s.scalar(select(Company.id).limit(1))
+    r = http.post("/api/contacts", json={"first_name": "Figurante", "email": "alta@xtec.cat",
+                                         "company_id": cid},
+                  headers=auth_headers(http, "user"))
+    assert r.status_code in (200, 201), r.text
+    with session_factory() as s:
+        c = s.scalar(select(Contact).where(Contact.email == "alta@xtec.cat"))
+        assert "company_id" in json.loads(c.manually_edited_fields_json)

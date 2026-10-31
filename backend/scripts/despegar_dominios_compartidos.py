@@ -4,9 +4,13 @@ juntadeandalucia.es…) pegó a una empresa (1/11/2026). No escribe en FACTUSOL.
 Qué se despega y qué se queda: `app/services/despegue_dominios.py`. En
 corto: un contacto con correo de un dominio `compartido` de la lista se
 despega de su empresa salvo que haya una prueba de que es de ella (cliente de
-FACTUSOL, pedido, oferta o vínculo puesto a mano). `company_id` a nulo, con un
-apunte por contacto; las empresas que se quedan vacías y sin cliente de
-FACTUSOL se archivan. Todo en un lote que se deshace entero.
+FACTUSOL, su correo es el del cliente en F_CLI, la conciliación por correo lo
+llevó allí, pedido, oferta o vínculo puesto a mano). `company_id` a nulo, con
+un apunte por contacto; las empresas que se quedan vacías, sin cliente de
+FACTUSOL y sin CIF se archivan. Todo en un lote que se deshace entero.
+
+Lee F_CLI de FACTUSOL (solo lectura) para la prueba del correo. Si no se puede
+leer, se para; `--sin-factusol` sigue sin esa prueba (no recomendable).
 
 Uso (VPS), siempre en este orden:
 
@@ -21,9 +25,6 @@ Uso (VPS), siempre en este orden:
     ... python -m scripts.despegar_dominios_compartidos --revertir LOTE --yes
     # Ver los lotes:
     ... python -m scripts.despegar_dominios_compartidos --lotes
-
-`--conservar-declaradas`: deja también a quien declaró en Brevo una empresa
-con el mismo nombre (apagado por defecto).
 
 En la consola no salen nombres de personas ni de empresas: las empresas van por
 id corto, código de cliente de FACTUSOL y dominio.
@@ -47,8 +48,9 @@ def _imprimir_plan(s: Session, p, *, completo: bool) -> None:  # noqa: ANN001
     print(f"Se despegan: {p.a_despegar} · se quedan con su empresa: {sum(quedan.values())} "
           f"({', '.join(f'{k} {v}' for k, v in quedan.most_common()) or '—'})")
     print(f"Empresas que se archivan (vacías, sin cliente de FACTUSOL): {len(p.a_archivar)}")
-    if p.conservar_declaradas:
-        print("(con --conservar-declaradas)")
+    if not p.con_factusol:
+        print("ATENCIÓN: sin leer F_CLI (--sin-factusol): no se ha mirado el correo de los "
+              "clientes de FACTUSOL.")
     print("\nPOR EMPRESA")
     print(f"  {'empresa':8} {'cliente':>8} {'dominio de la empresa':26} {'contactos':>9} "
           f"{'despegan':>8} {'quedan':>6}  motivos de los que quedan          archiva")
@@ -87,7 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     modo.add_argument("--revertir", metavar="LOTE", help="deshacer un lote (exige --yes)")
     modo.add_argument("--lotes", action="store_true", help="listar los lotes")
     ap.add_argument("--yes", action="store_true", help="confirmación de --apply / --revertir")
-    ap.add_argument("--conservar-declaradas", action="store_true")
+    ap.add_argument("--sin-factusol", action="store_true",
+                    help="no leer F_CLI (se pierde la prueba del correo del cliente)")
     ap.add_argument("--completo", action="store_true", help="todas las empresas en el listado")
     ap.add_argument("--csv", help="(con --probar) listado por empresa CON nombres, al servidor")
     args = ap.parse_args(argv)
@@ -116,7 +119,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"YA CLIENTE: {antes['contactos']} → {dd.ya_cliente(s)['contactos']} contactos")
             return 0
 
-        p = dd.plan(s, conservar_declaradas=args.conservar_declaradas)
+        correos = None
+        if not args.sin_factusol:
+            try:
+                correos = dd.correos_de_factusol(s)
+            except Exception as exc:  # noqa: BLE001
+                print(f"No se ha podido leer F_CLI de FACTUSOL ({type(exc).__name__}). "
+                      "Sin esa prueba podrían despegarse contactos que son del cliente. "
+                      "Reinténtalo, o pasa --sin-factusol si de verdad quieres seguir.",
+                      file=sys.stderr)
+                return 3
+            print(f"F_CLI leído (solo lectura): {len(correos)} clientes con correo.")
+        p = dd.plan(s, correos_factusol=correos)
         print("DESPEGUE DE DOMINIOS COMPARTIDOS" + (" — PRUEBA, no escribe nada"
                                                      if args.probar else ""))
         _imprimir_plan(s, p, completo=args.completo or args.probar)

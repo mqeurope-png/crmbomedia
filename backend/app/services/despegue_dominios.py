@@ -14,17 +14,20 @@ hay alguna prueba de que es de esa empresa:
 - `factusol`: es él mismo un cliente de FACTUSOL (`factusol_contact_id`);
 - `pedido`: figura en un pedido del ERP de esa empresa;
 - `oferta`: figura en una oferta de BoHub de esa empresa;
+- `correo_factusol`: su correo es el del cliente de FACTUSOL de su empresa
+  (F_CLI, leído; nunca se escribe);
+- `conciliado`: la conciliación con FACTUSOL por correo lo llevó a esa
+  empresa (sus apuntes en la auditoría);
 - `a_mano`: alguien le puso esa empresa a mano (la ficha marca `company_id`
-  como editado a mano, o la auditoría guarda la asignación);
-- `declarada` (solo con `conservar_declaradas`): declaró en Brevo una empresa
-  con el mismo nombre. Apagado por defecto: «Centro público» lo declaran
-  cientos de centros.
+  como editado a mano, o la auditoría guarda la asignación), o se dio de alta
+  a mano (origen «Manual»).
 
 **Cómo.** `company_id` a nulo: ni se borra ni se desactiva. Un apunte por
 contacto en `crm_despegue_dominio` con la empresa anterior y el motivo, en un
 lote que se deshace entero (`revertir`). Las empresas que se quedan sin
-contactos, sin cliente de FACTUSOL, con un dominio de la lista (o sin dominio)
-y sin pedidos, ofertas ni tareas se archivan (también con apunte). Las que
+contactos, sin cliente de FACTUSOL, sin CIF, con un dominio de la lista (o sin
+dominio) y sin pedidos, ofertas, tareas ni máquinas a mano se archivan (también
+con apunte). Las que
 tienen cliente de FACTUSOL nunca se archivan: conservan su vínculo, su parque
 y su histórico; solo pierden los contactos que no eran suyos.
 
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -48,7 +52,12 @@ logger = logging.getLogger(__name__)
 
 MOTIVO = "dominio_compartido"
 MOTIVO_EMPRESA = "empresa_vacia_de_dominio_compartido"
-RAZONES = ("factusol", "pedido", "oferta", "a_mano", "declarada")
+RAZONES = ("factusol", "correo_factusol", "conciliado", "pedido", "oferta", "a_mano")
+#: Las acciones de la conciliación con FACTUSOL por correo
+#: (`integrations/factusol/bulk_match.py`).
+_CONCILIACION = ("erp.factusol_bulk_sync_by_email",
+                 "erp.factusol_bulk_sync_by_email_create_company",
+                 "erp.factusol_bulk_sync_by_email_reassign")
 TIPO_CONTACTO, TIPO_EMPRESA = "contacto", "empresa"
 
 
@@ -62,6 +71,7 @@ class PlanEmpresa:
     codcli: str | None
     dominio: str | None
     archivada: bool
+    tiene_cif: bool = False
     #: Contactos con empresa = esta, antes del despegue.
     total: int = 0
     #: (contact_id, dominio de la lista) que se despegan.
@@ -82,7 +92,8 @@ class Plan:
     empresas: list[PlanEmpresa]
     por_dominio: Counter
     contactos_con_empresa: int
-    conservar_declaradas: bool
+    #: Si se miró el correo de los clientes en F_CLI.
+    con_factusol: bool = False
 
     @property
     def a_despegar(self) -> int:
@@ -125,28 +136,62 @@ def _asignaciones_a_mano(session: Session) -> set[tuple[str, str]]:
             continue
         if not isinstance(datos, dict) or not target:
             continue
+        # `assign-company` deja {"field": "company_id", "from", "to"}. El PATCH
+        # de la ficha no dice a qué empresa: cuenta su marca de editado a mano.
         if datos.get("field") == "company_id" and datos.get("to"):
             out.add((target, str(datos["to"])))
-        cambios = datos.get("changes") or datos.get("fields")
-        if isinstance(cambios, dict) and isinstance(cambios.get("company_id"), dict):
-            if (to := cambios["company_id"].get("to") or cambios["company_id"].get("new")):
-                out.add((target, str(to)))
     return out
 
 
-def _empresa_declarada(custom_fields: str | None) -> str | None:
-    try:
-        datos = json.loads(custom_fields) if custom_fields else {}
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(datos, dict):
-        return None
-    valor = datos.get("brevo:EMPRESA") or datos.get("EMPRESA")
-    return str(valor).strip().casefold() if valor else None
+def _conciliados(session: Session) -> set[tuple[str, str]]:
+    """(contacto, empresa) que la conciliación con FACTUSOL por correo dejó
+    juntos: la empresa refrescada o creada para el contacto, o a la que se le
+    reasignó. (Cuando lo asigna a una empresa que ya estaba vinculada no deja
+    apunte: eso lo cubre `correo_factusol`.)"""
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    out: set[tuple[str, str]] = set()
+    for accion, tipo, target, meta in session.execute(
+            select(AuditLog.action, AuditLog.target_type, AuditLog.target_id,
+                   AuditLog.metadata_json).where(AuditLog.action.in_(_CONCILIACION))):
+        try:
+            datos = json.loads(meta or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(datos, dict):
+            continue
+        if accion.endswith("_reassign"):
+            if target and datos.get("new_company_id"):
+                out.add((target, str(datos["new_company_id"])))
+        elif tipo == "company" and target and datos.get("contact_id"):
+            out.add((str(datos["contact_id"]), target))
+    return out
 
 
-def plan(session: Session, *, conservar_declaradas: bool = False) -> Plan:
-    """Qué se despega y qué se queda, por empresa. Solo lee."""
+def correos_de_factusol(session: Session) -> dict[str, set[str]]:
+    """Los correos de cada cliente de F_CLI (por `clave_cliente`). Solo lee
+    FACTUSOL. Lanza si no se puede leer: el que llama decide."""
+    from app.erp import parque  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    filas = FactusolClient.from_settings().load_table(
+        "F_CLI", filtro="1=1", ejercicio=ejercicio_for(session))
+    out: dict[str, set[str]] = {}
+    for f in filas:
+        cli = parque.clave_cliente(f.get("CODCLI"))
+        correos = {c.strip().lower() for c in re.split(r"[;,\s]+", str(f.get("EMACLI") or ""))
+                   if "@" in c}
+        if cli and correos:
+            out.setdefault(cli, set()).update(correos)
+    return out
+
+
+def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = None) -> Plan:
+    """Qué se despega y qué se queda, por empresa. Solo lee. Con
+    `correos_factusol` (ver `correos_de_factusol`), también se queda quien
+    tenga el correo del cliente de FACTUSOL de su empresa."""
+    from app.erp import parque  # noqa: PLC0415
     from app.erp.models.ofertas import Oferta  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
     from app.models.crm import Company, Contact, Task  # noqa: PLC0415
@@ -154,10 +199,11 @@ def plan(session: Session, *, conservar_declaradas: bool = False) -> Plan:
 
     lista = dc.cargar(session, refrescar=True)
     empresas = {cid: PlanEmpresa(company_id=cid, codcli=(codcli or "").strip() or None,
-                                 dominio=dominio, archivada=bool(arch), nombre=nombre or "")
-                for cid, codcli, dominio, arch, nombre in session.execute(
+                                 dominio=dominio, archivada=bool(arch), nombre=nombre or "",
+                                 tiene_cif=bool((cif or "").strip()))
+                for cid, codcli, dominio, arch, nombre, cif in session.execute(
                     select(Company.id, Company.factusol_company_id, Company.domain,
-                           Company.is_archived, Company.name))}
+                           Company.is_archived, Company.name, Company.tax_id))}
     pedidos = {(a, b) for a, b in session.execute(
         select(Order.contact_id, Order.company_id).where(
             Order.contact_id.is_not(None), Order.company_id.is_not(None)).distinct())}
@@ -165,12 +211,11 @@ def plan(session: Session, *, conservar_declaradas: bool = False) -> Plan:
         select(Oferta.contact_id, Oferta.company_id).where(
             Oferta.contact_id.is_not(None), Oferta.company_id.is_not(None)).distinct())}
     a_mano = _asignaciones_a_mano(session)
+    conciliados = _conciliados(session)
     por_dominio: Counter = Counter()
     con_empresa = 0
     cols = [Contact.id, Contact.email, Contact.company_id, Contact.factusol_contact_id,
-            Contact.manually_edited_fields_json]
-    if conservar_declaradas:
-        cols.append(Contact.custom_fields)
+            Contact.manually_edited_fields_json, Contact.origin]
     for fila in session.execute(select(*cols).where(Contact.company_id.is_not(None))):
         cid, email, company_id = fila[0], fila[1], fila[2]
         e = empresas.get(company_id)
@@ -182,39 +227,47 @@ def plan(session: Session, *, conservar_declaradas: bool = False) -> Plan:
         if dominio is None or not lista.compartido(dominio):
             continue
         razon = None
+        cli = parque.clave_cliente(e.codcli) if e.codcli else None
         if (fila[3] or "").strip():
             razon = "factusol"
+        elif correos_factusol and cli and (email or "").strip().lower() in \
+                correos_factusol.get(cli, ()):
+            razon = "correo_factusol"
+        elif (cid, company_id) in conciliados:
+            razon = "conciliado"
         elif (cid, company_id) in pedidos:
             razon = "pedido"
         elif (cid, company_id) in ofertas:
             razon = "oferta"
-        elif "company_id" in _marcas_manuales(fila[4]) or (cid, company_id) in a_mano:
+        elif "company_id" in _marcas_manuales(fila[4]) or (cid, company_id) in a_mano \
+                or (fila[5] or "").strip().lower() == "manual":
             razon = "a_mano"
-        elif conservar_declaradas and e.nombre and \
-                _empresa_declarada(fila[5]) == e.nombre.strip().casefold():
-            razon = "declarada"
         if razon:
             e.quedan[razon] += 1
         else:
             e.despegar.append((cid, dominio))
             por_dominio[dominio] += 1
     tocadas = [e for e in empresas.values() if e.candidatos]
-    # Las que se quedan vacías: sin cliente de FACTUSOL, con dominio de la lista
-    # (o sin dominio) y sin negocio que las sostenga. Se archivan, no se borran.
+    # Las que se quedan vacías: sin cliente de FACTUSOL, sin CIF, con dominio de
+    # la lista (o sin dominio) y sin negocio que las sostenga. Se archivan, no
+    # se borran. (Una con CIF no es residuo de un dominio: Brevo puede volver
+    # a vincular a alguien por ese CIF, y no debe encontrarla archivada.)
     vacias = [e for e in tocadas if e.despegar and e.total == len(e.despegar)
-              and not e.codcli and not e.archivada
+              and not e.codcli and not e.tiene_cif and not e.archivada
               and (not e.dominio or lista.contiene(e.dominio))]
     if vacias:
+        from app.erp.models.historico import ParqueMaquinaManual  # noqa: PLC0415
+
         ids = [e.company_id for e in vacias]
         con_negocio = set()
-        for modelo in (Order, Oferta, Task):
+        for modelo in (Order, Oferta, Task, ParqueMaquinaManual):
             con_negocio |= set(session.scalars(
                 select(modelo.company_id).where(modelo.company_id.in_(ids)).distinct()))
         for e in vacias:
             e.archivar = e.company_id not in con_negocio
     tocadas.sort(key=lambda e: (-len(e.despegar), -e.candidatos, e.company_id))
     return Plan(empresas=tocadas, por_dominio=por_dominio, contactos_con_empresa=con_empresa,
-                conservar_declaradas=conservar_declaradas)
+                con_factusol=correos_factusol is not None)
 
 
 def aplicar(session: Session, p: Plan, *, por: str) -> str:
@@ -225,6 +278,9 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
 
     lote = f"{_ahora():%Y%m%d%H%M}-{uuid.uuid4().hex[:6]}"
     ahora = _ahora()
+    # El plan se leyó en otra transacción: en MySQL (REPEATABLE READ) seguir
+    # en ella sería mirar la foto vieja. Se empieza una nueva y se bloquea.
+    session.rollback()
     try:
         for e in p.empresas:
             ids = [cid for cid, _d in e.despegar]
@@ -233,15 +289,17 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
                 # Solo los que siguen en ESA empresa (si alguien los movió
                 # entre el plan y ahora, no se tocan ni se apuntan).
                 siguen = set(session.scalars(select(Contact.id).where(
-                    Contact.id.in_(trozo), Contact.company_id == e.company_id)))
+                    Contact.id.in_(trozo), Contact.company_id == e.company_id)
+                    .with_for_update()))
                 if not siguen:
                     continue
                 session.add_all(DespegueDominio(
                     lote=lote, tipo=TIPO_CONTACTO, objeto_id=cid, empresa_anterior=e.company_id,
                     dominio=d, motivo=MOTIVO, por=por, at=ahora)
                     for cid, d in e.despegar if cid in siguen)
-                session.execute(update(Contact).where(Contact.id.in_(siguen))
-                                .values(company_id=None))
+                session.execute(update(Contact).where(
+                    Contact.id.in_(siguen), Contact.company_id == e.company_id)
+                    .values(company_id=None))
             if e.archivar:
                 empresa = session.get(Company, e.company_id)
                 if empresa is not None and not empresa.is_archived:
@@ -254,7 +312,7 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
                             por=por, at=ahora))
                         empresa.is_archived = True
                         empresa.archived_at = datetime.now(UTC)
-                        empresa.archived_reason = f"Dominio compartido (lote {lote})"
+                        empresa.archived_reason = _razon_archivo(lote)
         _auditar(session, "contacts.despegue_dominio", lote, por,
                  {"contactos": p.a_despegar, "empresas_archivadas": len(p.a_archivar)})
         session.commit()
@@ -263,6 +321,10 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
         raise
     logger.info("despegue de dominios: lote %s, %d contactos", lote, p.a_despegar)
     return lote
+
+
+def _razon_archivo(lote: str) -> str:
+    return f"Dominio compartido (lote {lote})"
 
 
 def revertir(session: Session, lote: str, *, por: str) -> dict[str, int]:
@@ -281,7 +343,10 @@ def revertir(session: Session, lote: str, *, por: str) -> dict[str, int]:
     try:
         for ap in (a for a in apuntes if a.tipo == TIPO_EMPRESA):
             empresa = session.get(Company, ap.objeto_id)
-            if empresa is not None and not ap.archivada_antes:
+            # Solo si sigue archivada por ESTE lote (si alguien la desarchivó y
+            # la volvió a archivar por otro motivo, eso se respeta).
+            if empresa is not None and not ap.archivada_antes and empresa.is_archived \
+                    and empresa.archived_reason == _razon_archivo(lote):
                 empresa.is_archived, empresa.archived_at, empresa.archived_reason = \
                     False, None, None
                 out["empresas"] += 1
@@ -404,6 +469,12 @@ def cambios_de_tamano(antes: list[dict[str, Any]], despues: list[dict[str, Any]]
     return sorted(out, key=lambda x: x["despues"] - x["antes"])
 
 
+def _view_rules_tree(vista: Any) -> Any:
+    from app.api.routes import _view_rules_tree as arbol  # noqa: PLC0415
+
+    return arbol(vista)
+
+
 def _arboles(session: Session) -> list[tuple[str, str, str, Any]]:
     """(tipo, id, nombre, árbol de reglas) de los segmentos dinámicos y las
     vistas guardadas de contactos."""
@@ -418,12 +489,7 @@ def _arboles(session: Session) -> list[tuple[str, str, str, Any]]:
     for vista in session.scalars(select(ContactView)):
         if (getattr(vista, "entity_type", None) or "contact") not in ("contact", "contacts"):
             continue
-        try:
-            datos = json.loads(vista.filters_json or "{}")
-        except (TypeError, ValueError):
-            continue
-        arbol = datos.get("rules") if isinstance(datos, dict) and "rules" in datos else datos
-        out.append(("vista", vista.id, vista.name, arbol))
+        out.append(("vista", vista.id, vista.name, _view_rules_tree(vista)))
     return out
 
 
