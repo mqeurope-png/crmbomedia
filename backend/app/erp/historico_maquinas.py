@@ -253,7 +253,7 @@ def articulos(session: Session) -> dict[str, Any]:
     candidatos |= set(session.scalars(select(propia.codart).where(
         propia.clase == CLASE_MAQUINA)))
     if not candidatos:
-        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0}
+        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0}
     stmt = (
         select(lin.codart, func.count(lin.id))
         .join(doc, doc.id == lin.documento_id)
@@ -265,7 +265,7 @@ def articulos(session: Session) -> dict[str, Any]:
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
     vendidos = dict(session.execute(stmt).all())
     if not vendidos:
-        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0}
+        return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0}
     # Nombre y familia: los del catálogo más reciente que lo tenga.
     catalogo: dict[str, HistoricoArticulo] = {}
     for a in session.scalars(select(art).where(art.codart.in_(list(vendidos)))

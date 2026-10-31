@@ -15,6 +15,8 @@ Revises: 20261031_0158
 
 from __future__ import annotations
 
+import unicodedata
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -33,18 +35,39 @@ NEGATIVAS = (
 )
 
 
+#: `orden` de las filas que siembra esta migración: el downgrade borra solo esas.
+ORDEN_0159 = 159
+
+
+def _plano(texto: str) -> str:
+    t = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode()
+    return " ".join(t.upper().split())
+
+
 def upgrade() -> None:
     op.add_column("historico_reglas_articulo", sa.Column(
         "tipo", sa.String(16), nullable=False, server_default="no_maquina"))
+    conn = op.get_bind()
+    existentes = {_plano(p): i for i, p in conn.execute(
+        sa.text("SELECT id, patron FROM historico_reglas_articulo")).all()}
+    positivas = {_plano(p) for p in POSITIVAS}
+    # Una pista que alguien ya añadió con una palabra positiva (antes todas
+    # eran «no es máquina») pasa a positiva, en vez de duplicarla.
+    for plano, rid in existentes.items():
+        if plano in positivas:
+            conn.execute(sa.text("UPDATE historico_reglas_articulo SET tipo = 'maquina' "
+                                 "WHERE id = :i").bindparams(i=rid))
     reglas = sa.table("historico_reglas_articulo", sa.column("patron", sa.String),
                       sa.column("orden", sa.Integer), sa.column("tipo", sa.String))
-    op.bulk_insert(reglas, [{"patron": p, "orden": 100, "tipo": "maquina"} for p in POSITIVAS]
-                   + [{"patron": p, "orden": 100, "tipo": "no_maquina"} for p in NEGATIVAS])
+    nuevas = [{"patron": p, "orden": ORDEN_0159, "tipo": t}
+              for t, lista in (("maquina", POSITIVAS), ("no_maquina", NEGATIVAS))
+              for p in lista if _plano(p) not in existentes]
+    if nuevas:
+        op.bulk_insert(reglas, nuevas)
 
 
 def downgrade() -> None:
-    op.execute(sa.text("DELETE FROM historico_reglas_articulo WHERE tipo = 'maquina'"))
-    for p in NEGATIVAS:
-        op.execute(sa.text("DELETE FROM historico_reglas_articulo WHERE patron = :p")
-                   .bindparams(p=p))
+    # Solo lo que sembró esta migración; lo añadido a mano se queda (como
+    # «no es máquina», que es lo único que había antes de la 0159).
+    op.execute(sa.text(f"DELETE FROM historico_reglas_articulo WHERE orden = {ORDEN_0159}"))
     op.drop_column("historico_reglas_articulo", "tipo")

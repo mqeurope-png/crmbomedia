@@ -141,3 +141,24 @@ def test_0159_pistas_con_tipo_y_positivas(alembic_setup):
     command.downgrade(cfg, "20261031_0158")
     with engine.connect() as c:
         assert c.exec_driver_sql("SELECT COUNT(*) FROM historico_reglas_articulo").scalar() == 30
+
+
+def test_0159_no_duplica_ni_borra_lo_anadido_a_mano(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261030_0152")
+    command.upgrade(cfg, "20261031_0158")
+    with engine.begin() as c:
+        c.exec_driver_sql("INSERT INTO historico_reglas_articulo (patron, orden) "
+                          "VALUES ('Motor', 100), ('impresora', 100)")
+    command.upgrade(cfg, "20261031_0159")
+    with engine.connect() as c:
+        filas = c.exec_driver_sql(
+            "SELECT patron, tipo FROM historico_reglas_articulo "
+            "WHERE UPPER(patron) IN ('MOTOR', 'IMPRESORA')").all()
+    assert sorted(filas) == [("Motor", "no_maquina"), ("impresora", "maquina")]
+    command.downgrade(cfg, "20261031_0158")
+    with engine.connect() as c:
+        quedan = {p for (p,) in c.exec_driver_sql(
+            "SELECT patron FROM historico_reglas_articulo").all()}
+    assert {"Motor", "impresora"} <= quedan and "BEAMBOX" not in quedan
