@@ -326,10 +326,13 @@ def guardar_umbral(session: Session, valor: float) -> float:
 
 def _k(codart: str | None) -> str:
     """La clave de un código de artículo: sin mayúsculas ni espacios."""
-    return (codart or "").strip().upper()
+    # Sin tildes, como la colación de MySQL (que tampoco las distingue).
+    t = unicodedata.normalize("NFKD", codart or "").encode("ascii", "ignore").decode()
+    return t.strip().upper()
 
 
-def _vendidas(session: Session, fuera: set[str]) -> dict[str, tuple[int, float | None]]:
+def _vendidas(session: Session, fuera: set[str], solo: set[str] | None = None,
+              ) -> dict[str, tuple[int, float | None]]:
     """Por código de artículo (tal cual viene en las líneas): líneas de venta
     de producto de las series que cuentan, y el precio unitario máximo EN
     VALOR ABSOLUTO (1/11/2026): un artículo del que solo hay devoluciones
@@ -345,6 +348,13 @@ def _vendidas(session: Session, fuera: set[str]) -> dict[str, tuple[int, float |
     )
     if fuera:
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
+    if solo is not None and session.get_bind().dialect.name == "mysql":
+        # MySQL ya compara sin mayúsculas ni tildes: se filtra por el índice
+        # de `codart` en vez de agregar todo el histórico. (En sqlite, que
+        # distingue mayúsculas, se agrega todo y se filtra en Python.)
+        if not solo:
+            return {}
+        stmt = stmt.where(lin.codart.in_(sorted(solo)))
     return {c: (int(n), float(p) if p is not None else None)
             for c, n, p in session.execute(stmt) if c and c.strip()}
 
@@ -376,14 +386,13 @@ def sin_catalogo(session: Session,
     }
 
 
-def _vacio(session: Session, vendidas: dict[str, tuple[int, float | None]] | None = None,
-           ) -> dict[str, Any]:
+def _vacio(session: Session, con_sin_catalogo: bool) -> dict[str, Any]:
     return {"items": [], "marcadas": 0, "total": 0, "propuestas": 0, "sin_revisar": 0,
             "umbral": umbral(session), "colisiones": 0,
-            "sin_catalogo": sin_catalogo(session, vendidas)}
+            **({"sin_catalogo": sin_catalogo(session)} if con_sin_catalogo else {})}
 
 
-def articulos(session: Session) -> dict[str, Any]:
+def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, Any]:
     """Los artículos vendidos que hay que mirar: los que HOY (en el catálogo
     más reciente que los tiene) están en una familia de clase máquina, y los
     ya marcados como máquina en cualquier familia (para poder desmarcarlos).
@@ -408,10 +417,11 @@ def articulos(session: Session) -> dict[str, Any]:
     # Los códigos se comparan SIN mayúsculas (1/11/2026): FACTUSOL guarda el
     # artículo como «ADR1-3DVD» y la línea puede llevar «ADR1-3dvd». MySQL ya
     # los casa, pero aquí se buscaban en diccionarios y salían sin familia.
+    crudos = candidatos
     candidatos = {_k(c) for c in candidatos}
-    vendidas = _vendidas(session, fuera)
     if not candidatos:
-        return _vacio(session, vendidas)
+        return _vacio(session, con_sin_catalogo)
+    vendidas = _vendidas(session, fuera, solo=crudos)
     vendidos: dict[str, int] = {}
     precios: dict[str, float | None] = {}
     nombre_de: dict[str, str] = {}
@@ -426,7 +436,7 @@ def articulos(session: Session) -> dict[str, Any]:
         else:
             precios.setdefault(c0, None)
     if not vendidos:
-        return _vacio(session, vendidas)
+        return _vacio(session, con_sin_catalogo)
     # Nombre y familia: los del catálogo más reciente que lo tenga.
     catalogo: dict[str, HistoricoArticulo] = {}
     for a in session.scalars(select(art).where(
@@ -452,7 +462,9 @@ def articulos(session: Session) -> dict[str, Any]:
                        precio_max=precios.get(codart), umbral=corte)
         revisada = estado != SIN_REVISAR
         items.append({
-            "codart": codart, "descripcion": a.descripcion if a else None,
+            # El código del catálogo (no la grafía de la línea): es con el que
+            # se guarda la marca y con el que la buscan las demás pantallas.
+            "codart": a.codart if a else codart, "descripcion": a.descripcion if a else None,
             "familia": a.familia if a else None,
             "familia_nombre": f.descripcion if f else None, "gama": f.gama if f else None,
             "familia_clase": f.clase if f else None,
@@ -481,7 +493,7 @@ def articulos(session: Session) -> dict[str, Any]:
         "sin_revisar": sum(1 for i in items if i["estado"] == SIN_REVISAR),
         "umbral": corte,
         "colisiones": sum(1 for i in items if i["propondria"]),
-        "sin_catalogo": sin_catalogo(session, vendidas),
+        **({"sin_catalogo": sin_catalogo(session)} if con_sin_catalogo else {}),
         # Lo que «Aceptar todas» aplicaría: sin revisar Y con propuesta clara.
         "propuestas": sum(1 for i in items if i["estado"] == SIN_REVISAR
                           and i["propuesta"] in (PROPUESTA_SI, PROPUESTA_NO)),

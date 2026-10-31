@@ -181,8 +181,12 @@ def test_el_mismo_modelo_por_el_nombre() -> None:
 def test_un_codigo_en_minusculas_en_la_linea_tiene_su_familia(session_factory) -> None:  # noqa: F811
     _preparar(session_factory)
     with session_factory() as s:
-        i = _item(s, "ADR1-3dvd") or _item(s, "ADR1-3DVD")
+        # Con el código del catálogo: con él se guarda la marca.
+        assert _item(s, "ADR1-3dvd") is None
+        i = _item(s, "ADR1-3DVD")
         assert i is not None and i["familia"] == "021" and i["gama"] == "laser"
+        hm.marcar(s, i["codart"], True, por="bart")
+        assert _item(s, "ADR1-3DVD")["estado"] == hm.MARCADA
 
 
 def test_el_precio_maximo_negativo_cuenta_por_su_valor_absoluto(session_factory) -> None:  # noqa: F811
@@ -196,7 +200,7 @@ def test_el_precio_maximo_negativo_cuenta_por_su_valor_absoluto(session_factory)
 def test_lo_vendido_sin_catalogo_se_cuenta(session_factory) -> None:  # noqa: F811
     _preparar(session_factory)
     with session_factory() as s:
-        sc = hm.articulos(s)["sin_catalogo"]
+        sc = hm.articulos(s, con_sin_catalogo=True)["sin_catalogo"]
         assert (sc["articulos"], sc["lineas"]) == (1, 1)
         assert sc["items"][0]["codart"] == "BORRADO9"
 
