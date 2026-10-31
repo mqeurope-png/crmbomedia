@@ -156,3 +156,62 @@ def test_una_devolucion_de_filtro_no_es_una_compra(session_factory) -> None:  # 
 def test_la_ficha_encuentra_al_cliente_con_ceros_delante() -> None:
     assert {"412", "0412", "00412"} <= set(parque.codigos_cliente("412"))
     assert {"412", "0412", "00412"} <= set(parque.codigos_cliente("00412"))
+
+
+# --- partir las listas (1/11/2026) -----------------------------------------------------
+
+
+def test_filtrar_por_antiguedad_y_gasto_y_el_csv_sale_filtrado(http, session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        r = pc.informe(s, hoy=HOY)
+        huecos = _por(r["huecos"])
+        # Gasto total facturado del cliente; los huecos, del que más ha comprado.
+        assert huecos[(HUECO_UV, "uv-led")]["gasto_total"] == 15000.0
+        assert [h["codcli"] for h in r["huecos"]][0] == HUECO_UV
+        # Máquina de hace más de 24 meses y cliente de más de 5.000 €.
+        f = pc.filtrar(r, meses_min=24, gasto_min=5000)
+        assert {(h["codcli"], h["gama"]) for h in f["huecos"]} == {(HUECO_UV, "uv-led")}
+        assert pc.filtrar(r, gama="laser", meses_max=12)["huecos"] == []
+        # El resumen por gama no cambia con el filtro, ni de forma.
+        assert f["resumen"] == r["resumen"]
+        assert set(r["resumen"]["por_gama"][0]) == {"gama", "gama_nombre", "clientes",
+                                                    "con_consumible", "dormidos", "huecos"}
+    h = auth_headers(http, "admin")
+    todo = http.get("/api/erp/historico/parque/huecos.csv", headers=h).text
+    corto = http.get("/api/erp/historico/parque/huecos.csv?gama=uv-led&gasto_min=5000",
+                     headers=h).text
+    assert len(todo.strip().splitlines()) > len(corto.strip().splitlines()) == 2
+    r = http.get("/api/erp/historico/parque/dormidos-huecos?gama=laser", headers=h).json()
+    assert all(x["gama"] == "laser" for x in (*r["dormidos"], *r["huecos"]))
+
+
+def test_filtrar_por_sector_de_la_ficha(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        empresa = next(c for c in s.query(Company) if c.factusol_company_id == HUECO_UV)
+        empresa.sector = "Rotulación figurante"
+        s.commit()
+        r = pc.informe(s, hoy=HOY)
+        assert {"sector": "Rotulación figurante", "clientes": 1} in r["resumen"]["sectores"]
+        assert [h["codcli"] for h in pc.filtrar(r, sector="Rotulación figurante")["huecos"]] \
+            == [HUECO_UV]
+        assert HUECO_UV not in {h["codcli"] for h in pc.filtrar(r, sector="-")["huecos"]}
+
+
+def test_las_maquinas_sin_gama_se_ensenan(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        cl.clasificar(s, "UVM", {"gama": None}, por="bart")
+        r = pc.informe(s, hoy=HOY)
+        sin = r["resumen"]["sin_gama"]
+        assert r["resumen"]["maquinas_sin_gama"] == len(sin) == 2
+        assert {m["familia"] for m in sin} == {"UVM"} and {m["codart"] for m in sin} == {UV}
+
+
+def test_el_sector_cuenta_clientes_no_filas(session_factory) -> None:  # noqa: F811
+    _preparar(session_factory)
+    with session_factory() as s:
+        r = pc.informe(s, hoy=HOY)
+        filas = {f["codcli"] for f in (*r["dormidos"], *r["huecos"])}
+        assert sum(x["clientes"] for x in r["resumen"]["sectores"]) == len(filas)

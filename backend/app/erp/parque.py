@@ -248,7 +248,7 @@ def _filas_maquina(session: Session, codigos: list[str] | None, eq: Any) -> list
                lin.origen_tipo, lin.origen_serie, lin.origen_codigo)
         .join(doc, doc.id == lin.documento_id)
         .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == al_art.expr(lin.codart)))
-        .outerjoin(fam, fam.codigo == al_fam.expr(art.familia))
+        .outerjoin(fam, fam.codigo == al_fam.expr_articulo(art))
         .where(*([doc.codcli.in_(codigos)] if codigos is not None else []),
                doc.tipo.in_((TIPO_FACTURA, TIPO_ALBARAN)),
                lin.es_producto.is_(True),

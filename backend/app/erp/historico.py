@@ -421,24 +421,26 @@ def familias(session: Session) -> list[dict[str, Any]]:
 
     al_fam = historico_alias.familias(session)
     al_art = historico_alias.articulos(session)
-    n_art: dict[str, int] = {}
-    for fam, n in session.execute(
-        select(HistoricoArticulo.familia, func.count(func.distinct(HistoricoArticulo.codart)))
-        .group_by(HistoricoArticulo.familia)
+    # La familia de cada artículo (la vacía, con la de otro ejercicio).
+    por_familia: dict[str, set[str]] = {}
+    for codart, fam in session.execute(
+        select(HistoricoArticulo.codart, HistoricoArticulo.familia).distinct()
     ).all():
-        k = al_fam.resuelve(fam)
-        n_art[k] = n_art.get(k, 0) + int(n)
+        k = al_fam.del_articulo(codart, fam)
+        if k is not None:
+            por_familia.setdefault(k, set()).add(codart.strip().upper())
+    n_art = {k: len(v) for k, v in por_familia.items()}
     n_ventas: dict[str, int] = {}
-    for fam, n in session.execute(
-        select(HistoricoArticulo.familia, func.count(HistoricoLinea.id))
+    for codart, fam, n in session.execute(
+        select(HistoricoArticulo.codart, HistoricoArticulo.familia, func.count(HistoricoLinea.id))
         .join(HistoricoArticulo, and_(
             HistoricoArticulo.ejercicio == HistoricoLinea.ejercicio,
             HistoricoArticulo.codart == al_art.expr(HistoricoLinea.codart),
         ))
         .where(HistoricoLinea.es_producto.is_(True), _de_venta())
-        .group_by(HistoricoArticulo.familia)
+        .group_by(HistoricoArticulo.codart, HistoricoArticulo.familia)
     ).all():
-        k = al_fam.resuelve(fam)
+        k = al_fam.del_articulo(codart, fam)
         n_ventas[k] = n_ventas.get(k, 0) + int(n)
     props = propuestas(session)
     out = [{
@@ -509,7 +511,7 @@ def compradores(
     # catálogo; la familia, sin mayúsculas y con el fantasma del cero fundido.
     al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
     cod_lin = al_art.expr(lin.codart)
-    fam_art = al_fam.expr(art.familia)
+    fam_art = al_fam.expr_articulo(art)
     stmt = (
         select(lin.codart, lin.cantidad, lin.ejercicio, doc.tipo, doc.serie, doc.codigo,
                doc.fecha, doc.fecha_original, doc.codcli, doc.cliente_nombre,

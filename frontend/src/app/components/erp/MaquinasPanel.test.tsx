@@ -143,7 +143,7 @@ test("los dos agujeros del catálogo, separados; los de ceros solo se enseñan",
   });
   render(<MaquinasPanel puedeEditar />);
   expect(await screen.findByText("Sin catálogo: 2 artículos vendidos")).toBeInTheDocument();
-  expect(screen.getByText("Con catálogo y sin familia que case: 3 artículos")).toBeInTheDocument();
+  expect(screen.getByText("Familia sin clasificar: 3 artículos")).toBeInTheDocument();
   expect(screen.getByText("no está en la tabla de familias")).toBeInTheDocument();
   expect(within(screen.getByRole("list", { name: "Casarían quitando ceros" })).getByText("712"))
     .toBeInTheDocument();
@@ -168,4 +168,20 @@ test("un código dudoso lo decide Bart con «Es este», y el alias se quita", as
   expect(api().declararAliasArticulo).toHaveBeenCalledWith("1", "0001");
   await user.click(screen.getByRole("button", { name: "Quitar el alias de 8" }));
   expect(api().quitarAliasArticulo).toHaveBeenCalledWith("8");
+});
+
+test("sin familia y familia sin clasificar salen como dos cifras", async () => {
+  api().getHistoricoMaquinas.mockResolvedValue({
+    ...DATOS, sin_catalogo: {
+      articulos: 0, lineas: 0, items: [],
+      familia_vacia: { articulos: 2, lineas: 300, recuperadas: 5,
+                       items: [{ codart: "TJM1", descripcion: "ARTICULO FIGURANTE", lineas: 250 }] },
+      sin_familia: { articulos: 4, lineas: 20, familias: [
+        { familia: "040", motivo: "sin_clase", articulos: 4, lineas: 20, ejemplos: ["X1"] }] },
+    },
+  });
+  render(<MaquinasPanel puedeEditar />);
+  expect(await screen.findByText("Sin familia: 2 artículos")).toBeInTheDocument();
+  expect(screen.getByText(/5 más la tenían vacía en su último año/)).toBeInTheDocument();
+  expect(screen.getByText("Familia sin clasificar: 4 artículos")).toBeInTheDocument();
 });

@@ -7831,6 +7831,11 @@ export type MaquinasResumen = {
     /** Gemelas que NO se funden y hay que mirar. */
     avisos_familia?: { corta: string; largas: string[]; motivo: "clase_puesta" | "varias" }[];
     /** Con catálogo y sin familia que case, por familia. */
+    /** Con la familia vacía en TODOS los ejercicios: no hay de dónde sacarla. */
+    familia_vacia?: {
+      articulos: number; lineas: number; recuperadas: number;
+      items: { codart: string; descripcion: string | null; lineas: number }[];
+    };
     sin_familia?: {
       articulos: number; lineas: number;
       familias: { familia: string | null; motivo: string; articulos: number; lineas: number;
@@ -8146,15 +8151,26 @@ export type DormidosAjustes = { meses_dormido: number; meses_gracia_hueco: numbe
 
 type ConsultaCliente = {
   codcli: string; nombre: string | null; empresa: { id: string; nombre: string } | null;
+  /** Sector de la ficha de empresa (vacío si no está puesto o no hay empresa). */
+  sector: string | null;
   gama: string; gama_nombre: string; maquinas: number; articulos: string[];
   ultima_maquina: string | null;
+  /** Meses desde la máquina más reciente de esa gama. */
+  meses_con_maquina: number | null;
+  /** Lo facturado al cliente en todo el histórico. */
+  gasto_total: number;
+};
+
+/** Para partir las listas. `sector` «-» = sin sector. */
+export type FiltroDormidos = {
+  gama?: string; sector?: string; meses_min?: number; meses_max?: number; gasto_min?: number;
 };
 
 export type Dormido = ConsultaCliente & {
   ultima_compra: string; meses_sin_comprar: number; compraba_12_meses: number;
 };
 
-export type Hueco = ConsultaCliente & { meses_con_maquina: number | null; solo_recambios: boolean };
+export type Hueco = ConsultaCliente & { solo_recambios: boolean };
 
 export type DormidosHuecos = {
   ajustes: DormidosAjustes;
@@ -8162,6 +8178,10 @@ export type DormidosHuecos = {
   resumen: {
     clientes_con_maquina: number;
     maquinas_sin_gama: number;
+    /** Cuáles son: se arreglan dando gama a su familia. */
+    sin_gama?: { codcli: string; nombre: string | null; codart: string | null;
+                 articulo: string | null; familia: string | null; origen: string }[];
+    sectores?: { sector: string | null; clientes: number }[];
     por_gama: { gama: string; gama_nombre: string; clientes: number; con_consumible: number;
                 dormidos: number; huecos: number }[];
   };
@@ -8169,8 +8189,17 @@ export type DormidosHuecos = {
   huecos: Hueco[];
 };
 
-export async function getDormidosHuecos(): Promise<DormidosHuecos> {
-  return apiFetch("/api/erp/historico/parque/dormidos-huecos");
+function qsFiltro(f: FiltroDormidos = {}): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) {
+    if (v !== undefined && v !== null && v !== "") p.set(k, String(v));
+  }
+  const q = p.toString();
+  return q ? `?${q}` : "";
+}
+
+export async function getDormidosHuecos(f: FiltroDormidos = {}): Promise<DormidosHuecos> {
+  return apiFetch(`/api/erp/historico/parque/dormidos-huecos${qsFiltro(f)}`);
 }
 
 export async function guardarAjustesDormidos(a: Partial<DormidosAjustes>): Promise<DormidosHuecos> {
@@ -8179,8 +8208,9 @@ export async function guardarAjustesDormidos(a: Partial<DormidosAjustes>): Promi
   });
 }
 
-export async function downloadDormidosHuecosCsv(tipo: "dormidos" | "huecos"): Promise<Blob> {
-  return apiDownloadBlob(`/api/erp/historico/parque/${tipo}.csv`);
+export async function downloadDormidosHuecosCsv(tipo: "dormidos" | "huecos",
+                                                f: FiltroDormidos = {}): Promise<Blob> {
+  return apiDownloadBlob(`/api/erp/historico/parque/${tipo}.csv${qsFiltro(f)}`);
 }
 
 // --- Ficha de un documento (factura, albarán, proforma) de cualquier año -----

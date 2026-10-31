@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import case, select
+from sqlalchemy import case, func, null, or_, select
 from sqlalchemy.orm import Session
 
 from app.erp.models.historico import HistoricoArticulo, HistoricoFamilia
@@ -47,6 +47,11 @@ class AliasFamilias:
     avisos: list[dict[str, Any]] = field(default_factory=list)
     #: códigos de la tabla en mayúsculas → el código guardado.
     _tabla: dict[str, str] = field(default_factory=dict)
+    #: Artículos con la familia VACÍA en algún ejercicio: la familia del
+    #: ejercicio más reciente que la tenga (por código en mayúsculas).
+    respaldo: dict[str, str] = field(default_factory=dict)
+    #: Lo mismo, por el código tal como está guardado (para el JOIN).
+    _respaldo_crudo: dict[str, str] = field(default_factory=dict)
 
     def resuelve(self, codigo: str | None) -> str | None:
         if codigo is None:
@@ -58,6 +63,23 @@ class AliasFamilias:
     def expr(self, columna: Any) -> Any:
         """La columna de familia de un artículo, resuelta (para un JOIN)."""
         return case(self.mapa, value=columna, else_=columna) if self.mapa else columna
+
+    def del_articulo(self, codart: str | None, familia: str | None) -> str | None:
+        """La familia de un artículo en una fila del catálogo: la suya; si está
+        vacía, la del ejercicio más reciente que la tenga (1/11/2026). Y
+        resuelta (caja, fantasma del cero)."""
+        if familia is None or not str(familia).strip():
+            familia = self.respaldo.get(_k(codart))
+        return self.resuelve(familia)
+
+    def expr_articulo(self, art: Any) -> Any:
+        """`del_articulo` en SQL, para la tabla de artículos `art` de un JOIN."""
+        col = art.familia
+        if self._respaldo_crudo:
+            vacia = or_(col.is_(None), func.trim(col) == "")
+            col = case((vacia, case(self._respaldo_crudo, value=art.codart, else_=null())),
+                       else_=col)
+        return self.expr(col)
 
 
 def familias(session: Session) -> AliasFamilias:
@@ -90,6 +112,21 @@ def familias(session: Session) -> AliasFamilias:
                                        "motivo": "varias"})
                 continue
             out.fundidas[corta.codigo] = con_nombre[0].codigo
+    # Familia vacía en un ejercicio: la del ejercicio más reciente que la
+    # tenga. No se reescribe el catálogo; no se inventa por el nombre.
+    vacios: set[str] = set()
+    con_familia: dict[str, tuple[str, str]] = {}
+    for ej, codart, fam in session.execute(select(
+            HistoricoArticulo.ejercicio, HistoricoArticulo.codart, HistoricoArticulo.familia)):
+        kc = _k(codart)
+        if fam is None or not str(fam).strip():
+            vacios.add(codart)
+        elif kc not in con_familia or ej > con_familia[kc][0]:
+            con_familia[kc] = (ej, fam)
+    for codart in vacios:
+        if (hay := con_familia.get(_k(codart))) is not None:
+            out.respaldo[_k(codart)] = hay[1]
+            out._respaldo_crudo[codart] = hay[1]
     # Lo que usan los artículos: el fantasma va a su larga; otra caja, a la
     # de la tabla.
     usadas = set(session.scalars(select(HistoricoArticulo.familia).distinct()

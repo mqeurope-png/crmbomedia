@@ -30,7 +30,7 @@ import io
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.erp import historico_equivalencias as equivalencias
@@ -110,6 +110,9 @@ def _fecha(m: dict[str, Any]) -> date | None:
 def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
     """Por cliente (`clave_cliente`): sus máquinas en servicio, volcadas y a
     mano, con gama y fecha."""
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_fam = historico_alias.familias(session)
     volcadas = parque.maquinas_de_todos(session)
     bajas = set(session.scalars(select(ParqueBaja.clave)))
     out: dict[str, list[dict[str, Any]]] = {}
@@ -119,6 +122,10 @@ def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
                 continue
             out.setdefault(cli, []).append({
                 "codart": m["codart"], "articulo": m["articulo"], "gama": m["gama"],
+                # La familia que manda (con el respaldo de otro ejercicio y la
+                # caja / el fantasma del cero resueltos): la que hay que tocar.
+                "familia": al_fam.del_articulo(m.get("codart_catalogo") or m["codart"],
+                                               m.get("familia")),
                 "fecha": _fecha(m), "origen": m["origen"]})
     from app.models.crm import Company  # noqa: PLC0415
 
@@ -130,7 +137,7 @@ def _parque_activo(session: Session) -> dict[str, list[dict[str, Any]]]:
         if cli:
             out.setdefault(cli, []).append({
                 "codart": man.codart, "articulo": man.descripcion, "gama": man.gama,
-                "fecha": man.fecha, "origen": "manual"})
+                "familia": None, "fecha": man.fecha, "origen": "manual"})
     return out
 
 
@@ -148,7 +155,7 @@ def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]
                lin.codart, fam.clase, fam.gama, propia.clase)
         .join(doc, doc.id == lin.documento_id)
         .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == al_art.expr(lin.codart)))
-        .join(fam, fam.codigo == al_fam.expr(art.familia))
+        .join(fam, fam.codigo == al_fam.expr_articulo(art))
         .outerjoin(propia, propia.codart == art.codart)
         .where(lin.es_producto.is_(True), doc.tipo.in_(TIPOS_VENTA), fam.gama.is_not(None),
                # Solo lo que puede ser consumible o recambio (por la familia o
@@ -185,8 +192,27 @@ def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]
     return out
 
 
+def _gasto_por_cliente(session: Session) -> dict[str, float]:
+    """Lo facturado a cada cliente en todo el histórico (líneas de producto
+    de las series que cuentan; un abono resta). Para ordenar por quién más ha
+    comprado."""
+    lin, doc = HistoricoLinea, HistoricoDocumento
+    stmt = (select(doc.codcli, func.sum(lin.total)).join(doc, doc.id == lin.documento_id)
+            .where(doc.tipo == TIPO_FACTURA, lin.es_producto.is_(True))
+            .group_by(doc.codcli))
+    if fuera := series_excluidas(session):
+        stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
+    out: dict[str, float] = {}
+    for codcli, total in session.execute(stmt):
+        cli = parque.clave_cliente(codcli)
+        if cli:
+            out[cli] = out.get(cli, 0.0) + float(total or 0)
+    return out
+
+
 def _clientes(session: Session, claves: set[str]) -> dict[str, dict[str, Any]]:
-    """Nombre (el del documento más reciente) y empresa de BoHub vinculada."""
+    """Nombre (el del documento más reciente), empresa de BoHub vinculada y
+    su sector (el campo de la ficha de empresa; vacío si no está puesto)."""
     from app.models.crm import Company  # noqa: PLC0415
 
     doc = HistoricoDocumento
@@ -202,8 +228,10 @@ def _clientes(session: Session, claves: set[str]) -> dict[str, dict[str, Any]]:
     for e in session.scalars(select(Company).where(Company.factusol_company_id.is_not(None))):
         cli = parque.clave_cliente(e.factusol_company_id)
         if cli in claves:
-            empresas.setdefault(cli, {"id": e.id, "nombre": e.name})
-    return {c: {"nombre": nombres.get(c, (None, None))[1], "empresa": empresas.get(c)}
+            empresas.setdefault(cli, {"id": e.id, "nombre": e.name,
+                                      "sector": (e.sector or "").strip() or None})
+    return {c: {"nombre": nombres.get(c, (None, None))[1], "empresa": empresas.get(c),
+                "sector": (empresas.get(c) or {}).get("sector")}
             for c in claves}
 
 
@@ -215,17 +243,20 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
     activo = _parque_activo(session)
     compras = _compras_por_gama(session)
 
+    gasto = _gasto_por_cliente(session)
     dormidos: list[dict[str, Any]] = []
     huecos: list[dict[str, Any]] = []
     por_gama: dict[str, dict[str, int]] = {}
-    sin_gama = 0
+    sin_gama: list[dict[str, Any]] = []
     for cli, maquinas in activo.items():
         por_su_gama: dict[str, list[dict[str, Any]]] = {}
         for m in maquinas:
             if m["gama"]:
                 por_su_gama.setdefault(m["gama"], []).append(m)
             else:
-                sin_gama += 1
+                sin_gama.append({"codcli": cli, "codart": m["codart"],
+                                 "articulo": m["articulo"], "familia": m["familia"],
+                                 "origen": m["origen"]})
         for gama, ms in por_su_gama.items():
             resumen = por_gama.setdefault(gama, {"clientes": 0, "con_consumible": 0,
                                                  "dormidos": 0, "huecos": 0})
@@ -237,6 +268,8 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
                 "maquinas": len(ms),
                 "articulos": sorted({m["articulo"] or m["codart"] or "" for m in ms}),
                 "ultima_maquina": ultima_maquina.isoformat() if ultima_maquina else None,
+                "meses_con_maquina": _meses(ultima_maquina, hoy),
+                "gasto_total": round(gasto.get(cli, 0.0), 2),
             }
             c = compras.get((cli, gama))
             if c and c["consumible"]:
@@ -247,8 +280,7 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
                 meses_maquina = _meses(ultima_maquina, hoy)
                 if meses_maquina is None or meses_maquina >= gracia:
                     resumen["huecos"] += 1
-                    huecos.append({**base, "meses_con_maquina": meses_maquina,
-                                   "solo_recambios": bool(c)})
+                    huecos.append({**base, "solo_recambios": bool(c)})
                 continue
             ultima = c["ultima"]
             referencia = max(d for d in (ultima, ultima_maquina) if d)
@@ -264,18 +296,30 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
 
     dormidos.sort(key=lambda d: (-d["compraba_12_meses"], -(d["meses_sin_comprar"] or 0),
                                  d["codcli"]))
-    # Huecos: los de más máquinas primero; dentro, la máquina más reciente.
-    huecos.sort(key=lambda h: (h["ultima_maquina"] or "", h["codcli"]), reverse=True)
-    huecos.sort(key=lambda h: -h["maquinas"])
-    clientes = _clientes(session, {d["codcli"] for d in dormidos} | {h["codcli"] for h in huecos})
+    # Huecos: arriba quien más ha comprado en total (1/11/2026).
+    huecos.sort(key=lambda h: (-h["gasto_total"], -h["maquinas"], h["codcli"]))
+    clientes = _clientes(session, {d["codcli"] for d in dormidos} | {h["codcli"] for h in huecos}
+                         | {m["codcli"] for m in sin_gama})
+    for fila in (*dormidos, *huecos, *sin_gama):
+        fila.update(clientes.get(fila["codcli"], {"nombre": None, "empresa": None,
+                                                  "sector": None}))
+    # Clientes distintos por sector (un cliente puede salir en dos gamas).
+    por_sector: dict[str, set[str]] = {}
     for fila in (*dormidos, *huecos):
-        fila.update(clientes.get(fila["codcli"], {"nombre": None, "empresa": None}))
+        por_sector.setdefault(fila["sector"] or "", set()).add(fila["codcli"])
+    sectores = {k: len(v) for k, v in por_sector.items()}
     return {
         "ajustes": aj,
         "hoy": hoy.isoformat(),
         "resumen": {
             "clientes_con_maquina": len(activo),
-            "maquinas_sin_gama": sin_gama,
+            "maquinas_sin_gama": len(sin_gama),
+            # Cuáles son: se arreglan dando gama a su familia.
+            "sin_gama": sin_gama,
+            # Sector (ficha de empresa) de los que salen en las listas; «» =
+            # sin sector o sin empresa vinculada.
+            "sectores": [{"sector": k or None, "clientes": v}
+                         for k, v in sorted(sectores.items(), key=lambda x: (-x[1], x[0]))],
             "por_gama": [{"gama": g, "gama_nombre": gamas.get(g, g), **v}
                          for g, v in sorted(por_gama.items(), key=lambda x: -x[1]["clientes"])],
         },
@@ -284,26 +328,58 @@ def informe(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
     }
 
 
+def filtrar(datos: dict[str, Any], *, gama: str | None = None, sector: str | None = None,
+            meses_min: int | None = None, meses_max: int | None = None,
+            gasto_min: float | None = None) -> dict[str, Any]:
+    """Las listas, filtradas (el resumen se queda entero). `sector` «-» =
+    sin sector. Los meses son los de la máquina más reciente de esa gama."""
+    def pasa(f: dict[str, Any]) -> bool:
+        if gama and f["gama"] != gama:
+            return False
+        if sector is not None and sector != "":
+            if (f["sector"] or "-") != sector:
+                return False
+        m = f["meses_con_maquina"]
+        if meses_min is not None and (m is None or m < meses_min):
+            return False
+        if meses_max is not None and (m is None or m > meses_max):
+            return False
+        return not (gasto_min is not None and f["gasto_total"] < gasto_min)
+
+    return {**datos, "dormidos": [d for d in datos["dormidos"] if pasa(d)],
+            "huecos": [h for h in datos["huecos"] if pasa(h)],
+            "filtro": {"gama": gama, "sector": sector, "meses_min": meses_min,
+                       "meses_max": meses_max, "gasto_min": gasto_min}}
+
+
+def _euros(v: float) -> str:
+    return f"{v:.2f}".replace(".", ",")
+
+
 def csv_de(filas: list[dict[str, Any]], tipo: str) -> str:
     """CSV (separado por «;», para Excel en español) de dormidos o huecos."""
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
     if tipo == "dormidos":
-        w.writerow(["Código cliente", "Cliente", "Empresa BoHub", "Gama", "Máquinas",
-                    "Artículos", "Última compra de consumible o recambio",
-                    "Meses sin comprar", "Compraba (12 meses antes de parar, €)"])
+        w.writerow(["Código cliente", "Cliente", "Empresa BoHub", "Sector", "Gama", "Máquinas",
+                    "Artículos", "Última máquina", "Meses con la máquina",
+                    "Última compra de consumible o recambio", "Meses sin comprar",
+                    "Compraba (12 meses antes de parar, €)", "Gasto total (€)"])
         for d in filas:
             w.writerow([d["codcli"], d["nombre"] or "", (d["empresa"] or {}).get("nombre", ""),
-                        d["gama_nombre"], d["maquinas"], " | ".join(d["articulos"]),
+                        d["sector"] or "", d["gama_nombre"], d["maquinas"],
+                        " | ".join(d["articulos"]), d["ultima_maquina"] or "",
+                        "" if d["meses_con_maquina"] is None else d["meses_con_maquina"],
                         d["ultima_compra"], d["meses_sin_comprar"],
-                        f"{d['compraba_12_meses']:.2f}".replace(".", ",")])
+                        _euros(d["compraba_12_meses"]), _euros(d["gasto_total"])])
     else:
-        w.writerow(["Código cliente", "Cliente", "Empresa BoHub", "Gama", "Máquinas",
+        w.writerow(["Código cliente", "Cliente", "Empresa BoHub", "Sector", "Gama", "Máquinas",
                     "Artículos", "Última máquina", "Meses con la máquina",
-                    "Compra recambios pero no consumibles"])
+                    "Compra recambios pero no consumibles", "Gasto total (€)"])
         for h in filas:
             w.writerow([h["codcli"], h["nombre"] or "", (h["empresa"] or {}).get("nombre", ""),
-                        h["gama_nombre"], h["maquinas"], " | ".join(h["articulos"]),
-                        h["ultima_maquina"] or "", "" if h["meses_con_maquina"] is None
-                        else h["meses_con_maquina"], "sí" if h["solo_recambios"] else "no"])
+                        h["sector"] or "", h["gama_nombre"], h["maquinas"],
+                        " | ".join(h["articulos"]), h["ultima_maquina"] or "",
+                        "" if h["meses_con_maquina"] is None else h["meses_con_maquina"],
+                        "sí" if h["solo_recambios"] else "no", _euros(h["gasto_total"])])
     return buf.getvalue()

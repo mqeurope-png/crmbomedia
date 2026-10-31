@@ -429,19 +429,36 @@ def sin_catalogo(session: Session,
     for _, c, fam in catalogo:
         ultimo[_k(c)] = (c, fam)
     lineas = {_k(c): n for c, (n, _p) in vendidas.items()}
+    # Dos problemas distintos, en dos cifras (1/11/2026): la familia VACÍA en
+    # todos los ejercicios (no hay de dónde sacarla) y la familia que está
+    # pero no se ha clasificado (o no está en la tabla).
     sin_fam: dict[str, dict[str, Any]] = {}
+    vacias: list[tuple[str, int]] = []
+    recuperadas = 0
     for kc, (c, fam) in ultimo.items():
-        f = familias.get(al_fam.resuelve(fam) or "") if fam else None
+        efectiva = al_fam.del_articulo(c, fam)
+        if efectiva and not (fam and str(fam).strip()):
+            recuperadas += 1            # vacía en su último año, de otro ejercicio
+        if not efectiva:
+            vacias.append((c, lineas.get(kc, 0)))
+            continue
+        f = familias.get(efectiva)
         if f is not None and f.clase:
             continue
-        motivo = ("sin_familia" if not fam else "no_esta" if f is None else "sin_clase")
-        g = sin_fam.setdefault(fam or "", {"familia": fam, "motivo": motivo, "articulos": 0,
-                                           "lineas": 0, "ejemplos": []})
+        motivo = "no_esta" if f is None else "sin_clase"
+        g = sin_fam.setdefault(efectiva, {"familia": efectiva, "motivo": motivo,
+                                          "articulos": 0, "lineas": 0, "ejemplos": []})
         g["articulos"] += 1
         g["lineas"] += lineas.get(kc, 0)
         if len(g["ejemplos"]) < 5:
             g["ejemplos"].append(c)
     grupos = sorted(sin_fam.values(), key=lambda g: (-g["articulos"], g["familia"] or ""))
+    vacias.sort(key=lambda x: (-x[1], x[0]))
+    desc_vacias = {}
+    if vacias:
+        for codart, d in session.execute(select(art.codart, art.descripcion).where(
+                art.codart.in_([c for c, _ in vacias[:50]])).order_by(art.ejercicio)):
+            desc_vacias[_k(codart)] = d
     return {
         "articulos": len(faltan),
         "lineas": sum(n for _, n in faltan.values()),
@@ -455,6 +472,14 @@ def sin_catalogo(session: Session,
         "avisos_familia": al_fam.avisos,
         "sin_familia": {"articulos": sum(g["articulos"] for g in grupos),
                         "lineas": sum(g["lineas"] for g in grupos), "familias": grupos},
+        # Con la familia vacía en TODOS los ejercicios: no se inventa; se
+        # enseña para que la mire Bart. Y cuántos se recuperaron de otro año.
+        "familia_vacia": {
+            "articulos": len(vacias), "lineas": sum(n for _, n in vacias),
+            "recuperadas": recuperadas,
+            "items": [{"codart": c, "descripcion": desc_vacias.get(_k(c)), "lineas": n}
+                      for c, n in vacias[:50]],
+        },
     }
 
 
@@ -485,7 +510,7 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
         codart for codart, familia in session.execute(
             select(art.codart, art.familia).join(
                 ultimo, (ultimo.c.codart == art.codart) & (ultimo.c.ej == art.ejercicio)))
-        if (f := familias.get(al_fam.resuelve(familia) or "")) is not None
+        if (f := familias.get(al_fam.del_articulo(codart, familia) or "")) is not None
         and f.clase == CLASE_MAQUINA
     }
     candidatos |= set(session.scalars(select(propia.codart).where(
@@ -530,7 +555,8 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
     items = []
     for codart, n in vendidos.items():
         a = catalogo.get(_k(codart))
-        f = familias.get(al_fam.resuelve(a.familia) or "") if a and a.familia else None
+        fam_a = al_fam.del_articulo(a.codart, a.familia) if a else None
+        f = familias.get(fam_a or "")
         clase = propias.get(_k(codart))
         estado = (MARCADA if clase == CLASE_MAQUINA else
                   SIN_REVISAR if clase is None else NO_MAQUINA)
@@ -541,7 +567,7 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
             # El código del catálogo (no la grafía de la línea): es con el que
             # se guarda la marca y con el que la buscan las demás pantallas.
             "codart": a.codart if a else codart, "descripcion": a.descripcion if a else None,
-            "familia": al_fam.resuelve(a.familia) if a else None,
+            "familia": fam_a,
             "familia_nombre": f.descripcion if f else None, "gama": f.gama if f else None,
             "familia_clase": f.clase if f else None,
             "lineas": int(n), "precio_max": precios.get(codart),
@@ -558,8 +584,8 @@ def articulos(session: Session, *, con_sin_catalogo: bool = False) -> dict[str, 
                            else None),
             # Dada por revisada con el botón de SU familia de hoy (lo que
             # deshace ese mismo botón).
-            "en_lote": bool(a and a.familia and (lotes.get(_k(codart)) or "").endswith(
-                MARCA_LOTE.format(familia=al_fam.resuelve(a.familia)))),
+            "en_lote": bool(fam_a and (lotes.get(_k(codart)) or "").endswith(
+                MARCA_LOTE.format(familia=fam_a))),
         })
     items.sort(key=lambda i: (i["familia"] or "~", -i["lineas"], i["codart"]))
     return {

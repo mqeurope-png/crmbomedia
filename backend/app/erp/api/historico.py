@@ -760,14 +760,37 @@ class DormidosAjustesIn(BaseModel):
     meses_gracia_hueco: int | None = Field(None, ge=1, le=120)
 
 
+class FiltroDormidos(BaseModel):
+    """Para partir las listas: gama, sector («-» = sin sector), meses con la
+    máquina más reciente (mínimo y máximo) y gasto total mínimo."""
+
+    gama: str | None = None
+    sector: str | None = None
+    meses_min: int | None = None
+    meses_max: int | None = None
+    gasto_min: float | None = None
+
+
+def _filtro_dormidos(
+    gama: str | None = Query(None, max_length=32),
+    sector: str | None = Query(None, max_length=120),
+    meses_min: int | None = Query(None, ge=0, le=600),
+    meses_max: int | None = Query(None, ge=0, le=600),
+    gasto_min: float | None = Query(None, ge=0),
+) -> FiltroDormidos:
+    return FiltroDormidos(gama=gama or None, sector=sector or None, meses_min=meses_min,
+                          meses_max=meses_max, gasto_min=gasto_min)
+
+
 @router.get("/parque/dormidos-huecos")
 def dormidos_huecos(
+    filtro: FiltroDormidos = Depends(_filtro_dormidos),
     session: Session = Depends(get_session),
     _: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     from app.erp import parque_consultas  # noqa: PLC0415
 
-    return parque_consultas.informe(session)
+    return parque_consultas.filtrar(parque_consultas.informe(session), **filtro.model_dump())
 
 
 @router.put("/parque/dormidos-ajustes")
@@ -788,12 +811,14 @@ def dormidos_ajustes(
 @router.get("/parque/{tipo}.csv")
 def dormidos_huecos_csv(
     tipo: str = Path(..., pattern="^(dormidos|huecos)$"),
+    filtro: FiltroDormidos = Depends(_filtro_dormidos),
     session: Session = Depends(get_session),
     _: User = Depends(require_office_view),
 ) -> Response:
     from app.erp import parque_consultas  # noqa: PLC0415
 
-    datos = parque_consultas.informe(session)
+    # Lo mismo que se ve: el CSV sale con los filtros de la pantalla.
+    datos = parque_consultas.filtrar(parque_consultas.informe(session), **filtro.model_dump())
     texto = parque_consultas.csv_de(datos[tipo], tipo)
     return Response(
         content=("﻿" + texto).encode("utf-8"),
