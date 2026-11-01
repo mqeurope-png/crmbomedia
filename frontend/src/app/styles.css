@@ -15988,6 +15988,13 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-historico-filtros input, .erp-historico-filtros select { height: 36px; }
 .erp-historico-acciones { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .erp-historico-filtros .field:first-child { grid-column: span 2; }
+/* «Añadir una máquina»: las del catálogo que casan con lo escrito (1/11/2026). */
+.erp-historico-filtros .field > .field-label { font-size: 0.75rem; color: #374151; font-weight: 500; }
+.erp-maquinas-catalogo {
+  list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px;
+  max-height: 220px; overflow-y: auto;
+}
+.erp-maquinas-catalogo .button { width: 100%; justify-content: flex-start; text-align: left; height: auto; }
 .erp-historico-propuestas { margin-bottom: 12px; }
 .erp-historico-nueva-gama { margin-top: 16px; align-items: end; }
 .erp-historico-reglas { margin-top: 16px; }

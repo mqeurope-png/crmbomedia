@@ -451,18 +451,11 @@ def _auditar(session: Session, accion: str, lote: str, por: str, datos: dict[str
 
 
 def ya_cliente(session: Session) -> dict[str, int]:
-    """Contactos y empresas con la etiqueta YA CLIENTE ahora."""
-    from app.models.crm import Contact, ContactTag, Tag  # noqa: PLC0415
+    """Contactos y empresas con la etiqueta YA CLIENTE ahora (la misma cuenta
+    que la cabecera de Contactos)."""
+    from app.services.empresa_erp import recuento_ya_cliente  # noqa: PLC0415
 
-    tag_id = session.scalar(select(Tag.id).where(Tag.name_normalized == "ya cliente"))
-    if tag_id is None:
-        return {"contactos": 0, "empresas": 0}
-    contactos = session.scalar(select(func.count()).select_from(ContactTag).where(
-        ContactTag.tag_id == tag_id)) or 0
-    empresas = session.scalar(select(func.count(func.distinct(Contact.company_id))).select_from(
-        ContactTag).join(Contact, Contact.id == ContactTag.contact_id).where(
-        ContactTag.tag_id == tag_id, Contact.company_id.is_not(None))) or 0
-    return {"contactos": int(contactos), "empresas": int(empresas)}
+    return recuento_ya_cliente(session)
 
 
 def ya_cliente_por_empresa(session: Session, p: Plan) -> list[dict[str, Any]]:

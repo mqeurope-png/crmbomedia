@@ -439,6 +439,111 @@ def _codigos_maquina(session: Session, eq: Any) -> set[str]:
     return out
 
 
+def _normal(texto: str | None) -> str:
+    t = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode()
+    return t.lower()
+
+
+def catalogo_maquinas(session: Session) -> list[dict[str, Any]]:
+    """Las máquinas del catálogo (1/11/2026): los artículos que cuentan como
+    máquina en el parque (los marcados y sus equivalentes), UNO POR MODELO,
+    con el nombre, la familia y la gama de su catálogo más reciente. Es lo
+    que ofrece «Añadir una máquina» para no escribirla a mano."""
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    eq = equivalencias.cargar(session)
+    codigos = _codigos_maquina(session, eq)
+    if not codigos:
+        return []
+    al_fam = historico_alias.familias(session)
+    familias = {f.codigo: f for f in session.scalars(select(HistoricoFamilia))}
+    gamas = _gamas(session)
+    ultimo: dict[str, HistoricoArticulo] = {}
+    for a in session.scalars(select(HistoricoArticulo).where(
+            func.upper(HistoricoArticulo.codart).in_(sorted(codigos)))
+            .order_by(HistoricoArticulo.ejercicio)):
+        ultimo[equivalencias.clave(a.codart)] = a        # el más reciente gana
+    grupos: dict[str, list[str]] = {}
+    for k in sorted(codigos):
+        grupos.setdefault(equivalencias.clave(eq.canonico(k)), []).append(k)
+    out: list[dict[str, Any]] = []
+    for canon, ks in grupos.items():
+        # El del canónico si está en el catálogo; si no, el primero que esté.
+        # Uno que cuente como máquina (el canónico puede ser uno que Bart dijo
+        # que no lo es): el del canónico si está en el catálogo; si no, el
+        # primero que esté; y si ninguno está, el primero del grupo.
+        rep = canon if canon in ultimo and canon in ks else next(
+            (k for k in ks if k in ultimo), ks[0])
+        a = ultimo.get(rep)
+        codart = a.codart.strip() if a else rep
+        familia = al_fam.del_articulo(codart, a.familia if a else None)
+        f = familias.get(familia or "")
+        gama = (f.gama or None) if f else None
+        out.append({
+            "codart": codart, "descripcion": ((a.descripcion or "").strip() if a else "") or codart,
+            "familia": familia, "gama": gama, "gama_nombre": gamas.get(gama or "", gama),
+            "equivalentes": sorted(k for k in ks if k != equivalencias.clave(codart)),
+        })
+    return sorted(out, key=lambda m: (_normal(m["descripcion"]), m["codart"]))
+
+
+def _por_codigo(catalogo: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {equivalencias.clave(c): m for m in catalogo for c in (m["codart"], *m["equivalentes"])}
+
+
+def gama_de_manual(m: Any, del_catalogo: dict[str, Any] | None) -> str | None:
+    """La gama con la que cuenta una máquina añadida a mano. La del catálogo,
+    la de la familia de su artículo AHORA (si Bart la cambia o se la quita,
+    cambia aquí, como en una de factura); la que se le puso a mano solo si su
+    familia no tiene gama. Si su artículo ya no es una máquina, ninguna. La
+    escrita a mano, la que se le puso."""
+    if not m.codart:
+        return m.gama
+    if del_catalogo is None:
+        return None
+    return del_catalogo["gama"] or m.gama
+
+
+def maquina_del_catalogo(session: Session, codart: str | None) -> dict[str, Any] | None:
+    """La máquina del catálogo con ese código (o uno equivalente), o None."""
+    if not codart or not codart.strip():
+        return None
+    return _por_codigo(catalogo_maquinas(session)).get(equivalencias.clave(codart))
+
+
+def buscar_maquinas(session: Session, q: str | None, *, limite: int = 25) -> list[dict[str, Any]]:
+    """Las máquinas del catálogo que casan con `q` por código (también los
+    equivalentes, sin guiones ni espacios) o por nombre: todas las palabras
+    tienen que salir. Primero las de código exacto, luego las que empiezan
+    por él, luego las que lo contienen, y al final las que casan por nombre."""
+    texto = _normal(q).strip()
+    if not texto:
+        return []
+    palabras = texto.split()
+
+    def compacto(t: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", t)
+
+    puntuadas: list[tuple[int, dict[str, Any]]] = []
+    for m in catalogo_maquinas(session):
+        codigos = [_normal(c) for c in (m["codart"], *m["equivalentes"])]
+        hay = " ".join([*codigos, _normal(m["descripcion"])])
+        if not all(p in hay or compacto(p) in compacto(hay) for p in palabras):
+            continue
+        cq = compacto(texto)
+        if any(compacto(c) == cq for c in codigos):
+            puntos = 0
+        elif any(compacto(c).startswith(cq) for c in codigos):
+            puntos = 1
+        elif any(cq in compacto(c) for c in codigos):
+            puntos = 2
+        else:
+            puntos = 3
+        puntuadas.append((puntos, m))
+    puntuadas.sort(key=lambda pm: pm[0])          # estable: dentro, por nombre
+    return [m for _, m in puntuadas[:limite]]
+
+
 def parque(session: Session, company: Any) -> dict[str, Any]:
     """Las máquinas de una empresa: las volcadas y las añadidas a mano, con
     su baja, la gama con nombre y de dónde sale cada una."""
@@ -457,12 +562,22 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         b = next((bajas[c] for c in _claves_heredables(m) if c in bajas), None)
         rows.append({**m, "id": None, "gama_nombre": gamas.get(m["gama"] or "", m["gama"]),
                      "baja": _baja(b.at, b.motivo, b.por) if b else None})
-    for m in session.scalars(select(ParqueMaquinaManual).where(
-            ParqueMaquinaManual.company_id == company.id)):
+    manuales = list(session.scalars(select(ParqueMaquinaManual).where(
+        ParqueMaquinaManual.company_id == company.id)))
+    del_cat = _por_codigo(catalogo_maquinas(session)) if any(m.codart for m in manuales) else {}
+    for m in manuales:
+        # Con código, es una máquina del catálogo: la gama y la familia son las
+        # de su artículo, como las de una factura (si cambian, cambian aquí).
+        c = del_cat.get(equivalencias.clave(m.codart)) if m.codart else None
+        gama = gama_de_manual(m, c)
         rows.append({
             "origen": "manual", "clave": None, "id": m.id, "codart": m.codart,
-            "articulo": m.descripcion, "familia": None, "gama": m.gama,
-            "gama_nombre": gamas.get(m.gama or "", m.gama),
+            "del_catalogo": bool(m.codart),
+            # Su artículo ya no cuenta como máquina (Bart lo desmarcó): como
+            # una de factura, deja de contar; se enseña y se dice por qué.
+            "no_cuenta": bool(m.codart) and c is None,
+            "articulo": m.descripcion, "familia": c["familia"] if c else None, "gama": gama,
+            "gama_nombre": gamas.get(gama or "", gama),
             "fecha": m.fecha.isoformat() if m.fecha else None, "fecha_original": None,
             "ejercicio": str(m.fecha.year) if m.fecha else None, "cantidad": 1.0,
             "documento": None, "nota": m.nota,
@@ -472,7 +587,7 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
     rows.sort(key=lambda r: (r["fecha"] or f"{r['ejercicio'] or '0000'}-00-00"), reverse=True)
     rows.sort(key=lambda r: r["baja"] is not None)
     avisar_mismo_modelo(rows, equivalencias.cargar(session))
-    activas = [r for r in rows if r["baja"] is None]
+    activas = [r for r in rows if r["baja"] is None and not r.get("no_cuenta")]
     return {
         "codcli": codcli,
         # Sin cliente de FACTUSOL vinculado no se sabe qué ha comprado: se dice,
@@ -502,18 +617,35 @@ def _baja(at: datetime | None, motivo: str | None, por: str | None) -> dict[str,
 
 def anadir_manual(session: Session, company_id: str, datos: dict[str, Any], *,
                   por: str) -> ParqueMaquinaManual:
-    """ValueError si falta la descripción o la gama no existe."""
-    descripcion = (datos.get("descripcion") or "").strip()[:255]
+    """ValueError si falta la descripción, la gama no existe o el código no
+    es una máquina del catálogo.
+
+    Dos formas (1/11/2026): elegida del catálogo (`codart`), y entonces la gama
+    sale de la familia de su artículo y cuenta como una de factura; o escrita a
+    mano (sin código), para lo que no está en el catálogo: comprada en otro
+    sitio o vendida antes de 2014."""
+    codart = (datos.get("codart") or "").strip()[:64] or None
+    cat = None
+    if codart is not None:
+        cat = maquina_del_catalogo(session, codart)
+        if cat is None:
+            raise ValueError("codart")
+        codart = cat["codart"]
+    descripcion = ((datos.get("descripcion") or "").strip()
+                   or (cat["descripcion"] if cat else ""))[:255]
     if not descripcion:
         raise ValueError("descripcion")
-    gama = datos.get("gama") or None
+    # La del catálogo no se copia: cuenta la de su familia en cada momento
+    # (`gama_de_manual`). Solo se guarda la que se elige a mano cuando su
+    # familia no tiene.
+    gama = None if cat and cat["gama"] else (datos.get("gama") or None)
     if gama is not None and session.get(HistoricoGama, gama) is None:
         raise ValueError("gama")
     fecha = datos.get("fecha")
     if isinstance(fecha, str) and fecha:
         fecha = date.fromisoformat(fecha[:10])
     m = ParqueMaquinaManual(
-        company_id=company_id, codart=(datos.get("codart") or "").strip()[:64] or None,
+        company_id=company_id, codart=codart,
         descripcion=descripcion, gama=gama, fecha=fecha or None,
         nota=(datos.get("nota") or "").strip()[:255] or None,
         creado_por=por, creado_at=_ahora(),
