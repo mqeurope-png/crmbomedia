@@ -307,3 +307,16 @@ def test_la_configuracion_se_cambia_sin_desplegar(http, session_factory) -> None
                                                                    "solo_admin": False}
     r = http.patch("/api/erp/settings", headers=h, json={"analisis_parque": {"modelo": "x y"}})
     assert r.status_code == 400
+
+
+def test_al_fusionar_empresas_el_analisis_de_la_absorbida_se_borra(session_factory, con_clave) -> None:  # noqa: F811,E501
+    from app.services import company_dedupe
+
+    ids = _preparar(session_factory)
+    with session_factory() as s, patch.object(llm, "_invoke_claude", _IA()):
+        absorbida = s.get(Company, ids["compra"])
+        servicio.generar(s, absorbida, por="test", hoy=HOY)
+        keep = s.get(Company, ids["sin_nada"])
+        company_dedupe.merge_companies_into(s, keep, [absorbida])
+        s.commit()
+        assert s.get(AnalisisEmpresa, ids["compra"]) is None

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,11 @@ MOVABLE_TABLES: dict[str, str] = {
     "parque_maquinas_manuales": "parque_moved",
 }
 
+#: Tablas que apuntan a `companies.id` y NO se mueven al fusionar porque se
+#: vuelven a calcular: el análisis del parque (1/11/2026). El de la absorbida
+#: se borra; el de la principal se rehace solo (sus datos han cambiado).
+REGENERABLES: frozenset[str] = frozenset({"crm_analisis_empresa"})
+
 
 def _company_fk_tables() -> set[str]:
     """Tablas con una FK a `companies.id`, leídas del propio esquema.
@@ -143,7 +148,7 @@ def _company_fk_tables() -> set[str]:
 
 def _check_all_fks_are_handled() -> None:
     """Se niega a fusionar si el esquema tiene una FK que no sabemos mover."""
-    unknown = _company_fk_tables() - set(MOVABLE_TABLES)
+    unknown = _company_fk_tables() - set(MOVABLE_TABLES) - REGENERABLES
     if unknown:
         raise ValueError(
             "hay tablas que apuntan a companies.id y este merge no sabe mover: "
@@ -358,6 +363,10 @@ def _merge_into(
                                      .values(company_id=keep.id))
             if model is ParqueMaquinaManual:
                 moved["parque_moved"] += int(result.rowcount or 0)
+        # El análisis del parque de la absorbida no se mueve: se rehace.
+        from app.models.analisis_parque import AnalisisEmpresa  # noqa: PLC0415
+
+        session.execute(delete(AnalisisEmpresa).where(AnalisisEmpresa.company_id == other.id))
 
         # Actividad / timeline: los eventos de auditoría de la absorbida (su
         # ficha es `target`) pasan a la principal, para que su historial no se
