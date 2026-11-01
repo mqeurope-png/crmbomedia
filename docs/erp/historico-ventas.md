@@ -243,18 +243,36 @@ inventan un ritmo de compra («cada 1 mes») y falsean los dormidos y los huecos
 
 `scripts/garantias_como_otro.py` les da **clase propia «Otro»** con el mecanismo
 de siempre (`historico_articulos_clase`):
-- **Cuáles:** los artículos cuya descripción dice «Gar.», «garantía»,
-  «warranty» o «garantie» y que hoy cuentan como consumible o recambio por su
-  familia.
-- **Lo que no toca:** la familia, y un artículo que ya tenga clase propia,
-  porque eso lo decidió alguien.
-- **Antes de escribir** (`--probar`), dice cuántos son, cuántas líneas vendidas
-  llevan, cuánto se mueve el ritmo de compra de los clientes de la gama (láser
-  por defecto) y los dormidos y huecos, antes y después.
+- **Cuáles:** los artículos que cumplen las dos condiciones:
+  - la descripción dice «Gar.», «GAR», «Garant.», «Gtía.», «garantía»,
+    «garantie», «garanzia», «warranty» o «guarantee»;
+  - cuentan como consumible o recambio por su familia en algún año.
+
+  No cuentan las negadas o lo que cubre la garantía («sin garantía», «fuera de
+  garantía», «cabezal en garantía», «bajo garantía», «kit con garantía»), ni
+  «garantizado» o «garantiert».
+- **Lo que no toca** (lo lista aparte, con el motivo):
+  - la familia;
+  - un artículo con clase propia, porque eso lo decidió alguien. Los marcados
+    «no es una máquina» siguen contando como su familia: si son garantías, se
+    les pone «Otro» a mano en Familias;
+  - el equivalente de una máquina marcada, que cuenta como máquina;
+  - un código cuya descripción dice garantía unos años y otros no, porque se
+    reutilizó. Sale como dudoso;
+  - lo que puso una pasada anterior y alguien quitó después: no lo vuelve a
+    poner.
+- **Antes de escribir** (`--probar`), dice:
+  - cuántos son y cuántas líneas de factura llevan;
+  - cuánto se mueve el ritmo de compra de los clientes de la gama, antes y
+    después. Es el mismo cálculo que la ficha (`hechos.cada_meses`) y la gama
+    es láser por defecto (`--gama`, por código o nombre);
+  - los dormidos y los huecos de cada gama que cambie.
 - **Si la lista trae algo que no es una garantía:** `--excluir CODART …` lo deja
-  como está.
-- **Para aplicarlo:** `--apply --yes`, que después recalcula el resumen por
-  empresa.
+  como está. Con `--apply` se recuerda para las próximas pasadas.
+- **Para aplicarlo:** `--apply --yes`. Programa el recálculo del resumen por
+  empresa en la cola, como un cambio en Familias; sin cola, lo hace allí mismo.
+- **Qué recuerda:** lo que puso y lo que se dejó fuera, en el blob de
+  `ErpSettings`, clave `garantias_como_otro`.
 - **Para deshacerlo:** `--revertir --yes`. Quita solo lo que puso el script y
   nadie ha cambiado después.
 

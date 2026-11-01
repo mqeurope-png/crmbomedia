@@ -126,6 +126,16 @@ def _veces(n: int) -> str:
     return "1 vez" if n == 1 else f"{n} veces"
 
 
+def cada_meses(fechas: list[date]) -> int | None:
+    """Cada cuántos meses compra (la mediana entre compras, por fechas
+    distintas y ordenadas). None con menos de 3 compras: pocas para saberlo.
+    Es lo que enseña la ficha, y lo que mide `scripts/garantias_como_otro`."""
+    if len(fechas) < 3:
+        return None
+    dias = [(b - a).days for a, b in zip(fechas, fechas[1:], strict=False)]
+    return max(1, round(median(dias) / 30.44))
+
+
 # --- compras del cliente ---------------------------------------------------------------
 
 
@@ -434,9 +444,7 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
         fechas = sorted({c["fecha"] for c in cs if c["fecha"]})
         ultima = cs[-1]
         sin = _meses(ultima["fecha"], hoy) if ultima["fecha"] else None
-        if len(fechas) >= 3:
-            dias = [(b - a).days for a, b in zip(fechas, fechas[1:], strict=False)]
-            cada = max(1, round(median(dias) / 30.44))
+        if (cada := cada_meses(fechas)) is not None:
             nuevo(CONSUME, f"Compra consumible o recambio de {nombre_g} cada {cada} meses de "
                            f"mediana ({len(fechas)} compras, del {_fecha(fechas[0])} al "
                            f"{_fecha(fechas[-1])}).",
