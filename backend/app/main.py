@@ -101,7 +101,9 @@ app.include_router(assignment_rules_router, dependencies=_CRM_SCOPE)
 app.include_router(entities_router, dependencies=_CRM_SCOPE)
 app.include_router(resumen_erp_router, dependencies=_CRM_SCOPE)
 app.include_router(dominios_compartidos_router, dependencies=_CRM_SCOPE)
-app.include_router(analisis_parque_router, dependencies=_CRM_SCOPE)
+# El análisis del parque es dato de CLIENTE (como empresas): comercial y pedidos lo ven
+# cuando se abre a todos; su propio permiso decide además.
+app.include_router(analisis_parque_router, dependencies=[Depends(require_client_data_access)])
 app.include_router(despegue_empresa_router, dependencies=_CRM_SCOPE)
 app.include_router(entity_views_router, dependencies=_CRM_SCOPE)
 app.include_router(router, prefix="/api", dependencies=[Depends(crm_scope_monolith)])

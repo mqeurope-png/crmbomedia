@@ -141,8 +141,7 @@ def _compras(session: Session, codcli: str) -> list[dict[str, Any]]:
     al_art, al_fam = historico_alias.articulos(session), historico_alias.familias(session)
     stmt = (
         select(doc.tipo, doc.serie, doc.codigo, doc.ejercicio, doc.fecha, lin.codart,
-               art.descripcion, lin.descripcion, lin.cantidad, lin.total, fam.clase, fam.gama,
-               propia.clase)
+               art.descripcion, lin.cantidad, lin.total, fam.clase, fam.gama, propia.clase)
         .join(doc, doc.id == lin.documento_id)
         .join(art, and_(art.ejercicio == lin.ejercicio, art.codart == al_art.expr(lin.codart)))
         .join(fam, fam.codigo == al_fam.expr_articulo(art))
@@ -157,7 +156,7 @@ def _compras(session: Session, codcli: str) -> list[dict[str, Any]]:
         stmt = stmt.where(doc.serie.notin_(sorted(fuera)))
     maquinas = parque._codigos_maquina(session, equivalencias.cargar(session))
     out = []
-    for (tipo, serie, codigo, ejercicio, fecha, codart, desc_art, desc_lin, cantidad, total,
+    for (tipo, serie, codigo, ejercicio, fecha, codart, desc_art, cantidad, total,
          clase_fam, gama, clase_propia) in session.execute(stmt):
         clase = clase_efectiva_py(clase_propia, clase_fam)
         if clase not in ("consumible", "recambio") or (cantidad or 0) <= 0:
@@ -167,10 +166,33 @@ def _compras(session: Session, codcli: str) -> list[dict[str, Any]]:
         cuando = fecha or (date(int(ejercicio), 1, 1) if str(ejercicio).isdigit() else None)
         out.append({"doc": _doc(tipo, serie, codigo, ejercicio), "fecha": cuando,
                     "codart": (codart or "").strip(),
-                    "descripcion": (desc_art or desc_lin or codart or "").strip(),
+                    # La del catálogo; la de la línea no (puede llevar texto libre).
+                    "descripcion": (desc_art or codart or "").strip(),
                     "clase": clase, "gama": gama, "total": float(total or 0)})
     out.sort(key=lambda c: (c["fecha"] or date.min, c["doc"]["numero"]))
     return out
+
+
+def _comprado_alguna_vez(session: Session, codcli: str) -> set[str]:
+    """Todos los artículos que ha comprado el cliente, sea cual sea su clase o
+    su familia de entonces, con el alias resuelto y por su modelo (los códigos
+    equivalentes juntos): para no decir «nunca ha comprado» lo que sí compró."""
+    from app.erp import historico_alias, parque  # noqa: PLC0415
+    from app.erp import historico_equivalencias as equivalencias  # noqa: PLC0415
+    from app.erp.models.historico import (  # noqa: PLC0415
+        TIPOS_VENTA,
+        HistoricoDocumento,
+        HistoricoLinea,
+    )
+
+    al_art = historico_alias.articulos(session)
+    eq = equivalencias.cargar(session)
+    codigos = session.scalars(
+        select(HistoricoLinea.codart).distinct()
+        .join(HistoricoDocumento, HistoricoDocumento.id == HistoricoLinea.documento_id)
+        .where(HistoricoDocumento.codcli.in_(parque.codigos_cliente(codcli)),
+               HistoricoDocumento.tipo.in_(TIPOS_VENTA), HistoricoLinea.codart.is_not(None)))
+    return {eq.canonico(al_art.resuelve(c)) for c in codigos if (c or "").strip()}
 
 
 def _catalogo_consumibles(session: Session, gamas: set[str], *, desde: date, hasta: date
@@ -290,7 +312,7 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
     for c in compras:
         por_gama[c["gama"]].append(c)
     eq = equivalencias.cargar(session)
-    comprados = {eq.canonico(c["codart"]) for c in compras if c["codart"]}
+    comprados = _comprado_alguna_vez(session, codcli)
     for gama in sorted(gamas_maquinas | set(por_gama)):
         nombre_g = gamas_nombre.get(gama, gama)
         cs = por_gama.get(gama, [])
@@ -361,24 +383,22 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
                   {"tipo": "fecha", "fecha": _iso(x["ultima"])}, gama)
 
     return Hechos(estado=CON_DATOS, hechos=hechos, productos=productos,
-                  huella=_huella(CON_DATOS, codcli, maquinas, compras,
-                                 [p.codart for p in productos], cfg))
+                  huella=_huella(CON_DATOS, codcli, maquinas, compras, cfg))
 
 
 def _huella(estado: str, codcli: str | None = None, maquinas: list[dict[str, Any]] = (),
-            compras: list[dict[str, Any]] = (), productos: list[str] = (),
-            cfg: dict[str, Any] | None = None) -> str:
-    """Lo que, si cambia, obliga a regenerar: las máquinas (y sus bajas y
-    gamas), las compras (por documento y artículo), qué productos se pueden
-    proponer y los umbrales. No entra «hoy» (si no, cambiaría cada mes: para eso
-    está la caducidad)."""
+            compras: list[dict[str, Any]] = (), cfg: dict[str, Any] | None = None) -> str:
+    """Lo que, si cambia, obliga a regenerar: SUS máquinas (y sus bajas y
+    gamas), SUS compras (por documento y artículo) y los umbrales. Ni «hoy» ni
+    lo que compran otros clientes (la lista de productos se mueve con las
+    ventas de todos): si no, se regeneraría solo, y se pagaría la IA sin que
+    nada suyo hubiera cambiado. Para lo demás está la caducidad."""
     datos = {
         "v": VERSION, "estado": estado, "codcli": codcli,
         "maquinas": sorted([m.get("clave") or m.get("id") or "", m.get("codart") or "",
                             m.get("gama") or "", m.get("fecha") or ""] for m in maquinas),
         "compras": sorted([c["doc"]["tipo"], c["doc"]["ejercicio"], c["doc"]["numero"],
                            c["codart"], c["gama"]] for c in compras),
-        "productos": sorted(productos),
         "cfg": {k: (cfg or {}).get(k) for k in ("anios_sin_confirmar", "meses_catalogo")},
     }
     return hashlib.sha256(json.dumps(datos, sort_keys=True, default=str).encode()).hexdigest()

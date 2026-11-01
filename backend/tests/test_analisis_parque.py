@@ -302,6 +302,8 @@ def test_la_configuracion_se_cambia_sin_desplegar(http, session_factory) -> None
     # Sin «solo administradores», quien ve el parque lo ve.
     url = f"/api/companies/{ids['compra']}/analisis-parque"
     assert http.get(url, headers=auth_headers(http, "user")).status_code == 200
+    # Y el comercial (rol solo-ERP), que es quien va a llamar al cliente.
+    assert http.get(url, headers=auth_headers(http, "comercial")).status_code == 200
     assert http.get("/api/analisis-parque/permiso",
                     headers=auth_headers(http, "user")).json() == {"puede": True,
                                                                    "solo_admin": False}
@@ -320,3 +322,76 @@ def test_al_fusionar_empresas_el_analisis_de_la_absorbida_se_borra(session_facto
         company_dedupe.merge_companies_into(s, keep, [absorbida])
         s.commit()
         assert s.get(AnalisisEmpresa, ids["compra"]) is None
+
+
+
+def test_la_huella_no_cambia_por_lo_que_compran_otros(session_factory, con_clave) -> None:  # noqa: F811,E501
+    ids = _preparar(session_factory)
+    with session_factory() as s, patch.object(llm, "_invoke_claude", _IA()):
+        empresa = s.get(Company, ids["compra"])
+        servicio.generar(s, empresa, por="test", hoy=HOY)
+        # Otro cliente compra mucho de otro filtro: cambia el «más vendido», no lo suyo.
+        datos = _datos()
+        for i in range(3):
+            datos["2026"]["F_FAC"].append(_fac(260010 + i, OTRO, "Cliente Figurante",
+                                               "2026-09-01T00:00:00"))
+            datos["2026"]["F_LFA"].append(_lfa(260010 + i, 1, FILTRO_VIEJO, FILTRO_VIEJO, 1, 50))
+        historico.cargar(s, FactusolFalso(datos), ["2026"], en_curso="2026")
+        assert servicio.leer(s, empresa, hoy=HOY)["estado"] == servicio.AL_DIA
+
+
+def test_no_dice_nunca_ha_comprado_lo_que_compro_con_otra_familia(session_factory) -> None:  # noqa: F811,E501
+    ids = _preparar(session_factory)
+    datos = _datos()
+    # En 2019 el filtro B estaba en el cajón de sastre (sin gama) y él lo compró.
+    cat_2019 = [a if a["CODART"] != FILTRO_NUEVO else {**a, "FAMART": "SIN"} for a in CAT]
+    datos["2019"]["F_ART"] = cat_2019
+    datos["2019"]["F_FAC"].append(_fac(190002, COMPRA, "Cliente Figurante", "2019-06-01T00:00:00"))
+    datos["2019"]["F_LFA"].append(_lfa(190002, 1, FILTRO_NUEVO, FILTRO_NUEVO, 1, 90))
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(datos), ["2019"], en_curso="2026")
+        h = _hechos(s, ids["compra"])
+        assert FILTRO_NUEVO not in [p.codart for p in h.productos]
+
+
+def test_respuestas_raras_de_la_ia(http, session_factory, con_clave) -> None:  # noqa: F811
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        h = _hechos(s, ids["compra"])
+        cambio = next(x.id for x in h.hechos if x.bloque == hx.CAMBIO)
+        catalogo = servicio._codigos_catalogo(s) | {"61403"}
+        # «lectura» que no es una lista: no rompe.
+        r = ia.validar({"lectura": {"texto": "x", "citas": [cambio]}}, h,
+                       codigos_catalogo=catalogo)
+        assert r.lectura == []
+        # Una cita real y otra inventada: la frase entera fuera.
+        r = ia.validar({"lectura": [{"texto": "Mezcla.", "citas": [cambio, "D99"]}]}, h,
+                       codigos_catalogo=catalogo)
+        assert r.lectura == [] and r.descartado
+        # Un código solo numérico del catálogo que no es suyo: fuera; un año, no.
+        r = ia.validar({"entrada": {"texto": "Ofrecerle el 61403 antes de 2027.",
+                                    "citas": [cambio]}}, h, codigos_catalogo=catalogo)
+        assert r.entrada is None and "61403" in r.descartado[0]
+    # Una respuesta que no es JSON: no se guarda nada, pero lo que costó sí se anota.
+    with patch.object(llm, "_invoke_claude", lambda **kw: (
+            llm.registrar_uso(llm.Uso(modelo=kw["model"], tokens_entrada=10, tokens_salida=5))
+            or "no es json")):
+        r = http.post(f"/api/companies/{ids['compra']}/analisis-parque/generar",
+                      headers=auth_headers(http, "admin"))
+    assert r.status_code == 502
+    with session_factory() as s:
+        assert s.get(AnalisisEmpresa, ids["compra"]) is None
+        assert s.scalar(select(LlamadaIA.ok)) is False
+
+
+def test_el_lote_sigue_si_una_empresa_falla(session_factory, monkeypatch) -> None:  # noqa: F811
+    ids = _preparar(session_factory)
+    engine = session_factory.kw["bind"]
+    monkeypatch.setattr("app.db.session.get_engine", lambda: engine)
+
+    def falla(*a, **kw):
+        raise RuntimeError("roto")
+
+    monkeypatch.setattr(servicio, "generar", falla)
+    r = servicio.generar_lote([ids["compra"], ids["sin_nada"], "no-existe"], por="test")
+    assert r == {"generados": 0, "al_dia": 0, "sin_datos": 1, "fallidos": 1}

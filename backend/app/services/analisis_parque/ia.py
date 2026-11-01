@@ -77,17 +77,24 @@ def peticion(h: Hechos) -> str:
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-/]{2,}")
 
 
-def _codigos_ajenos(texto: str, permitidos: set[str], todos: set[str]) -> list[str]:
+def _codigos_ajenos(texto: str, permitidos: set[str], todos: set[str],
+                    numeros_de_hechos: set[str]) -> list[str]:
     """Los códigos de artículo del catálogo que nombra el texto y no son ni del
-    cliente ni de la lista de productos. Solo cuenta lo que parece un código
-    (letras y cifras) y existe en el catálogo."""
+    cliente ni de la lista de productos. Cuenta lo que parece un código: letras
+    y cifras, o solo cifras (de 4 o más; muchos códigos de FACTUSOL son
+    números) que existan en el catálogo y no salgan en ningún hecho (así un
+    año o una cantidad de los hechos no se toman por un código)."""
     out = []
     for t in _TOKEN.findall(texto or ""):
         k = t.strip(".-/").upper()
-        if not (any(c.isdigit() for c in k) and any(c.isalpha() for c in k)):
-            continue
-        if k in todos and k not in permitidos:
-            out.append(t)
+        digitos = any(c.isdigit() for c in k)
+        letras = any(c.isalpha() for c in k)
+        if digitos and letras:
+            if k in todos and k not in permitidos:
+                out.append(t)
+        elif digitos and k.isdigit() and len(k) >= 4:
+            if k in todos and k not in permitidos and k not in numeros_de_hechos:
+                out.append(t)
     return out
 
 
@@ -102,20 +109,28 @@ def validar(data: Any, h: Hechos, *, codigos_catalogo: set[str]) -> Resultado:
     productos = {p.id: p for p in h.productos}
     permitidos = {p.codart.upper() for p in h.productos}
     permitidos |= {m.upper() for x in h.hechos for m in re.findall(r"\(([^()\s]+)\)", x.texto)}
+    numeros = {n for x in h.hechos for n in re.findall(r"\d+", x.texto)}
 
-    def citas_validas(raw: Any) -> list[str]:
-        return [c for c in (raw if isinstance(raw, list) else []) if isinstance(c, str)
-                and c in ids]
+    def citas_de(raw: Any) -> list[str] | None:
+        """Las citas; None si falta alguna o alguna no existe (la frase entera
+        se descarta: un dato inventado entre otros reales no se salva)."""
+        if not isinstance(raw, list) or not raw:
+            return None
+        if not all(isinstance(c, str) and c in ids for c in raw):
+            return None
+        return list(dict.fromkeys(raw))
 
-    for item in (data.get("lectura") or [])[:MAX_LECTURA]:
-        texto = str((item or {}).get("texto") or "").strip() if isinstance(item, dict) else ""
+    lectura = data.get("lectura")
+    for item in (lectura if isinstance(lectura, list) else [])[:MAX_LECTURA]:
+        texto = str(item.get("texto") or "").strip() if isinstance(item, dict) else ""
         if not texto:
             continue
-        citas = citas_validas(item.get("citas"))
+        citas = citas_de(item.get("citas"))
         if not citas:
-            r.descartado.append(f"Una frase de la lectura no citaba ningún dato: «{texto[:80]}»")
+            r.descartado.append(f"Una frase de la lectura no citaba bien sus datos (sin cita o con "
+                                f"una que no existe): «{texto[:80]}»")
             continue
-        if ajenos := _codigos_ajenos(texto, permitidos, codigos_catalogo):
+        if ajenos := _codigos_ajenos(texto, permitidos, codigos_catalogo, numeros):
             r.descartado.append(f"Una frase nombraba un artículo que no es suyo ni de la lista "
                                 f"({', '.join(ajenos)}).")
             continue
@@ -124,16 +139,17 @@ def validar(data: Any, h: Hechos, *, codigos_catalogo: set[str]) -> Resultado:
     e = data.get("entrada")
     if isinstance(e, dict) and str(e.get("texto") or "").strip():
         texto = str(e["texto"]).strip()
-        citas = citas_validas(e.get("citas"))
+        citas = citas_de(e.get("citas")) or []
         anclas = [c for c in citas if ids[c].bloque in ANCLAS]
-        pedidos = [p for p in (e.get("productos") or []) if isinstance(p, str)]
+        brutos = e.get("productos")
+        pedidos = [p for p in (brutos if isinstance(brutos, list) else []) if isinstance(p, str)]
         if not anclas:
             r.descartado.append("«Por dónde entrar» no se apoyaba en ningún dato calculado: "
                                 "no se escribe.")
         elif any(p not in productos for p in pedidos):
             r.descartado.append("«Por dónde entrar» proponía un producto que no está en la "
                                 "lista del catálogo: no se escribe.")
-        elif ajenos := _codigos_ajenos(texto, permitidos, codigos_catalogo):
+        elif ajenos := _codigos_ajenos(texto, permitidos, codigos_catalogo, numeros):
             r.descartado.append(f"«Por dónde entrar» nombraba un artículo que no es suyo ni de "
                                 f"la lista ({', '.join(ajenos)}): no se escribe.")
         else:
@@ -144,10 +160,9 @@ def validar(data: Any, h: Hechos, *, codigos_catalogo: set[str]) -> Resultado:
     return r
 
 
-def generar(h: Hechos, *, modelo: str, api_key: str | None,
-            codigos_catalogo: set[str]) -> tuple[Resultado, llm.Uso | None]:
-    """Llama al modelo y valida. LLMNotConfiguredError sin clave; LLMError si
-    falla la llamada."""
+def llamar(h: Hechos, *, modelo: str, api_key: str | None) -> tuple[Any, llm.Uso | None]:
+    """Llama al modelo. Devuelve (el JSON, o None si no devolvió JSON; el uso).
+    LLMNotConfiguredError sin clave; LLMError si falla la llamada."""
     if not api_key:
         raise llm.LLMNotConfiguredError("Falta la clave de la API de Anthropic.")
     raw = llm._invoke_claude(api_key=api_key, model=modelo, system_prompt=SISTEMA,
@@ -155,7 +170,16 @@ def generar(h: Hechos, *, modelo: str, api_key: str | None,
                              max_retries=1)
     uso = llm.tomar_ultimo_uso()
     try:
-        data = llm._parse_segment_json(raw)
+        return llm._parse_segment_json(raw), uso
     except (ValueError, llm.LLMError):
-        data = None
+        return None, uso
+
+
+def generar(h: Hechos, *, modelo: str, api_key: str | None,
+            codigos_catalogo: set[str]) -> tuple[Resultado, llm.Uso | None]:
+    """Llama y valida (para el script de comparar). Si no devolvió JSON,
+    LLMUpstreamError: no hay nada que enseñar."""
+    data, uso = llamar(h, modelo=modelo, api_key=api_key)
+    if data is None:
+        raise llm.LLMUpstreamError("La respuesta de la IA no era JSON.")
     return validar(data, h, codigos_catalogo=codigos_catalogo), uso

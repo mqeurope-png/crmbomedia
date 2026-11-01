@@ -43,12 +43,14 @@ def _codigos_catalogo(session: Session) -> set[str]:
         select(func.distinct(HistoricoArticulo.codart)))}
 
 
-def leer(session: Session, company: Any, *, hoy: date | None = None) -> dict[str, Any]:
-    """Lo guardado y si está al día. No llama a la IA."""
+def leer(session: Session, company: Any, *, hoy: date | None = None,
+         h: hx.Hechos | None = None, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Lo guardado y si está al día. No llama a la IA. Con `h` (los hechos ya
+    calculados), no los vuelve a calcular."""
     from app.models.analisis_parque import AnalisisEmpresa  # noqa: PLC0415
 
-    cfg = cfg_mod.configuracion(session)
-    h = hx.calcular(session, company, hoy=hoy, cfg=cfg)
+    cfg = cfg or cfg_mod.configuracion(session)
+    h = h or hx.calcular(session, company, hoy=hoy, cfg=cfg)
     fila = session.get(AnalisisEmpresa, company.id)
     out: dict[str, Any] = {
         "company_id": company.id, "datos": h.estado, "estado": SIN_GENERAR,
@@ -75,7 +77,10 @@ def leer(session: Session, company: Any, *, hoy: date | None = None) -> dict[str
 def generar(session: Session, company: Any, *, por: str, forzar: bool = False,
             hoy: date | None = None, modelo: str | None = None) -> dict[str, Any]:
     """Genera (si toca, o si `forzar`) y guarda. Devuelve lo mismo que `leer`.
-    LLMNotConfiguredError / LLMError si la IA no está o falla (no se guarda nada)."""
+    LLMNotConfiguredError / LLMError si la IA no está o falla: no se guarda el
+    análisis, pero la llamada (y lo que costó) sí queda anotada."""
+    from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
     from app.core.config import get_settings  # noqa: PLC0415
     from app.models.analisis_parque import AnalisisEmpresa  # noqa: PLC0415
     from app.models.ia import PROPOSITO_ANALISIS_PARQUE  # noqa: PLC0415
@@ -83,38 +88,55 @@ def generar(session: Session, company: Any, *, por: str, forzar: bool = False,
     from app.services.analisis_parque import ia  # noqa: PLC0415
     from app.services.ia.uso import registrar_llamada  # noqa: PLC0415
 
-    actual = leer(session, company, hoy=hoy)
+    cfg = cfg_mod.configuracion(session)
+    h = hx.calcular(session, company, hoy=hoy, cfg=cfg)          # una vez, para todo
+    actual = leer(session, company, h=h, cfg=cfg)
     if actual["datos"] != hx.CON_DATOS or (actual["estado"] == AL_DIA and not forzar):
         return actual
-    cfg = cfg_mod.configuracion(session)
     modelo = modelo or cfg["modelo"]
-    h = hx.calcular(session, company, hoy=hoy, cfg=cfg)
     try:
-        resultado, uso = ia.generar(h, modelo=modelo, api_key=get_settings().anthropic_api_key,
-                                    codigos_catalogo=_codigos_catalogo(session))
+        data, uso = ia.llamar(h, modelo=modelo, api_key=get_settings().anthropic_api_key)
     except llm.LLMError as exc:
         registrar_llamada(session, proposito=PROPOSITO_ANALISIS_PARQUE, modelo=modelo,
                           uso=llm.tomar_ultimo_uso(), referencia_tipo="company",
                           referencia_id=company.id, ok=False, error=type(exc).__name__)
         session.commit()
         raise
+    # Lo que costó se anota antes de mirar la respuesta: si no vale, se pagó igual.
     llamada = registrar_llamada(session, proposito=PROPOSITO_ANALISIS_PARQUE, modelo=modelo,
-                                uso=uso, referencia_tipo="company", referencia_id=company.id)
-    contenido = {"hechos": h.como_dict(), "lectura": resultado.lectura,
-                 "entrada": resultado.entrada, "descartado": resultado.descartado}
-    fila = session.get(AnalisisEmpresa, company.id) or AnalisisEmpresa(company_id=company.id)
-    fila.huella, fila.generado_at = h.huella, _ahora()
-    fila.modelo = (uso.modelo if uso else None) or modelo
-    fila.contenido_json = json.dumps(contenido, ensure_ascii=False, default=str)
-    fila.tokens_entrada = uso.tokens_entrada if uso else None
-    fila.tokens_salida = uso.tokens_salida if uso else None
-    fila.coste_usd = llamada.coste_usd
-    fila.por = por
-    session.add(fila)
+                                uso=uso, referencia_tipo="company", referencia_id=company.id,
+                                ok=data is not None,
+                                error=None if data is not None else "respuesta_sin_json")
+    coste = llamada.coste_usd
     session.commit()
+    if data is None:
+        # Nada que guardar: un análisis vacío «al día» no se reintentaría en meses.
+        raise llm.LLMUpstreamError("La respuesta de la IA no era JSON.")
+    resultado = ia.validar(data, h, codigos_catalogo=_codigos_catalogo(session))
+    contenido = json.dumps({"hechos": h.como_dict(), "lectura": resultado.lectura,
+                            "entrada": resultado.entrada, "descartado": resultado.descartado},
+                           ensure_ascii=False, default=str)
+    valores = {"huella": h.huella, "generado_at": _ahora(),
+               "modelo": (uso.modelo if uso else None) or modelo, "contenido_json": contenido,
+               "tokens_entrada": uso.tokens_entrada if uso else None,
+               "tokens_salida": uso.tokens_salida if uso else None, "coste_usd": coste, "por": por}
+
+    def guardar() -> None:
+        fila = session.get(AnalisisEmpresa, company.id) or AnalisisEmpresa(company_id=company.id)
+        for k, v in valores.items():
+            setattr(fila, k, v)
+        session.add(fila)
+        session.commit()
+
+    try:
+        guardar()
+    except IntegrityError:
+        # Otra pestaña (o el lote) lo guardó a la vez: se pisa con este, que es igual de nuevo.
+        session.rollback()
+        guardar()
     logger.info("analisis_parque: empresa %s, %d hechos, %d descartados, modelo %s",
-                company.id[:8], len(h.hechos), len(resultado.descartado), fila.modelo)
-    return leer(session, company, hoy=hoy)
+                company.id[:8], len(h.hechos), len(resultado.descartado), valores["modelo"])
+    return leer(session, company, h=h, cfg=cfg)
 
 
 #: Cuántas empresas como mucho se piden de una vez desde una lista.
@@ -126,7 +148,6 @@ def generar_lote(company_ids: list[str], *, por: str) -> dict[str, int]:
     que están al día o no tienen datos. Con su propia sesión."""
     from app.db.session import get_engine  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
-    from app.services import llm  # noqa: PLC0415
 
     out = {"generados": 0, "al_dia": 0, "sin_datos": 0, "fallidos": 0}
     with Session(get_engine()) as s:
@@ -143,8 +164,10 @@ def generar_lote(company_ids: list[str], *, por: str) -> dict[str, int]:
                 else:
                     generar(s, empresa, por=por)
                     out["generados"] += 1
-            except llm.LLMError:
+            except Exception:  # noqa: BLE001 — una empresa que falla no para el resto
                 s.rollback()
                 out["fallidos"] += 1
+                logger.warning("analisis_parque lote: falló la empresa %s", cid[:8],
+                               exc_info=True)
     logger.info("analisis_parque lote: %s", out)
     return out
