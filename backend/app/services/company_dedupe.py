@@ -343,10 +343,13 @@ def _merge_into(
         snapshots.append(_snapshot(other))
         for model, key in ((Contact, "contacts_moved"), (Order, "orders_moved"),
                            (Task, "tasks_moved"), (Oferta, "ofertas_moved")):
+            # El contacto principal de la absorbida deja de serlo: manda el de
+            # la que se queda (uno por empresa).
+            extra = {"contacto_principal": False} if model is Contact else {}
             result = session.execute(
                 update(model.__table__)
                 .where(model.company_id == other.id)
-                .values(company_id=keep.id)
+                .values(company_id=keep.id, **extra)
             )
             moved[key] += int(result.rowcount or 0)
         # El parque instalado (máquinas a mano y bajas) va con la empresa.

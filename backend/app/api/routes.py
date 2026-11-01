@@ -4019,11 +4019,12 @@ def _view_rules_tree(view: ContactView) -> dict[str, Any]:
 
 
 def _view_uno_por_empresa(
-    view: ContactView, rules: dict[str, Any],
+    view: ContactView, rules: dict[str, Any], payload: Any = None,
 ) -> tuple[bool, str | None]:
     """1/11/2026: si la vista va «un contacto por empresa» y con qué orden.
-    Se guarda en `filters_json` (`uno_por_empresa`, `orden`). Si la vista no
-    lo dice, el de siempre: sí cuando sus reglas miran la empresa."""
+    Manda lo que trae la petición (lo que hay en pantalla); si no, lo guardado
+    en `filters_json` (`uno_por_empresa`, `orden`); y si la vista tampoco lo
+    dice, el de siempre: sí cuando sus reglas miran la empresa."""
     from app.services.segments import un_por_empresa  # noqa: PLC0415
 
     try:
@@ -4031,10 +4032,14 @@ def _view_uno_por_empresa(
     except (TypeError, ValueError):
         datos = {}
     datos = datos if isinstance(datos, dict) else {}
-    uno = datos.get("uno_por_empresa")
+    uno = getattr(payload, "uno_por_empresa", None)
+    if not isinstance(uno, bool):
+        uno = datos.get("uno_por_empresa")
     if not isinstance(uno, bool):
         uno = un_por_empresa.tiene_reglas_de_empresa(rules)
-    orden = datos.get("orden") if isinstance(datos.get("orden"), list) else None
+    orden = getattr(payload, "orden", None)
+    if orden is None:
+        orden = datos.get("orden") if isinstance(datos.get("orden"), list) else None
     return uno, un_por_empresa.orden_a_texto(orden) if uno else None
 
 
@@ -4079,7 +4084,7 @@ def save_view_as_segment(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
-    uno, orden = _view_uno_por_empresa(view, rules)
+    uno, orden = _view_uno_por_empresa(view, rules, payload)
     segment = segments_repository.create_segment(
         session,
         owner_user_id=current_user.id,
@@ -4173,7 +4178,7 @@ def push_view_to_brevo_list(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
-    uno, orden = _view_uno_por_empresa(view, rules)
+    uno, orden = _view_uno_por_empresa(view, rules, payload)
     if uno:
         # Lo mismo que empujará Brevo: uno por empresa entre los que tienen
         # email y están activos (`resolve_target_contacts`).

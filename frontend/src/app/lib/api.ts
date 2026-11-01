@@ -812,7 +812,11 @@ export async function listContacts(
 
 export async function saveViewAsSegment(
   viewId: string,
-  payload: { name: string; description?: string | null; is_shared?: boolean },
+  payload: {
+    name: string; description?: string | null; is_shared?: boolean;
+    /** Lo que hay en pantalla (si no va, lo guardado en la vista). */
+    uno_por_empresa?: boolean; orden?: string[];
+  },
 ): Promise<{ id: string; name: string }> {
   return apiFetch<{ id: string; name: string }>(
     `/api/contact-views/${viewId}/save-as-segment`,
@@ -835,6 +839,8 @@ export async function pushViewToBrevoList(
     brevo_account_id: string;
     brevo_list_id?: number | null;
     new_list_name?: string | null;
+    uno_por_empresa?: boolean;
+    orden?: string[];
   },
 ): Promise<PushViewToBrevoResult> {
   return apiFetch<PushViewToBrevoResult>(

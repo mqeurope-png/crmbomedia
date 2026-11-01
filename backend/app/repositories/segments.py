@@ -130,6 +130,8 @@ def duplicate_segment(
         static_contact_ids=source.static_contact_ids,
         is_shared=False,
         color=source.color,
+        uno_por_empresa=bool(source.uno_por_empresa),
+        orden_contacto=source.orden_contacto,
     )
     session.add(duplicate)
     session.flush()

@@ -64,9 +64,17 @@ def normaliza_orden(orden: Iterable[str] | str | None) -> list[str]:
     return out
 
 
+#: Cómo se guarda «ningún criterio» (solo desempata el id): una cadena vacía se
+#: leería como el orden de siempre.
+SIN_CRITERIOS = "ninguno"
+
+
 def orden_a_texto(orden: Iterable[str] | None) -> str | None:
+    """Para guardar en el segmento: None = el de siempre."""
     lista = normaliza_orden(orden)
-    return None if lista == list(ORDEN_DEFECTO) else ",".join(lista)
+    if lista == list(ORDEN_DEFECTO):
+        return None
+    return ",".join(lista) if lista else SIN_CRITERIOS
 
 
 def tiene_reglas_de_empresa(arbol: Any) -> bool:

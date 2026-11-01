@@ -438,6 +438,20 @@ class Contact(TimestampMixin, Base):
         return out
 
 
+@event.listens_for(Contact.company_id, "set", active_history=True)
+def _principal_no_viaja(target: Contact, value, oldvalue, _initiator) -> None:
+    """1/11/2026: el contacto principal lo es de SU empresa. Si cambia de
+    empresa (asignar, conciliar, pedido web…), deja de serlo: si no, la
+    empresa nueva podría acabar con dos. (Las actualizaciones en bloque, como
+    la fusión de empresas, lo quitan en su propio UPDATE.)"""
+    from sqlalchemy.orm.base import NEVER_SET, NO_VALUE  # noqa: PLC0415
+
+    if oldvalue in (NO_VALUE, NEVER_SET) or oldvalue == value:
+        return
+    if target.contacto_principal:
+        target.contacto_principal = False
+
+
 class Tag(TimestampMixin, Base):
     """Reusable contact tag. The case-insensitive uniqueness is enforced
     by a normalized companion column (`name_normalized`) so SQLite and

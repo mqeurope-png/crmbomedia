@@ -17,6 +17,7 @@ the UI sends those flows to the existing
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -632,7 +633,9 @@ def _csv_con_columnas(session: Session, contacts: list[Contact], columnas: list[
 
     descriptor = get_entity("contact")
     specs = descriptor.field_specs
-    claves = [c for c in columnas if c in specs and specs[c].displayable] or list(_CSV_COLUMNS)
+    # «Elegido por» depende de la lista de la pantalla, no del contacto: fuera.
+    claves = [c for c in columnas if c in specs and specs[c].displayable
+              and c != "contacto_elegido_por"] or list(_CSV_COLUMNS)
     filas = columnas_empresa.rellenar(session, [descriptor.serialize_row(c) for c in contacts])
     pos = {cid: i for i, cid in enumerate(orden_ids)}
     filas.sort(key=lambda f: pos.get(f.get("id"), len(pos)))
@@ -644,6 +647,11 @@ def _csv_con_columnas(session: Session, contacts: list[Contact], columnas: list[
             return "; ".join(texto(x.get("name") if isinstance(x, dict) else x) for x in v)
         if isinstance(v, bool):
             return "sí" if v else "no"
+        if (isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r")
+                and not re.fullmatch(r"[+-]?[\d\s().,/-]+", v)):
+            # Que la hoja de cálculo no lo lea como fórmula (un teléfono
+            # «+34 …» o un número negativo se quedan como están).
+            return "'" + v
         return str(v)
 
     salida = io.StringIO()

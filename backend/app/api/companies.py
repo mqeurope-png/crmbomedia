@@ -19,8 +19,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin, require_user, require_viewer
-from app.core.errors import not_found
+from app.core.auth import get_current_user, require_admin, require_user, require_viewer
+from app.core.errors import forbidden, not_found
 from app.db.session import get_session
 from app.models.crm import Company, Contact, User
 from app.schemas.companies import (
@@ -744,12 +744,22 @@ class ContactoPrincipalPayload(BaseModel):
     contact_id: str | None = None
 
 
+def _puede_editar_empresas(current_user: User = Depends(get_current_user)) -> User:
+    """El mismo permiso con el que la ficha deja editar la empresa
+    (`erp.companies`): así la casilla y el endpoint dicen lo mismo."""
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
+    if not has_capability(current_user, Cap.COMPANIES):
+        raise forbidden()
+    return current_user
+
+
 @router.post("/{company_id}/contacto-principal")
 def set_contacto_principal(
     company_id: str,
     payload: ContactoPrincipalPayload,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(_puede_editar_empresas),
 ) -> dict[str, Any]:
     """1/11/2026: marca el contacto principal de la empresa (uno por
     empresa: los demás se desmarcan). Manda en «un contacto por empresa»."""

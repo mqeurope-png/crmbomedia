@@ -17,7 +17,8 @@ COLUMNAS = (
 )
 
 
-def rellenar(session: Session, filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def rellenar(session: Session, filas: list[dict[str, Any]], *,
+             con_erp: bool = True) -> list[dict[str, Any]]:
     from app.erp.models.historico import HistoricoGama  # noqa: PLC0415
     from app.erp.models.resumen_empresa import CrmEmpresaErp, CrmEmpresaGama  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
@@ -30,6 +31,12 @@ def rellenar(session: Session, filas: list[dict[str, Any]]) -> list[dict[str, An
         return filas
     empresas = {cid: (nombre, sector) for cid, nombre, sector in session.execute(
         select(Company.id, Company.name, Company.sector).where(Company.id.in_(ids)))}
+    if not con_erp:
+        for f in filas:
+            if f.get("company_id"):
+                f["empresa_nombre"], f["empresa_sector"] = empresas.get(f["company_id"],
+                                                                        (None, None))
+        return filas
     resumen = {r.company_id: r for r in session.scalars(
         select(CrmEmpresaErp).where(CrmEmpresaErp.company_id.in_(ids)))}
     nombres = dict(session.execute(select(HistoricoGama.codigo, HistoricoGama.nombre)).all())

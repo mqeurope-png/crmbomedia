@@ -285,7 +285,10 @@ def entity_search(
     rows = list(session.scalars(stmt).unique())
     items = [descriptor.serialize_row(row) for row in rows]
     if es_contacto:
-        columnas_empresa.rellenar(session, items)
+        # Las cifras del ERP (parque, gasto, compras), a partir de usuario,
+        # como la ficha de empresa; al lector, solo nombre y sector.
+        columnas_empresa.rellenar(session, items, con_erp=(
+            ROLE_LEVELS[current_user.role] >= ROLE_LEVELS[UserRole.USER]))
         if payload.uno_por_empresa:
             por = un_por_empresa.motivos(session, base, payload.orden,
                                          [i["id"] for i in items])

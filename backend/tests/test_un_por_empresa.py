@@ -123,6 +123,12 @@ def test_la_lista_de_contactos_con_uno_por_empresa_y_las_columnas(http, session_
     ids = http.post("/api/entities/contact/search/ids", json={"uno_por_empresa": True},
                     headers=h).json()
     assert ids["count"] == 3
+    # El lector ve el nombre de la empresa, no las cifras del ERP.
+    lector = http.post("/api/entities/contact/search", json={"limit": 50},
+                       headers=auth_headers(http, "viewer")).json()
+    fila = next(i for i in lector["items"] if i["company_id"] == dormido_id)
+    assert fila["empresa_nombre"] == dormido_nombre
+    assert fila["compra_gasto_total"] is None and fila["parque_gamas"] is None
     # Las columnas nuevas, en el selector de columnas.
     campos = {f["key"]: f for f in http.get("/api/entities/contact/filter-schema",
                                             headers=h).json()["fields"]}
@@ -164,6 +170,22 @@ def test_la_vista_lleva_su_uno_por_empresa_al_segmento_y_a_brevo(http, session_f
         empujados = {c.id for c in resolve_target_contacts(s, target)}
         assert con_email_id in empujados and sin_email_id not in empujados
         assert len(empujados) == 2
+        # Duplicar el segmento lo conserva.
+        copia = segments_repository.duplicate_segment(s, source=seg, owner_user_id=dueno,
+                                                      name=None)
+        assert copia.uno_por_empresa is True and copia.orden_contacto == seg.orden_contacto
+        s.commit()
+    # Lo que hay en pantalla manda sobre lo guardado en la vista.
+    for nombre, cuerpo in (("Segmento todos", {"uno_por_empresa": False}),
+                           ("Segmento sin criterios", {"orden": []})):
+        r = http.post(f"/api/contact-views/{vista_id}/save-as-segment",
+                      json={"name": nombre, **cuerpo}, headers=h)
+        assert r.status_code in (200, 201), r.text
+    with session_factory() as s:
+        todos = s.scalar(select(Segment).where(Segment.name == "Segmento todos"))
+        assert todos.uno_por_empresa is False
+        sin = s.scalar(select(Segment).where(Segment.name == "Segmento sin criterios"))
+        assert sin.uno_por_empresa is True and un.normaliza_orden(sin.orden_contacto) == []
 
 
 def test_csv_con_las_columnas_elegidas(http, session_factory) -> None:  # noqa: F811
@@ -179,7 +201,7 @@ def test_csv_con_las_columnas_elegidas(http, session_factory) -> None:  # noqa: 
     r = http.post("/api/contacts/bulk-export-csv",
                   json={"contact_ids": ids,
                         "columns": ["name", "email", "empresa_nombre", "compra_gasto_total",
-                                    "parque_gamas", "no_existe"]},
+                                    "parque_gamas", "no_existe", "contacto_elegido_por"]},
                   headers=auth_headers(http, "admin"))
     assert r.status_code == 200, r.text
     filas = list(csv.reader(io.StringIO(r.text)))
@@ -187,6 +209,16 @@ def test_csv_con_las_columnas_elegidas(http, session_factory) -> None:  # noqa: 
                         "Gamas (parque)"]
     assert [f[1] for f in filas[1:]] == ["dos@ejemplo.test", "uno@ejemplo.test"]   # su orden
     assert filas[2][0].startswith("Figurante, con coma")     # la coma, entre comillas
+    # Lo que empieza como una fórmula no se ejecuta en la hoja; un teléfono, igual.
+    with session_factory() as s:
+        f = _contacto(s, None, 7, email="tres@ejemplo.test", phone="+34 600 000 000")
+        f.first_name = "=1+1"
+        s.commit()
+        f_id = f.id
+    r = http.post("/api/contacts/bulk-export-csv",
+                  json={"contact_ids": [f_id], "columns": ["first_name", "phone"]},
+                  headers=auth_headers(http, "admin"))
+    assert list(csv.reader(io.StringIO(r.text)))[1] == ["'=1+1", "+34 600 000 000"]
     # Sin columnas, el CSV de siempre.
     r = http.post("/api/contacts/bulk-export-csv", json={"contact_ids": ids},
                   headers=auth_headers(http, "admin"))
@@ -201,7 +233,10 @@ def test_el_contacto_principal_es_uno_por_empresa(http, session_factory) -> None
         otro = _contacto(s, b, 3)
         s.commit()
         a_id, ids = a.id, (c1.id, c2.id, otro.id)
-    h = auth_headers(http, "user")
+    # Con el permiso de la ficha para editar la empresa (`erp.companies`).
+    assert http.post(f"/api/companies/{a_id}/contacto-principal", json={"contact_id": ids[0]},
+                     headers=auth_headers(http, "user")).status_code == 403
+    h = auth_headers(http, "admin")
     assert http.post(f"/api/companies/{a_id}/contacto-principal",
                      json={"contact_id": ids[0]}, headers=h).status_code == 200
     assert http.post(f"/api/companies/{a_id}/contacto-principal",
@@ -217,6 +252,36 @@ def test_el_contacto_principal_es_uno_por_empresa(http, session_factory) -> None
             Contact.contacto_principal.is_(True))) == 0
 
 
+def test_el_principal_no_viaja_a_otra_empresa(session_factory) -> None:  # noqa: F811
+    from app.services import company_dedupe
+
+    with session_factory() as s:
+        a = _empresa_con(s, "Empresa figurante A")
+        b = _empresa_con(s, "Empresa figurante B")
+        c = _empresa_con(s, "Empresa figurante C")
+        pa, pb, pc = (_contacto(s, a, 1, contacto_principal=True),
+                      _contacto(s, b, 2, contacto_principal=True),
+                      _contacto(s, c, 3, contacto_principal=True))
+        s.commit()
+        # Cambiarlo de empresa le quita la marca (la nueva ya tiene el suyo).
+        pa.company_id = b.id
+        s.commit()
+        s.refresh(pa)
+        assert pa.contacto_principal is False and pb.contacto_principal is True
+        # Guardar sin cambiar de empresa no la quita.
+        pb.company_id = b.id
+        s.commit()
+        s.refresh(pb)
+        assert pb.contacto_principal is True
+        # Al fusionar C en B, el de C deja de ser principal: queda uno.
+        company_dedupe.merge_companies_into(s, b, [c])
+        s.commit()
+        s.refresh(pc)
+        assert pc.company_id == b.id and pc.contacto_principal is False
+        assert s.scalar(select(func.count()).select_from(Contact).where(
+            Contact.company_id == b.id, Contact.contacto_principal.is_(True))) == 1
+
+
 def test_las_vistas_de_siempre_siguen_con_todos(session_factory) -> None:  # noqa: F811
     assert not un.tiene_reglas_de_empresa(
         {"operator": "AND", "children": [{"type": "rule", "field": "tags",
@@ -227,6 +292,9 @@ def test_las_vistas_de_siempre_siguen_con_todos(session_factory) -> None:  # noq
     assert un.normaliza_orden(None) == list(un.ORDEN_DEFECTO)
     assert un.normaliza_orden("interaccion,raro,principal") == ["interaccion", "principal"]
     assert un.orden_a_texto(un.ORDEN_DEFECTO) is None
+    # Sin ningún criterio se guarda como tal (no vuelve como el de siempre).
+    assert un.orden_a_texto([]) == un.SIN_CRITERIOS
+    assert un.normaliza_orden(un.orden_a_texto([])) == []
 
 
 def test_el_cuadre_de_huecos(session_factory, monkeypatch, capsys) -> None:  # noqa: F811

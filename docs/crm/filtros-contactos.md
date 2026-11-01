@@ -202,14 +202,19 @@ Encima de la lista hay dos opciones:
 
 **Por defecto** va «uno por empresa» solo cuando las reglas miran la empresa
 (empresa, parque o compras). Las vistas de siempre siguen con «todos». Lo que se
-elija se guarda en la vista y pasa al segmento que se cree desde ella, y con él
-a Brevo.
+elija se guarda con «Guardar» en la vista. Al crear un segmento o mandar a Brevo
+desde una vista, va lo que hay en pantalla (aunque no se haya guardado).
+Duplicar un segmento lo conserva.
 
 **Orden de preferencia.** Cualquier criterio se puede quitar o mover. Si dos
 contactos empatan en uno, decide el siguiente; si empatan en todos, el id.
 
 1. **Contacto principal**: el marcado en la ficha de empresa (pestaña
-   «Contactos», casilla «Principal», uno por empresa).
+   «Contactos», casilla «Principal», uno por empresa). Lo marca quien puede
+   editar la empresa. Si el contacto cambia de empresa, o su empresa se fusiona
+   en otra, deja de ser principal: la nueva ya tiene el suyo. El despegue de
+   dominios compartidos no toca a un contacto principal: cuenta como puesto a
+   mano.
 2. **Con email válido.**
 3. **Interacción más reciente**: llamada, nota, email o tarea.
 4. **El más antiguo.**
@@ -231,8 +236,13 @@ están activos: si el preferido no tiene email, va el siguiente de su empresa.
 **Columnas y CSV.** En «Columnas» están, del grupo «Empresa, parque y compras»:
 Empresa, Sector, Gamas, Nº de máquinas, meses de la más nueva y de la más vieja,
 Gasto total, Última compra, Meses sin comprar, Dormido en y Hueco en. Las de un
-número o una fecha se pueden ordenar. El CSV de la selección sale con las
-columnas que se ven, con su nombre en pantalla y en el orden de la lista.
+número o una fecha se pueden ordenar. Las cifras del ERP (parque, gasto,
+compras) las ve a partir del rol usuario; el lector ve solo la empresa y el
+sector. El CSV de la selección sale con las columnas que se ven, con su nombre
+en pantalla y en el orden de la lista (menos «Elegido por», que depende de la
+pantalla). Lo que empieza como una fórmula (`=`, `+`, `-`, `@`) sale con un
+apóstrofo delante para que la hoja de cálculo no lo ejecute. Los teléfonos y
+los números se quedan igual.
 
 **El cuadre** (`scripts/cuadre_huecos.py`, solo lee) explica por qué la pestaña
 «Dormidos y huecos» y la lista de contactos no dan el mismo número. La pestaña

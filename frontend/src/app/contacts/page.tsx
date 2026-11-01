@@ -66,6 +66,7 @@ import { useModalBehaviour } from "../components/useModalBehaviour";
 import { EntityFilterBuilder } from "../components/entity/EntityFilterBuilder";
 import { ResumenErpEstado } from "../components/crm/ResumenErpEstado";
 import {
+  CRITERIOS,
   UnoPorEmpresa,
   tieneReglasDeEmpresa,
   type Recuentos,
@@ -178,6 +179,12 @@ export default function ContactsListPage() {
   const [orden, setOrden] = useState<string[] | null>(null);
   const [recuentos, setRecuentos] = useState<Recuentos | null>(null);
   const uno = unoPref ?? tieneReglasDeEmpresa(rules);
+  // Lo que va al segmento / a Brevo: lo que hay en pantalla, no lo guardado.
+  const unoDePantalla = () => ({ uno_por_empresa: uno, orden: orden ?? [...CRITERIOS] });
+  const sinUnoPorEmpresa = () => {
+    setUnoPref(null);
+    setOrden(null);
+  };
 
   // Resultados
   const [rows, setRows] = useState<ContactRow[]>([]);
@@ -548,6 +555,7 @@ export default function ContactsListPage() {
       setQ("");
       setSearchInput("");
       setSort({ field: "created_at", direction: "desc" });
+      sinUnoPorEmpresa();
       setBuilderKey((k) => k + 1);
       return;
     }
@@ -567,6 +575,7 @@ export default function ContactsListPage() {
     try {
       const created = await saveViewAsSegment(activeView.id, {
         name: name.trim(),
+        ...unoDePantalla(),
       });
       setMessage(`Segmento "${created.name}" creado.`);
     } catch (err) {
@@ -580,7 +589,7 @@ export default function ContactsListPage() {
     new_list_name?: string;
   }) {
     if (!activeView) return;
-    const result = await pushViewToBrevoList(activeView.id, payload);
+    const result = await pushViewToBrevoList(activeView.id, { ...payload, ...unoDePantalla() });
     setMessage(
       `${result.contacts_to_push} contacto${result.contacts_to_push === 1 ? "" : "s"} en cola para sincronizar a Brevo (lista #${result.brevo_list_id}).`,
     );
@@ -624,6 +633,7 @@ export default function ContactsListPage() {
       if (activeView?.id === view.id) {
         setActiveView(null);
         setRules(EMPTY_RULES);
+        sinUnoPorEmpresa();
         setBuilderKey((k) => k + 1);
       }
       await reloadViews();
@@ -811,10 +821,14 @@ export default function ContactsListPage() {
     const savedTree =
       (filters?.rules_json as Record<string, unknown> | undefined) ?? {};
     const savedQ = (filters?.q as string) ?? "";
+    const savedUno = typeof filters?.uno_por_empresa === "boolean"
+      ? filters.uno_por_empresa : null;
+    const savedOrden = Array.isArray(filters?.orden) ? filters.orden : null;
     return (
       JSON.stringify(savedTree) !== JSON.stringify(rules) || savedQ !== q
+      || savedUno !== unoPref || JSON.stringify(savedOrden) !== JSON.stringify(orden)
     );
-  }, [activeView, rules, q]);
+  }, [activeView, rules, q, unoPref, orden]);
 
   if (!schema) {
     return (
@@ -855,6 +869,7 @@ export default function ContactsListPage() {
             setQ("");
             setSearchInput("");
             setSort({ field: "created_at", direction: "desc" });
+            sinUnoPorEmpresa();
             setOffset(0);
             setBuilderKey((k) => k + 1);
           }
