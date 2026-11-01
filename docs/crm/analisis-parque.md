@@ -31,10 +31,15 @@ y la cita es un enlace al dato.
   1. **Lo que le compraba y ha dejado de comprar**: al menos dos compras, lleva
      sin pedirlo el doble de su ritmo (y al menos 6 meses), y se sigue
      vendiendo.
-  2. **Lo que nunca ha comprado, pero compran clientes como él.** Si compra
-     consumibles de esa gama, «como él» son los que compran sus mismos
-     consumibles; si no, los que tienen su mismo modelo de máquina. Hace falta
-     que lo compren al menos 2 de ellos y al menos el 20 %.
+  2. **Lo que nunca ha comprado, pero compran clientes como él.**
+     - «Como él» son los que compran sus mismos consumibles propios, sin
+       contar los que compra más de media gama (una lente común no dice qué
+       máquina tiene). Si no tiene ninguno así, son los que tienen su mismo
+       modelo de máquina. Se cuenta por cliente de FACTUSOL, no por ficha.
+     - Para proponerlo hacen falta tres cosas: que lo compren al menos 2 de
+       ellos, que sean al menos el 20 % y que entre ellos destaque, es decir,
+       que lo compre al menos el doble de proporción que en toda la gama.
+       Así no se ofrece lo que compra todo el mundo.
   3. **El volumen de ventas** solo desempata.
 
   Si los datos no dicen qué le encaja (ningún cliente como él lo compra), no se
