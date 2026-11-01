@@ -38,6 +38,8 @@ PROPOSITO_CLASIFICADOR = "clasificador_leads"
 #: El plan de la consulta del asistente a nuestras webs y al soporte de los
 #: fabricantes (qué buscar), antes de redactar. Su coste va también en el borrador.
 PROPOSITO_CONSULTA = "asistente_consulta"
+#: 1/11/2026: el análisis del parque de una empresa (`services/analisis_parque`).
+PROPOSITO_ANALISIS_PARQUE = "analisis_parque"
 
 #: Estados de un borrador del asistente.
 ESTADO_GENERADO = "generado"

@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.admin_backups import router as admin_backups_router
 from app.api.admin_companies_dedupe import router as admin_companies_dedupe_router
+from app.api.analisis_parque import router as analisis_parque_router
 from app.api.assignment_rules import router as assignment_rules_router
 from app.api.bulk import router as bulk_router
 from app.api.companies import assign_router as contacts_assign_router
@@ -100,6 +101,9 @@ app.include_router(assignment_rules_router, dependencies=_CRM_SCOPE)
 app.include_router(entities_router, dependencies=_CRM_SCOPE)
 app.include_router(resumen_erp_router, dependencies=_CRM_SCOPE)
 app.include_router(dominios_compartidos_router, dependencies=_CRM_SCOPE)
+# El análisis del parque es dato de CLIENTE (como empresas): comercial y pedidos lo ven
+# cuando se abre a todos; su propio permiso decide además.
+app.include_router(analisis_parque_router, dependencies=[Depends(require_client_data_access)])
 app.include_router(despegue_empresa_router, dependencies=_CRM_SCOPE)
 app.include_router(entity_views_router, dependencies=_CRM_SCOPE)
 app.include_router(router, prefix="/api", dependencies=[Depends(crm_scope_monolith)])

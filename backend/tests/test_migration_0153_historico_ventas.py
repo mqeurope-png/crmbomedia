@@ -419,3 +419,18 @@ def test_0168_uno_por_empresa_solo_esquema(alembic_setup):
     command.downgrade(cfg, "20261101_0167")
     cols = {col["name"] for col in inspect(engine).get_columns("segments")}
     assert "uno_por_empresa" not in cols
+
+
+def test_0169_analisis_parque_solo_esquema(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    # Solo la 0169: se sella en la 0168 con la tabla a la que apunta.
+    command.stamp(cfg, "20261101_0168")
+    with engine.begin() as c:
+        c.exec_driver_sql("CREATE TABLE companies (id VARCHAR(36) PRIMARY KEY)")
+    command.upgrade(cfg, "20261101_0169")
+    cols = {col["name"] for col in inspect(engine).get_columns("crm_analisis_empresa")}
+    assert {"company_id", "huella", "generado_at", "modelo", "contenido_json",
+            "coste_usd"} <= cols
+    command.downgrade(cfg, "20261101_0168")
+    assert "crm_analisis_empresa" not in inspect(engine).get_table_names()

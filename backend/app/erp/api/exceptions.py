@@ -84,6 +84,9 @@ from app.integrations.woocommerce.missing import DAYS_KEY as WOO_MISSING_DAYS_KE
 from app.integrations.woocommerce.missing import ENABLED_KEY as WOO_MISSING_ENABLED_KEY
 from app.integrations.woocommerce.missing import INTERVAL_KEY as WOO_MISSING_INTERVAL_KEY
 from app.models.crm import User
+from app.services.analisis_parque.config import CONFIG_KEY as ANALISIS_CONFIG_KEY
+from app.services.analisis_parque.config import normalizar as normalizar_analisis
+from app.services.analisis_parque.config import validar as validar_analisis
 from app.services.asistente.config import CONFIG_KEY as ASISTENTE_CONFIG_KEY
 from app.services.asistente.config import normalizar as normalizar_asistente
 from app.services.asistente.config import validar as validar_asistente
@@ -275,6 +278,9 @@ class SettingsIn(BaseModel):
     #: empresa se agrupa por su registro, nunca por uno de estos dominios).
     #: Ver `app/services/asistente/config.py`.
     asistente: dict[str, Any] | None = None
+    #: Análisis del parque (IA): modelo, caducidad, umbrales y «solo
+    #: administradores». Ver `app/services/analisis_parque/config.py`.
+    analisis_parque: dict[str, Any] | None = None
     #: Ofertas: prefijo de la numeración (`OF` → `OF-2026-0001`) y validez por
     #: defecto en días. Ver `app/erp/ofertas.py`.
     ofertas: dict[str, Any] | None = None
@@ -637,6 +643,8 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "conocimiento": normalizar_kb(_series(cfg).get(KB_CONFIG_KEY)),
         # Asistente de respuesta: presupuesto, histórico y dominios gratuitos.
         "asistente": normalizar_asistente(_series(cfg).get(ASISTENTE_CONFIG_KEY)),
+        # Análisis del parque (IA): modelo, caducidad y quién lo ve.
+        "analisis_parque": normalizar_analisis(_series(cfg).get(ANALISIS_CONFIG_KEY)),
         # Ofertas: prefijo de la numeración y validez por defecto.
         "ofertas": normalizar_ofertas(_series(cfg).get(OFERTAS_CONFIG_KEY)),
         "woocommerce_stores": _woocommerce_stores(session),
@@ -805,6 +813,7 @@ def update_settings(
             or payload.lead_response is not None
             or payload.conocimiento is not None
             or payload.asistente is not None
+            or payload.analisis_parque is not None
             or payload.ofertas is not None):
         series = _series(cfg)
         # Ofertas: prefijo y validez, validados y fundidos con lo guardado.
@@ -826,6 +835,13 @@ def update_settings(
             try:
                 series[ASISTENTE_CONFIG_KEY] = validar_asistente(
                     payload.asistente, series.get(ASISTENTE_CONFIG_KEY))
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        # Análisis del parque: igual.
+        if payload.analisis_parque is not None:
+            try:
+                series[ANALISIS_CONFIG_KEY] = validar_analisis(
+                    payload.analisis_parque, series.get(ANALISIS_CONFIG_KEY))
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
         # ERP · Cuadre: se valida entero (hora HH:MM, días 1-3650, ids que

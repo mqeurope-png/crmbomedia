@@ -398,8 +398,11 @@ def test_merge_aborts_operation_if_an_unhandled_fk_exists(monkeypatch, session):
 
 def test_movable_tables_covers_every_fk_to_companies():
     """Regresión del guard anterior: si alguien añade una FK a companies.id y
-    no la registra, este test lo dice antes de que lo diga producción."""
-    assert _company_fk_tables() <= set(MOVABLE_TABLES)
+    no la registra, este test lo dice antes de que lo diga producción. Las que
+    se recalculan (el análisis del parque) están registradas aparte."""
+    from app.services.company_dedupe import REGENERABLES
+
+    assert _company_fk_tables() <= set(MOVABLE_TABLES) | REGENERABLES
 
 
 def test_merge_one_failure_does_not_block_the_batch(session):

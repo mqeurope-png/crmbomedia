@@ -61,6 +61,7 @@ import {
   type ExternalRefreshResult,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
+import { AnalisisResumenContacto } from "../../components/crm/AnalisisParque";
 
 type Tab = ContactTab;
 
@@ -600,6 +601,9 @@ export default function ContactDetailPage() {
               companyId={contact.company_id ?? null}
               onChanged={loadContact}
             />
+            {/* El análisis del parque es de SU EMPRESA: un resumen con enlace. */}
+            <AnalisisResumenContacto companyId={contact.company_id ?? null}
+                                     companyName={companyName} />
           </div>
 
           {/* PR-Db dejó duplicada la card "Notas" en sidebar + tab.

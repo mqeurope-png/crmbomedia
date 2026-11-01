@@ -28,6 +28,10 @@
  */
 import Link from "next/link";
 import { SECTORES } from "../lib/sectores";
+import { generarAnalisisLote, getPermisoAnalisis } from "../lib/analisisParqueApi";
+
+/** Cuántas empresas como mucho por petición de «Generar el análisis del parque». */
+const ANALISIS_MAX = 50;
 
 /** Lo que admite `POST /api/companies/bulk-action` por llamada. */
 const BULK_MAX = 1000;
@@ -96,6 +100,13 @@ export default function CompaniesListPage() {
 
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // El análisis del parque: el botón solo si el servidor dice que puede verlo.
+  const [puedeAnalisis, setPuedeAnalisis] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    getPermisoAnalisis().then((p) => { if (vivo) setPuedeAnalisis(p.puede); }).catch(() => undefined);
+    return () => { vivo = false; };
+  }, []);
   const [activeView, setActiveView] = useState<EntityView | null>(null);
   const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
   const [builderKey, setBuilderKey] = useState(0);
@@ -460,6 +471,21 @@ export default function CompaniesListPage() {
     setRules((r) => ({ ...r }));
   }
 
+  async function pedirAnalisis() {
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    try {
+      const r = await generarAnalisisLote(ids.slice(0, ANALISIS_MAX));
+      setMessage(
+        `Se generará el análisis del parque de ${r.encolados} empresa${r.encolados === 1 ? "" : "s"} `
+        + "en segundo plano (las que están al día o no tienen datos se saltan)."
+        + (ids.length > ANALISIS_MAX ? ` Solo las ${ANALISIS_MAX} primeras: pide el resto después.` : ""),
+      );
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se ha podido pedir el análisis."));
+    }
+  }
+
   async function runBulk(
     action: CompanyBulkAction,
     payload: Record<string, unknown> = {},
@@ -652,6 +678,7 @@ export default function CompaniesListPage() {
           onActivate={() => runBulk("activate")}
           onDeactivate={() => runBulk("deactivate")}
           onChangeSector={(sector, sobrescribir) => runBulk("change_sector", { sector, sobrescribir })}
+          onAnalisis={puedeAnalisis ? () => void pedirAnalisis() : undefined}
           onClear={() => setSelected(new Set())}
         />
 
@@ -828,12 +855,15 @@ function CompaniesBulkBar({
   onActivate,
   onDeactivate,
   onChangeSector,
+  onAnalisis,
   onClear,
 }: {
   selectedCount: number;
   onActivate: () => void;
   onDeactivate: () => void;
   onChangeSector: (sector: string, sobrescribir: boolean) => void;
+  /** Pedir el análisis del parque de las seleccionadas (solo si se puede verlo). */
+  onAnalisis?: () => void;
   onClear: () => void;
 }) {
   const [sectorMode, setSectorMode] = useState(false);
@@ -857,6 +887,12 @@ function CompaniesBulkBar({
         >
           Desactivar
         </button>
+        {onAnalisis ? (
+          <button type="button" className="button small secondary" onClick={onAnalisis}
+                  title={`Se genera en segundo plano (como mucho ${ANALISIS_MAX} empresas); las que están al día se saltan`}>
+            Generar el análisis del parque
+          </button>
+        ) : null}
         {sectorMode ? (
           <form
             onSubmit={(e) => {
