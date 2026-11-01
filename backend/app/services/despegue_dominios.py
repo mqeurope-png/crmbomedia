@@ -419,9 +419,13 @@ def limpiar_dominios_de_lotes(session: Session, lotes_pedidos: list[str] | None 
                               por: str, aplicar: bool = False) -> list[dict[str, Any]]:
     """Para los lotes ya pasados (antes del 1/11/2026 el despegue no limpiaba
     el dominio): las empresas de esos lotes cuyo `domain` sigue siendo de la
-    lista. Con `aplicar`, lo limpia con el apunte en SU lote (el primero en el
-    que sale la empresa), para que deshacer ese lote lo devuelva. Sin
-    `aplicar`, solo lo dice."""
+    lista. Con `aplicar`, lo limpia con el apunte en el lote que trató ESE
+    dominio (si ninguno, el primero en el que sale la empresa), para que
+    deshacer ese lote lo devuelva. Sin `aplicar`, solo lo dice.
+
+    Sin pedir lotes, se saltan los deshechos (aunque sea a medias) y las
+    empresas a las que alguien ya le devolvió el dominio deshaciendo un lote:
+    eso fue una decisión, no se vuelve a pisar."""
     from app.models.crm import Company  # noqa: PLC0415
     from app.models.dominios import DespegueDominio  # noqa: PLC0415
     from app.services import dominios_compartidos as dc  # noqa: PLC0415
@@ -437,7 +441,9 @@ def limpiar_dominios_de_lotes(session: Session, lotes_pedidos: list[str] | None 
         q = q.where(DespegueDominio.lote.in_(lotes_pedidos))
     #: empresa → [(lote, dominio que trató ese lote)], en orden.
     lotes_de: dict[str, list[tuple[str, str | None]]] = {}
-    ya_limpiadas: set[str] = set()
+    ya_limpiadas: set[str] = set() if lotes_pedidos else set(session.scalars(
+        select(DespegueDominio.objeto_id).where(DespegueDominio.tipo == TIPO_DOMINIO,
+                                                DespegueDominio.revertido_at.is_not(None))))
     for ap in session.scalars(q):
         if ap.lote in deshechos:
             continue

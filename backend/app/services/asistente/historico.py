@@ -324,7 +324,8 @@ def _empresa_de_dominio_compartido(empresa: Company, dominio: str) -> bool:
 
     session = object_session(empresa)
     if session is None:
-        return False
+        # Sin poder mirarlo, lo prudente es no agrupar.
+        return True
     if dominio:
         return dc.cargar(session).contiene(dominio)
     return session.scalar(select(DespegueDominio.id).where(

@@ -148,9 +148,11 @@ dominio en la empresa. Se limpia con un script supervisado:
 ... python -m scripts.limpiar_dominio_empresas_despegadas --apply --yes
 ```
 
-Por defecto, mira todos los lotes no deshechos; `--lote X` se puede repetir.
-Cada empresa lleva el apunte en el primer lote en el que salió: deshacer ese
-lote le devuelve el dominio.
+Por defecto, mira los lotes que no se han deshecho, ni a medias, y no toca una
+empresa a la que alguien ya le devolvió el dominio deshaciendo un lote;
+`--lote X` se puede repetir. Cada empresa lleva el apunte en el lote que trató
+su dominio (si ninguno, en el primero en el que salió): deshacer ese lote le
+devuelve el dominio.
 
 **El formulario de la ficha** no deja poner un dominio de la lista, ni al crear
 una empresa ni al cambiarlo (también los subdominios, como `alumnes.xtec.cat`).

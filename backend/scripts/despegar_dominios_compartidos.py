@@ -123,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"{r['con_otra_empresa']} ya tienen otra empresa, "
                   f"{r['sin_empresa_anterior']} cuya empresa ya no existe, "
                   f"{r['dominio_no_devuelto']} dominios que ya no se pueden devolver (la "
-                  "empresa tiene otro o lo tiene otra).")
+                  f"empresa tiene otro o lo tiene otra), {r['dominio_empresa_borrada']} de "
+                  "empresas que ya no existen (se cierran).")
             empresa_erp.recalcular(s)
             print(f"YA CLIENTE: {antes['contactos']} → {dd.ya_cliente(s)['contactos']} contactos")
             return 0

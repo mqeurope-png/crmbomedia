@@ -3,6 +3,8 @@
 reales; los dominios sí son los de la lista."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 
 from app.models.crm import Company, Contact
@@ -53,7 +55,7 @@ def _lote_viejo(session_factory) -> str:  # noqa: F811
             s.flush()
             s.add(DespegueDominio(lote=LOTE_VIEJO, tipo=dd.TIPO_CONTACTO, objeto_id=c.id,
                                   empresa_anterior=cliente.id, dominio="outlook.fr",
-                                  motivo=dd.MOTIVO, por="test"))
+                                  motivo=dd.MOTIVO, por="test", at=datetime(2026, 11, 1, 4, 54)))
         s.commit()
         return cliente.id
 
@@ -163,7 +165,6 @@ def test_en_dos_lotes_va_al_que_trato_su_dominio(session_factory) -> None:  # no
         c = Contact(first_name="Figurante", email="d@xtec.cat", tags="")
         s.add(c)
         s.flush()
-        from datetime import datetime
         s.add(DespegueDominio(lote="202610312054-164cdd", tipo=dd.TIPO_CONTACTO, objeto_id=c.id,
                               empresa_anterior=cliente, dominio="xtec.cat", motivo=dd.MOTIVO,
                               por="test", at=datetime(2026, 10, 31, 20, 54)))

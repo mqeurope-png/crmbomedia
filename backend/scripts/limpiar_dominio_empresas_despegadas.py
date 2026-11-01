@@ -3,13 +3,15 @@ despegue ya pasados (1/11/2026). No escribe en FACTUSOL.
 
 Hasta el 1/11/2026 el despegue quitaba los contactos pero dejaba en la empresa
 el `domain` que los había pegado: una empresa con «Dominio: outlook.fr» en su
-ficha. Este script lo limpia en las empresas de los lotes anteriores (por
-defecto, todos los que no están deshechos). Desde ahora, el despegue ya lo
-hace solo.
+ficha. Este script lo limpia en las empresas de los lotes anteriores. Por
+defecto, los que no se han deshecho, ni a medias, y sin tocar una empresa a la
+que alguien ya le devolvió el dominio deshaciendo un lote. Desde ahora, el
+despegue ya lo hace solo.
 
-Cada empresa lleva un apunte en SU lote (el primero en el que salió): deshacer
-ese lote con `despegar_dominios_compartidos --revertir LOTE --yes` le devuelve
-el dominio, igual que a los contactos.
+Cada empresa lleva un apunte en el lote que trató SU dominio (si ninguno, el
+primero en el que salió): deshacer ese lote con
+`despegar_dominios_compartidos --revertir LOTE --yes` le devuelve el dominio,
+igual que a los contactos.
 
 Uso (VPS), siempre en este orden:
 
