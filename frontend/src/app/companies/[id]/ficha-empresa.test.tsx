@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import CompanyDetailPage from "./page";
 import {
   archiveCompany, fiscalCheck, getCompany, getDespegueEmpresa, listCompanyContacts, restoreCompany,
-  setContactoPrincipal, viesRevalidate,
+  setContactoPrincipal, updateCompany, viesRevalidate,
 } from "../../lib/companiesApi";
 import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib/erpApi";
 
@@ -604,5 +604,21 @@ describe("Contacto principal (uno por empresa, 1/11/2026)", () => {
     expect(setContactoPrincipal).toHaveBeenCalledWith("c1", "ct2");
     await waitFor(() => expect(dos.checked).toBe(true));
     expect(uno.checked).toBe(false);
+  });
+});
+
+
+describe("Dominio de la lista de compartidos (1/11/2026)", () => {
+  it("si no se puede guardar, el aviso sale arriba y la ficha sigue con lo escrito", async () => {
+    (updateCompany as jest.Mock).mockRejectedValueOnce(new Error(
+      "«outlook.fr» es de la lista de dominios compartidos"));
+    const user = userEvent.setup();
+    render(<CompanyDetailPage />);
+    const dominio = (await screen.findByLabelText(/Dominio/)) as HTMLInputElement;
+    await user.clear(dominio);
+    await user.type(dominio, "outlook.fr");
+    await user.click(screen.getByRole("button", { name: /Guardar/ }));
+    expect(await screen.findByText(/lista de dominios compartidos/)).toBeInTheDocument();
+    expect((screen.getByLabelText(/Dominio/) as HTMLInputElement).value).toBe("outlook.fr");
   });
 });

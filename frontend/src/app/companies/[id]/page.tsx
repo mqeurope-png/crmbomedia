@@ -320,7 +320,9 @@ export default function CompanyDetailPage() {
   };
 
   if (loading) return <main className="shell"><p className="muted">Cargando…</p></main>;
-  if (error || !company)
+  // Solo si no se pudo cargar: un error al guardar (p. ej. un dominio de la
+  // lista) sale arriba de la ficha, sin perder lo escrito.
+  if (!company)
     return (
       <main className="shell"><p className="form-error">{error}</p></main>
     );
