@@ -18,13 +18,13 @@ Un accesorio, un recambio o un consumible no son máquinas.
   (dos compras del mismo modelo también son dos). El albarán avisa cuando
   hay una factura del mismo artículo a menos de `DIAS_MISMA_VENTA` días que
   no cubre ni apunta a ningún albarán, con el importe y la referencia de los
-  dos, y se contesta (1/11/2026): «Sí, es la misma venta» lo saca del parque
-  como **duplicado** (`ParqueBaja.tipo = misma_venta`, no una máquina
-  retirada: no cuenta en «tiene baja»); «No, son dos compras» quita el aviso
-  para ese par para siempre (`ParqueDosCompras`). Un albarán con la máquina a
-  0 € que dice «sustitución» sale ya **propuesto** como la misma venta que la
-  factura anterior del modelo (a cualquier distancia): no cuenta mientras
-  nadie diga que no.
+  dos, y se contesta (1/11/2026, `ParqueMismaVenta`): «Sí, es la misma venta»
+  lo deja fuera del parque como **duplicado** (no es una baja: no toca
+  `parque_bajas` ni cuenta en «tiene baja»); «No, son dos compras» quita el
+  aviso para ese par para siempre. Un albarán con la máquina a 0 € que dice
+  «sustitución» sale ya **propuesto** como la misma venta que la factura
+  ANTERIOR del modelo (a cualquier distancia) que siga en servicio y sin
+  abonos del modelo: no cuenta mientras nadie diga que no.
   Un pedido de cliente (`C`) no se vuelca: dos entregas del mismo pedido
   (un albarán y una factura directa) se casan como si fueran una. El enlace
   tampoco lleva el ejercicio: se casa por serie y número dentro del cliente
@@ -76,8 +76,8 @@ from app.erp.models.historico import (
     HistoricoGama,
     HistoricoLinea,
     ParqueBaja,
-    ParqueDosCompras,
     ParqueMaquinaManual,
+    ParqueMismaVenta,
 )
 
 CLASE_MAQUINA = "maquina"
@@ -86,7 +86,9 @@ ALBARAN_FACTURADO = "1"
 #: Un albarán y una factura del mismo artículo, sin enlace, a menos de esto:
 #: se avisa de que pueden ser la misma venta (no se casan solos).
 DIAS_MISMA_VENTA = 60
-#: `ParqueBaja.tipo` de un albarán que era la misma venta que una factura.
+#: El «tipo» de la baja que enseña la ficha cuando un albarán no cuenta por ser
+#: la misma venta que una factura (contestado o propuesto). No se guarda en
+#: `parque_bajas`: sale de `ParqueMismaVenta` o de la propuesta.
 MISMA_VENTA = "misma_venta"
 #: Un envío de sustitución: la máquina a 0 € y esto en la referencia o en la
 #: línea (sin tildes ni mayúsculas). Sale propuesto como la misma venta.
@@ -287,9 +289,13 @@ def _contexto(session: Session, filas: list[Any], eq: Any) -> dict[str, Any]:
 
     return {"canon": canon, "catalogo": al_art.resuelve,
             "proformas": _pedidas_en_proformas(session, filas, canon),
-            # «No, son dos compras»: (albarán, factura) → quién y cuándo.
-            "dos_compras": {(d.albaran, d.factura): d for d in session.scalars(
-                select(ParqueDosCompras))},
+            # Las respuestas al aviso: (albarán, factura) → sí/no, quién y cuándo.
+            "respuestas": {(r.albaran, r.factura): r for r in session.scalars(
+                select(ParqueMismaVenta))},
+            # Las bajas (de retirada): contra una factura dada de baja no se
+            # propone una sustitución (la máquina ya no está; la nueva es la
+            # que cuenta).
+            "bajas": set(session.scalars(select(ParqueBaja.clave))),
             "enlazados": set(session.scalars(select(HistoricoEjercicio.ejercicio).where(
                 HistoricoEjercicio.con_enlaces.is_(True))))}
 
@@ -328,6 +334,10 @@ def maquinas_de_todos(session: Session) -> dict[str, list[dict[str, Any]]]:
     return {k: _de_un_cliente(v, ctx) for k, v in por_cliente.items() if k}
 
 
+def _iso(at: datetime | None) -> str | None:
+    return f"{at.isoformat()}Z" if at else None
+
+
 def _clave_de(f: Any) -> str:
     return clave_linea(f.ejercicio, f.tipo, f.serie, f.codigo, f.posicion, f.codart)
 
@@ -349,19 +359,10 @@ def _doc(f: Any) -> dict[str, Any]:
             "numero": _ref(f)}
 
 
-def doc_de_clave(clave: str | None) -> dict[str, Any] | None:
-    """El documento de una clave de línea (`ejercicio|tipo|serie|codigo|…`)."""
-    partes = (clave or "").split("|")
-    if len(partes) < 4 or not partes[3].isdigit():
-        return None
-    ejercicio, tipo, serie, codigo = partes[0], partes[1], partes[2], int(partes[3])
-    return {"tipo": tipo, "serie": serie, "codigo": codigo, "ejercicio": ejercicio,
-            "numero": f"{serie}-{codigo:06d}"}
-
-
 def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
     canon, enlazados = ctx["canon"], ctx["enlazados"]
-    dos_compras = ctx.get("dos_compras") or {}
+    respuestas = ctx.get("respuestas") or {}
+    con_baja = ctx.get("bajas") or set()
     catalogo = ctx.get("catalogo") or (lambda c: c)
     queda, cubre = _emparejar(filas, ctx["proformas"], canon)
     # Un abono (línea en negativo) anula la venta más reciente de ese artículo.
@@ -369,6 +370,13 @@ def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]
     for f in filas:
         if (f.cantidad or 0) < 0:
             abonado[canon(f.codart)] = abonado.get(canon(f.codart), 0.0) - float(f.cantidad)
+    # Con abonos del modelo no se sabe cuál anulan: no se propone nada solo.
+    con_abono = set(abonado)
+
+    def retirada(x: Any) -> bool:
+        """La factura (o un albarán suyo) está dada de baja."""
+        return _clave_de(x) in con_baja or any(_clave_de(a) in con_baja
+                                                for a in cubre.get(id(x), []))
     facturas = [f for f in filas if f.tipo == TIPO_FACTURA and (f.cantidad or 0) > 0]
     facturados = {canon(f.codart) for f in facturas}
     filas = sorted(filas, key=lambda f: (f.fecha is not None, f.fecha or date.min), reverse=True)
@@ -377,7 +385,7 @@ def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]
         if (f.cantidad or 0) <= 0:
             continue
         cantidad = float(f.cantidad)
-        sospecha = None
+        sospecha = confirmada = None
         revisadas: list[dict[str, Any]] = []
         if f.tipo == TIPO_ALBARAN:
             cantidad = queda[id(f)]
@@ -397,27 +405,36 @@ def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]
             # Cualquier factura del artículo cerca (31/10/2026): también la que
             # ya cubre otro albarán. Un segundo albarán suelto junto a una
             # factura ya emparejada es justo el duplicado que hay que ver.
-            # Un par del que alguien dijo «no, son dos compras» no vuelve a avisar.
             mia = _clave_de(f)
-            sustitucion = es_sustitucion(f)
             mismo = [x for x in facturas if canon(x.codart) == canon(f.codart)
                      and f not in cubre.get(id(x), [])]    # no su propia factura
-            revisadas = [{**_doc(x), "clave": _clave_de(x), "por": d.por,
-                          "at": f"{d.at.isoformat()}Z" if d.at else None}
-                         for x in mismo if (d := dos_compras.get((mia, _clave_de(x))))]
-            mismo = [x for x in mismo if (mia, _clave_de(x)) not in dos_compras]
-            cerca = [x for x in mismo if _dias(x, f) <= DIAS_MISMA_VENTA]
-            if not cerca and sustitucion:
-                # La sustitución de una máquina vendida antes, a cualquier
-                # distancia: la factura anterior más cercana del modelo.
-                cerca = [x for x in mismo if x.fecha and f.fecha and x.fecha <= f.fecha]
-            if cerca:
-                x = min(cerca, key=lambda x: _dias(x, f))
-                sospecha = {**_doc(x), "clave": _clave_de(x), "importe": _importe(x),
-                            "referencia": x.referencia,
-                            "albaran": {"importe": _importe(f), "referencia": f.referencia},
-                            # Ya resuelto: se propone como la misma venta.
-                            "propuesta": "sustitucion" if sustitucion else None}
+            # Lo contestado: «sí» (misma venta) o «no» (dos compras) por par,
+            # con una factura que sigue ahí.
+            dichas = {_clave_de(x): (x, r) for x in mismo
+                      if (r := respuestas.get((mia, _clave_de(x)))) is not None}
+            revisadas = [{**_doc(x), "clave": c, "por": r.por, "at": _iso(r.at)}
+                         for c, (x, r) in dichas.items() if not r.misma]
+            si = next(((c, x, r) for c, (x, r) in dichas.items() if r.misma), None)
+            if si is not None:
+                c, x, r = si
+                confirmada = {**_doc(x), "clave": c, "por": r.por, "at": _iso(r.at)}
+            else:
+                mismo = [x for x in mismo if _clave_de(x) not in dichas]
+                # Una sustitución (a 0 €, «sustitución»), si nadie ha dicho ya
+                # que no: con la factura ANTERIOR del modelo, a cualquier
+                # distancia, que siga en servicio y sin abonos del modelo.
+                anteriores = []
+                if es_sustitucion(f) and not revisadas and canon(f.codart) not in con_abono:
+                    anteriores = [x for x in mismo if x.fecha and f.fecha
+                                  and x.fecha <= f.fecha and not retirada(x)]
+                cerca = anteriores or [x for x in mismo if _dias(x, f) <= DIAS_MISMA_VENTA]
+                if cerca:
+                    x = min(cerca, key=lambda x: _dias(x, f))
+                    sospecha = {**_doc(x), "clave": _clave_de(x), "importe": _importe(x),
+                                "referencia": x.referencia,
+                                "albaran": {"importe": _importe(f), "referencia": f.referencia},
+                                # Ya resuelto: se propone como la misma venta.
+                                "propuesta": "sustitucion" if anteriores else None}
         if abonado.get(canon(f.codart), 0) > 0:
             anula = min(cantidad, abonado[canon(f.codart)])
             abonado[canon(f.codart)] -= anula
@@ -443,6 +460,8 @@ def _de_un_cliente(filas: list[Any], ctx: dict[str, Any]) -> list[dict[str, Any]
                            "codart_catalogo": catalogo(a.codart)}
                           for a in cubre.get(id(f), [])],
             "posible_misma_venta": sospecha,
+            # Contestado «sí, es la misma venta» (con esa factura): no cuenta.
+            "misma_venta": confirmada,
             # Los pares de los que alguien dijo «no, son dos compras».
             "dos_compras": revisadas,
         })
@@ -627,15 +646,22 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         # un albarán con el código equivalente no se hereda: antes de declarar
         # el par salían como dos y esa baja era la del duplicado (1/11/2026).
         b = next((bajas[c] for c in _claves_heredables(m) if c in bajas), None)
-        pm = m.get("posible_misma_venta")
-        if b is not None:
-            baja = _baja(b.at, b.motivo, b.por, tipo=b.tipo, duplica=doc_de_clave(b.duplica))
+        pm, mv = m.get("posible_misma_venta"), m.get("misma_venta")
+        if mv:
+            # Contestado: un duplicado. La baja que hubiera (de Bart) sigue
+            # guardada y vuelve si se deshace la respuesta.
+            baja = _baja(None, None, mv["por"], tipo=MISMA_VENTA, duplica=_solo_doc(mv))
+            baja["at"] = mv["at"]
+        elif b is not None:
+            baja = _baja(b.at, b.motivo, b.por)
+            if pm:
+                # Dada de baja como retirada: se pregunta si era la misma venta,
+                # pero no se propone nada solo.
+                m = {**m, "posible_misma_venta": {**pm, "propuesta": None}}
         elif pm and pm.get("propuesta"):
             # Propuesto (no escrito): no cuenta mientras nadie diga que no.
             baja = {**_baja(None, MOTIVO_SUSTITUCION, None, tipo=MISMA_VENTA,
-                            duplica={k: pm[k] for k in ("tipo", "serie", "codigo",
-                                                        "ejercicio", "numero")}),
-                    "propuesta": True}
+                            duplica=_solo_doc(pm)), "propuesta": True}
         else:
             baja = None
         rows.append({**m, "id": None, "gama_nombre": gamas.get(m["gama"] or "", m["gama"]),
@@ -678,6 +704,10 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
     }
 
 
+def _solo_doc(d: dict[str, Any]) -> dict[str, Any]:
+    return {k: d[k] for k in ("tipo", "serie", "codigo", "ejercicio", "numero")}
+
+
 def _claves_heredables(m: dict[str, Any]) -> list[str]:
     """La clave de la fila y las de sus albaranes del MISMO artículo (con el
     alias de la línea resuelto, no por equivalencia)."""
@@ -693,7 +723,8 @@ def _claves_de(m: dict[str, Any]) -> list[str]:
 
 def _baja(at: datetime | None, motivo: str | None, por: str | None, *,
           tipo: str | None = None, duplica: dict[str, Any] | None = None) -> dict[str, Any]:
-    """`tipo` None: retirada; `misma_venta`: duplicado de la factura `duplica`."""
+    """`tipo` None: retirada (una baja guardada); `misma_venta`: no cuenta por
+    ser la misma venta que la factura `duplica` (contestado o propuesto)."""
     return {"at": f"{at.isoformat()}Z" if at else None, "motivo": motivo, "por": por,
             "tipo": tipo, "duplica": duplica, "propuesta": False}
 
@@ -774,41 +805,39 @@ def _fila_volcada(session: Session, company: Any, clave: str | None) -> dict[str
 def contestar_misma_venta(session: Session, company: Any, *, clave: str, factura: str,
                           es_misma: bool, por: str) -> None:
     """La respuesta al aviso «¿misma venta?» del albarán `clave` con la
-    factura `factura` (las dos, claves de línea). LookupError si ese aviso no
-    está (ya contestado, o la ficha estaba vieja).
+    factura `factura` (las dos, claves de línea), o el cambio de una ya dada
+    con esa factura. LookupError si ese aviso no está (la ficha estaba vieja).
 
-    - Sí: sale del parque como duplicado (`misma_venta`), no como retirada.
-      Si ya estaba dada de baja como retirada, pasa a duplicado (su motivo
-      se conserva).
-    - No: el par no vuelve a avisar. Si estaba como duplicado de ESA
-      factura, vuelve al parque."""
+    Sí: el albarán no cuenta, como duplicado. No: ese par no vuelve a
+    avisar. No toca `parque_bajas`: la baja que hubiera sigue como estaba."""
     fila = _fila_volcada(session, company, clave)
-    pm = (fila or {}).get("posible_misma_venta")
-    if fila is None or pm is None or pm["clave"] != factura:
+    vigente = {d["clave"] for d in (fila or {}).get("dos_compras") or []}
+    for k in ("posible_misma_venta", "misma_venta"):
+        if (fila or {}).get(k):
+            vigente.add(fila[k]["clave"])
+    if fila is None or factura not in vigente:
         raise LookupError("aviso")
-    b = session.get(ParqueBaja, clave)
     if es_misma:
-        b = b or ParqueBaja(clave=clave)
-        b.motivo = b.motivo or (MOTIVO_SUSTITUCION if pm.get("propuesta") else None)
-        b.company_id, b.tipo, b.duplica, b.por, b.at = (company.id, MISMA_VENTA, factura, por,
-                                                        _ahora())
-        session.add(b)
-    else:
-        if b is not None and b.tipo == MISMA_VENTA and b.duplica == factura:
-            session.delete(b)
-        if session.get(ParqueDosCompras, (clave, factura)) is None:
-            session.add(ParqueDosCompras(albaran=clave, factura=factura, company_id=company.id,
-                                         por=por, at=_ahora()))
+        # Un «sí» por albarán: es la misma venta que UNA factura.
+        for r in session.scalars(select(ParqueMismaVenta).where(
+                ParqueMismaVenta.albaran == clave, ParqueMismaVenta.misma.is_(True),
+                ParqueMismaVenta.factura != factura)):
+            session.delete(r)
+    r = session.get(ParqueMismaVenta, (clave, factura)) or ParqueMismaVenta(
+        albaran=clave, factura=factura)
+    r.misma, r.company_id, r.por, r.at = es_misma, company.id, por, _ahora()
+    session.add(r)
     session.commit()
 
 
-def deshacer_dos_compras(session: Session, company: Any, *, clave: str, factura: str) -> None:
-    """Vuelve a avisar de ese par. LookupError si no es de su parque."""
+def deshacer_misma_venta(session: Session, company: Any, *, clave: str, factura: str) -> None:
+    """Quita la respuesta (sí o no) de ese par: el aviso vuelve. LookupError si
+    no es de su parque."""
     fila = _fila_volcada(session, company, clave)
-    d = session.get(ParqueDosCompras, (clave, factura)) if fila else None
-    if d is None:
+    r = session.get(ParqueMismaVenta, (clave, factura)) if fila else None
+    if r is None:
         raise LookupError("aviso")
-    session.delete(d)
+    session.delete(r)
     session.commit()
 
 

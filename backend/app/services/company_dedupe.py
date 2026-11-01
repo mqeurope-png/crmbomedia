@@ -329,8 +329,8 @@ def _merge_into(
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.models.historico import (  # noqa: PLC0415
         ParqueBaja,
-        ParqueDosCompras,
         ParqueMaquinaManual,
+        ParqueMismaVenta,
     )
     from app.erp.models.ofertas import Oferta  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
@@ -362,7 +362,7 @@ def _merge_into(
             )
             moved[key] += int(result.rowcount or 0)
         # El parque instalado (máquinas a mano y bajas) va con la empresa.
-        for model in (ParqueMaquinaManual, ParqueBaja, ParqueDosCompras):
+        for model in (ParqueMaquinaManual, ParqueBaja, ParqueMismaVenta):
             result = session.execute(update(model.__table__).where(model.company_id == other.id)
                                      .values(company_id=keep.id))
             if model is ParqueMaquinaManual:

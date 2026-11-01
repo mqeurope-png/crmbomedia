@@ -8321,6 +8321,9 @@ export type ParqueMaquina = {
     albaran?: { importe: number | null; referencia: string | null };
     propuesta?: "sustitucion" | null;
   }) | null;
+  /** Contestado «Sí, es la misma venta» con esta factura: no cuenta (un
+   *  duplicado; no es una baja). Se deshace con `deshacerMismaVenta`. */
+  misma_venta?: (ParqueDocRef & { clave: string; por: string | null; at: string | null }) | null;
   /** Facturas de las que alguien dijo «no, son dos compras» con este albarán. */
   dos_compras?: (ParqueDocRef & { clave: string; por: string | null; at: string | null })[];
   /** Otras máquinas en servicio del mismo cliente que parecen el mismo modelo
@@ -8332,7 +8335,8 @@ export type ParqueMaquina = {
   nota?: string | null;
   baja: {
     at: string | null; motivo: string | null; por: string | null;
-    /** null: retirada. «misma_venta»: era la misma venta que `duplica` (un duplicado). */
+    /** null: retirada (una baja). «misma_venta»: no cuenta por ser la misma venta
+     *  que `duplica` (contestado, ver `misma_venta`, o propuesto). */
     tipo?: "misma_venta" | null;
     duplica?: ParqueDocRef | null;
     /** Propuesto (envío de sustitución a 0 €), no escrito: no cuenta mientras nadie diga que no. */
@@ -8438,8 +8442,8 @@ export async function contestarMismaVenta(
   });
 }
 
-/** Deshace un «No, son dos compras»: el aviso vuelve. */
-export async function deshacerDosCompras(
+/** Quita la respuesta (sí o no) de ese par: el aviso vuelve. */
+export async function deshacerMismaVenta(
   companyId: string, aviso: { clave: string; factura: string },
 ): Promise<ParqueEmpresa> {
   return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/misma-venta/deshacer`, {

@@ -340,23 +340,27 @@ class ParqueBaja(Base):
     motivo: Mapped[str | None] = mapped_column(String(255))
     por: Mapped[str | None] = mapped_column(String(255))
     at: Mapped[datetime | None] = mapped_column(DateTime)
-    #: Por qué sale del parque (0171): None, retirada (ya no está en servicio);
-    #: `misma_venta`, un albarán que era la misma venta que una factura (un
-    #: duplicado, no una máquina retirada).
-    tipo: Mapped[str | None] = mapped_column(String(16))
-    #: Con `misma_venta`: la línea de la factura que duplica (su clave).
-    duplica: Mapped[str | None] = mapped_column(String(160))
 
 
-class ParqueDosCompras(Base):
-    """«No, son dos compras» (0171): este albarán y esta factura (sus líneas,
-    por clave) no son la misma venta. El aviso «¿misma venta?» no vuelve a
-    salir para ese par; si hay otra factura cerca, sí para esa."""
+class ParqueMismaVenta(Base):
+    """La respuesta al aviso «¿misma venta?» (0171) de un albarán con una
+    factura, las dos por la clave de su línea:
 
-    __tablename__ = "parque_dos_compras"
+    - `misma` verdadero, «Sí, es la misma venta»: el albarán no cuenta en el
+      parque, como duplicado de esa factura. No es una baja: no toca
+      `parque_bajas` (la baja que diera Bart sigue ahí) ni cuenta en «tiene
+      máquina dada de baja». Uno por albarán.
+    - `misma` falso, «No, son dos compras»: el aviso no vuelve a salir para
+      ese par; si hay otra factura cerca, sí para esa.
+
+    Solo vale para la fila del propio albarán: si después se empareja con su
+    factura por el enlace, deja de salir y la respuesta ya no hace nada."""
+
+    __tablename__ = "parque_misma_venta"
 
     albaran: Mapped[str] = mapped_column(String(160), primary_key=True)
     factura: Mapped[str] = mapped_column(String(160), primary_key=True)
+    misma: Mapped[bool] = mapped_column(Boolean, nullable=False)
     company_id: Mapped[str | None] = mapped_column(String(36), index=True)
     por: Mapped[str | None] = mapped_column(String(255))
     at: Mapped[datetime | None] = mapped_column(DateTime)

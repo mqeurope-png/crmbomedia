@@ -220,8 +220,8 @@ def contestar_misma_venta(
     session: Session = Depends(get_session),
     user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """Sí: sale del parque como duplicado (no como retirada). No: el aviso no
-    vuelve a salir para ese par."""
+    """Sí: no cuenta, como duplicado (no es una baja). No: el aviso no vuelve a
+    salir para ese par."""
     if body.es_misma is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
             "code": "falta_respuesta", "detail": "Falta la respuesta (sí o no)."})
@@ -235,16 +235,16 @@ def contestar_misma_venta(
 
 
 @router.post("/empresas/{company_id}/misma-venta/deshacer")
-def deshacer_dos_compras(
+def deshacer_misma_venta(
     company_id: str,
     body: MismaVentaIn,
     session: Session = Depends(get_session),
     _: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """Deshace un «No, son dos compras»: el aviso vuelve a salir."""
+    """Quita la respuesta (sí o no) de ese par: el aviso vuelve a salir."""
     company = _empresa(session, company_id)
     try:
-        svc.deshacer_dos_compras(session, company, clave=body.clave, factura=body.factura)
+        svc.deshacer_misma_venta(session, company, clave=body.clave, factura=body.factura)
     except LookupError as exc:
         raise _aviso_no_esta(exc) from exc
     return svc.parque(session, company)

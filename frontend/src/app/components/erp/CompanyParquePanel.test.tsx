@@ -19,7 +19,7 @@ jest.mock("../../lib/erpApi", () => ({
   contestarMismaVenta: jest.fn(),
   darBajaMaquina: jest.fn(),
   deshacerBajaMaquina: jest.fn(),
-  deshacerDosCompras: jest.fn(),
+  deshacerMismaVenta: jest.fn(),
   setClaseArticulo: jest.fn(),
   HISTORICO_CLASE_LABEL: jest.requireActual("../../lib/erpApi").HISTORICO_CLASE_LABEL,
 }));
@@ -257,7 +257,7 @@ test("la factura enseña su albarán y un albarán suelto avisa de la factura ce
   });
   render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
   expect(await screen.findByText("3-230001")).toBeInTheDocument();
-  const aviso = screen.getByRole("group", { name: "¿Misma venta?" });
+  const aviso = screen.getByRole("group", { name: /¿Misma venta\?/ });
   expect(within(aviso).getByText("1-123021").closest("a")).toHaveAttribute(
     "href", expect.stringContaining("/factura/2022/1/123021"));
   // Lo que hace falta para decidir, sin abrir nada; sin permiso, sin botones.
@@ -279,19 +279,28 @@ const SUELTO = (over: Record<string, unknown> = {}) => MAQ({
 test("el aviso se contesta: sí, es la misma venta; no, son dos compras", async () => {
   const user = userEvent.setup();
   api().getParqueEmpresa.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
+  const DOC_FAC = { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021" };
   api().contestarMismaVenta.mockResolvedValue({ ...PARQUE, activas: 0, maquinas: [SUELTO({
+    posible_misma_venta: null,
+    misma_venta: { ...DOC_FAC, clave: FAC, por: "bart@example.com", at: "2026-11-01T10:00:00Z" },
     baja: { at: "2026-11-01T10:00:00Z", motivo: null, por: "bart@example.com", tipo: "misma_venta",
-            duplica: { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021" },
-            propuesta: false } })] });
+            duplica: DOC_FAC, propuesta: false } })] });
+  api().deshacerMismaVenta.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
   render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
-  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  const aviso = await screen.findByRole("group", { name: "¿Misma venta? Albarán 3-230002 y factura 1-123021" });
   await user.click(within(aviso).getByRole("button", { name: "Sí, es la misma venta" }));
   expect(api().contestarMismaVenta).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC }, true);
-  // Sale como duplicado, no como retirada; y se puede deshacer.
+  // Sale como duplicado, no como retirada, con quién y cuándo a la vista.
   expect(await screen.findByText(/No cuenta: misma venta que la factura/)).toBeInTheDocument();
+  expect(screen.getByText(/Un duplicado, no una retirada · lo dijo bart@example.com el 1\/11\/2026/))
+    .toBeInTheDocument();
   expect(screen.queryByText(/Dada de baja/)).toBeNull();
-  expect(screen.queryByRole("group", { name: "¿Misma venta?" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Deshacer «misma venta»" })).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: /¿Misma venta\?/ })).toBeNull();
+  // Deshacerlo quita la respuesta (no toca bajas) y el aviso vuelve.
+  await user.click(screen.getByRole("button", { name: "Deshacer «misma venta»" }));
+  expect(api().deshacerMismaVenta).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC });
+  expect(api().deshacerBajaMaquina).not.toHaveBeenCalled();
+  expect(await screen.findByRole("group", { name: /¿Misma venta\?/ })).toBeInTheDocument();
 });
 
 test("«no, son dos compras» deja una nota que se puede deshacer", async () => {
@@ -301,16 +310,17 @@ test("«no, son dos compras» deja una nota que se puede deshacer", async () => 
     posible_misma_venta: null,
     dos_compras: [{ tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021",
                     clave: FAC, por: "bart@example.com", at: "2026-11-01T10:00:00Z" }] })] });
-  api().deshacerDosCompras.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
+  api().deshacerMismaVenta.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
   render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
-  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  const aviso = await screen.findByRole("group", { name: /¿Misma venta\?/ });
   await user.click(within(aviso).getByRole("button", { name: "No, son dos compras" }));
   expect(api().contestarMismaVenta).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC }, false);
   expect(await screen.findByText(/Revisado: no es la misma venta que la factura/)).toBeInTheDocument();
-  expect(screen.queryByRole("group", { name: "¿Misma venta?" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Deshacer" }));
-  expect(api().deshacerDosCompras).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC });
-  expect(await screen.findByRole("group", { name: "¿Misma venta?" })).toBeInTheDocument();
+  expect(screen.getByText(/lo dijo bart@example.com el 1\/11\/2026/)).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: /¿Misma venta\?/ })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Deshacer «dos compras» con la factura 1-123021" }));
+  expect(api().deshacerMismaVenta).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC });
+  expect(await screen.findByRole("group", { name: /¿Misma venta\?/ })).toBeInTheDocument();
 });
 
 test("un envío de sustitución a 0 € sale ya propuesto, y se puede decir que no", async () => {
@@ -320,7 +330,7 @@ test("un envío de sustitución a 0 € sale ya propuesto, y se puede decir que 
             duplica: { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021" },
             propuesta: true } })] });
   render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
-  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  const aviso = await screen.findByRole("group", { name: /¿Misma venta\?/ });
   expect(aviso).toHaveTextContent("Propuesto: la misma venta");
   expect(screen.getByText("No cuenta: sustitución (propuesto)")).toBeInTheDocument();
   expect(within(aviso).getByRole("button", { name: "No, son dos compras" })).toBeInTheDocument();
@@ -333,7 +343,7 @@ test("una baja de antes con el aviso pregunta si era la misma venta", async () =
     baja: { at: "2026-10-30T10:00:00Z", motivo: "Repetido", por: "x", tipo: null, duplica: null,
             propuesta: false } })] });
   render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
-  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  const aviso = await screen.findByRole("group", { name: /¿Misma venta\?/ });
   expect(aviso).toHaveTextContent("¿Era la misma venta?");
   expect(within(aviso).getByRole("button", { name: "Sí, es la misma venta" })).toBeInTheDocument();
 });

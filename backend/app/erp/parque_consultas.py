@@ -116,15 +116,16 @@ def _parque_activo(session: Session, *,
 
     al_fam = historico_alias.familias(session)
     volcadas = parque.maquinas_de_todos(session)
-    bajas = dict(session.execute(select(ParqueBaja.clave, ParqueBaja.tipo)).all())
+    bajas = set(session.scalars(select(ParqueBaja.clave)))
     out: dict[str, list[dict[str, Any]]] = {}
     for cli, filas in volcadas.items():
         for m in filas:
-            tipos = [bajas[c] for c in parque._claves_heredables(m) if c in bajas]
-            if tipos:
-                # Un duplicado (la misma venta que una factura) no es una
-                # máquina retirada: no cuenta en «tiene baja» (1/11/2026).
-                if con_baja is not None and any(t != parque.MISMA_VENTA for t in tipos):
+            # La misma venta que una factura (contestado «sí»): un duplicado,
+            # no una máquina retirada; no cuenta en «tiene baja» (1/11/2026).
+            if m.get("misma_venta"):
+                continue
+            if any(c in bajas for c in parque._claves_heredables(m)):
+                if con_baja is not None:
                     con_baja.add(cli)
                 continue
             if (m.get("posible_misma_venta") or {}).get("propuesta"):

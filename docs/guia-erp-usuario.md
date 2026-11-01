@@ -1042,20 +1042,24 @@ En la ficha de una empresa, bajo «Actividad reciente»:
     0,00 € · «ENVÍO MÁQUINA SUBSTITUCIÓN»»), para decidir sin abrirlos, y se
     contesta con dos botones:
     - **«Sí, es la misma venta»:** el albarán deja de contar como **duplicado**
-      («No cuenta: misma venta que la factura …»). No es una máquina retirada,
-      y no sale en «tiene máquina dada de baja». Se deshace con «Deshacer
-      «misma venta»».
+      («No cuenta: misma venta que la factura …», con quién lo dijo y cuándo).
+      No es una máquina retirada, y no sale en «tiene máquina dada de baja».
+      Se deshace con «Deshacer «misma venta»».
     - **«No, son dos compras»:** el aviso no vuelve a salir para ese par.
       Queda la nota «Revisado: no es la misma venta…», con quién lo dijo, y
       su «Deshacer».
   - **Un envío de sustitución** (la máquina a 0 € y «SUSTITUCIÓN» o
     «SUBSTITUCIÓN» en la referencia o en la línea) sale **ya propuesto** como
-    la misma venta que la factura anterior del modelo, aunque sea de hace
+    la misma venta que la factura **anterior** del modelo, aunque sea de hace
     años: «No cuenta: sustitución (propuesto)». Si no lo es, «No, son dos
-    compras».
+    compras». No se propone en tres casos:
+    - si esa factura está dada de baja: la máquina se retiró y la sustitución
+      es la que cuenta;
+    - si hay abonos del modelo;
+    - si ya se dijo «no».
   - **Una baja de antes** en un albarán con el aviso (cuando el aviso decía
-    «da de baja este albarán») pregunta «¿Era la misma venta?». El «sí» la
-    pasa a duplicado y conserva el motivo.
+    «da de baja este albarán») pregunta «¿Era la misma venta?». El «sí» lo
+    deja como duplicado sin tocar la baja, que vuelve tal cual si se deshace.
   - **Solo salen los artículos marcados como máquina** (31/10/2026): que la
     familia sea de clase «Máquina» ya no basta. Se marcan en **Histórico →
     Familias → «Máquinas, artículo a artículo»**: una casilla «es máquina»

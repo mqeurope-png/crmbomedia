@@ -9,7 +9,7 @@ import {
   contestarMismaVenta,
   darBajaMaquina,
   deshacerBajaMaquina,
-  deshacerDosCompras,
+  deshacerMismaVenta,
   fichaDocumentoHref,
   getComprasEmpresa,
   getHistoricoFamilias,
@@ -77,6 +77,11 @@ const referencia = (r: string | null | undefined) => (r ? `«${r}»` : "sin refe
 
 type Aviso = NonNullable<ParqueMaquina["posible_misma_venta"]>;
 
+/** «lo dijo X el 1/11/2026», a la vista (no en un tooltip). */
+function quienCuando(por: string | null, at: string | null): string {
+  return `lo dijo ${por ?? "alguien"}${at ? ` el ${fecha(at)}` : ""}`;
+}
+
 /** El aviso «¿misma venta?» de un albarán, con lo que hace falta para
  *  decidir sin abrir nada (el importe y la referencia de los dos) y la
  *  respuesta en dos botones (1/11/2026). */
@@ -91,7 +96,8 @@ function AvisoMismaVenta({ m, aviso, puedeEditar, ocupado, contestar }: {
     </Link>
   );
   return (
-    <div className="erp-aviso-misma-venta" role="group" aria-label="¿Misma venta?">
+    <div className="erp-aviso-misma-venta" role="group"
+         aria-label={`¿Misma venta? Albarán ${m.documento?.numero ?? ""} y factura ${aviso.numero}`}>
       {propuesta ? (
         <span>
           <span className="badge warn">Propuesto: la misma venta</span> que la {factura}: es un envío de
@@ -289,7 +295,7 @@ export function CompanyParquePanel({
                         </span>
                       </div>
                     )) : null}
-                    {m.posible_misma_venta && !(m.baja?.tipo === "misma_venta" && !m.baja.propuesta) ? (
+                    {m.posible_misma_venta ? (
                       <AvisoMismaVenta m={m} aviso={m.posible_misma_venta} puedeEditar={puedeEditar} ocupado={ocupado}
                                        contestar={(esMisma) => void hacer(
                                          () => contestarMismaVenta(companyId, {
@@ -298,12 +304,13 @@ export function CompanyParquePanel({
                                          "No se ha podido guardar la respuesta.")} />
                     ) : null}
                     {m.dos_compras?.map((d) => (
-                      <div key={`dc-${d.clave}`} className="muted"
-                           title={`Lo dijo ${d.por ?? "alguien"}${d.at ? ` el ${fecha(d.at)}` : ""}.`}>
-                        Revisado: no es la misma venta que la factura <span className="mono">{d.numero}</span>{" "}
+                      <div key={`dc-${d.clave}`} className="muted">
+                        Revisado: no es la misma venta que la factura <span className="mono">{d.numero}</span>
+                        {" · "}{quienCuando(d.por, d.at)}{" "}
                         {puedeEditar && m.clave ? (
                           <button type="button" className="button small secondary" disabled={ocupado}
-                                  onClick={() => void hacer(() => deshacerDosCompras(companyId, {
+                                  aria-label={`Deshacer «dos compras» con la factura ${d.numero}`}
+                                  onClick={() => void hacer(() => deshacerMismaVenta(companyId, {
                                     clave: m.clave as string, factura: d.clave,
                                   }), "No se ha podido deshacer.")}>
                             Deshacer
@@ -317,13 +324,13 @@ export function CompanyParquePanel({
                       <span className="badge warn" title="Envío de sustitución a 0 €: no cuenta como otra máquina.">
                         No cuenta: sustitución (propuesto)
                       </span>
-                    ) : m.baja?.tipo === "misma_venta" ? (
-                      <span className="badge muted"
-                            title={`Un duplicado, no una máquina retirada. Lo dijo ${m.baja.por ?? "alguien"}${
-                              m.baja.at ? ` el ${fecha(m.baja.at)}` : ""}${m.baja.motivo ? ` · ${m.baja.motivo}` : ""}.`}>
-                        No cuenta: misma venta que la factura{" "}
-                        <span className="mono">{m.baja.duplica?.numero ?? "—"}</span>
-                      </span>
+                    ) : m.misma_venta ? (
+                      <>
+                        <span className="badge muted">
+                          No cuenta: misma venta que la factura <span className="mono">{m.misma_venta.numero}</span>
+                        </span>
+                        <div className="muted">Un duplicado, no una retirada · {quienCuando(m.misma_venta.por, m.misma_venta.at)}</div>
+                      </>
                     ) : m.baja ? (
                       <span className="badge warn" title={m.baja.motivo ?? undefined}>
                         Dada de baja{m.baja.motivo ? `: ${m.baja.motivo}` : ""}
@@ -378,6 +385,16 @@ export function CompanyParquePanel({
                             Cancelar
                           </button>
                         </span>
+                      ) : m.misma_venta ? (
+                        <span className="erp-historico-acciones">
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  title="El aviso «¿misma venta?» vuelve a salir."
+                                  onClick={() => void hacer(() => deshacerMismaVenta(companyId, {
+                                    clave: m.clave as string, factura: m.misma_venta!.clave,
+                                  }), "No se ha podido deshacer.")}>
+                            Deshacer «misma venta»
+                          </button>
+                        </span>
                       ) : m.baja?.propuesta ? (
                         // Propuesta: se contesta en el aviso (sí / no).
                         puedeClasificar && m.codart ? (
@@ -389,11 +406,9 @@ export function CompanyParquePanel({
                       ) : m.baja ? (
                         <span className="erp-historico-acciones">
                           <button type="button" className="button small secondary" disabled={ocupado}
-                                  title={m.baja.tipo === "misma_venta"
-                                    ? "Vuelve a contar y el aviso «¿misma venta?» vuelve a salir." : undefined}
                                   onClick={() => void hacer(() => deshacerBajaMaquina(companyId, ref(m)),
                                     "No se ha podido deshacer la baja.")}>
-                            {m.baja.tipo === "misma_venta" ? "Deshacer «misma venta»" : "Volver a poner en servicio"}
+                            Volver a poner en servicio
                           </button>
                           {puedeClasificar && m.codart && m.origen !== "manual" ? (
                             <button type="button" className="button small secondary" disabled={ocupado}
