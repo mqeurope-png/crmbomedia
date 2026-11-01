@@ -39,6 +39,7 @@ import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
+import { AnalisisParquePanel } from "../../components/crm/AnalisisParque";
 
 type Tab = "data" | "contacts" | "quotes";
 type Sync = { customer: FactusolCustomer | null; diffs: { field: string }[] | null };
@@ -685,6 +686,9 @@ export default function CompanyDetailPage() {
                             companyId={company.id} puedeEditar={canEditParque}
                             puedeClasificar={canClasificarParque} />
       ) : null}
+      {/* El análisis del parque: solo si el usuario puede verlo (lo dice el servidor). */}
+      <AnalisisParquePanel key={`analisis|${company.id}|${company.factusol_company_id ?? ""}`}
+                           companyId={company.id} />
 
       <div className="tab-bar">
         <button

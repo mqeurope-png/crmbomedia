@@ -43,6 +43,7 @@ import {
   type MencionLegal,
   type TextoMencion,
 } from "../../lib/erpApi";
+import type { AnalisisParqueConfig } from "../../lib/analisisParqueApi";
 import { IDIOMAS_MENCION, textoMencion } from "../../lib/mencionesIdioma";
 import { getEmailAliases, getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
 import { useVisible } from "./useVisible";
@@ -149,7 +150,7 @@ type SectionId =
   | "ofertas" | "aviso_envio" | "series"
   | "abreviaturas" | "nombres_serie" | "sat" | "empresas" | "menciones" | "almacenes" | "contrapartidas"
   | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento"
-  | "asistente";
+  | "asistente" | "analisis_parque";
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSettings)[] }> = [
   { id: "facturacion", title: "Facturación",
@@ -189,6 +190,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "respuesta_leads", title: "Respuesta a leads", keys: ["lead_response"] },
   { id: "conocimiento", title: "Base de conocimiento", keys: ["conocimiento"] },
   { id: "asistente", title: "Asistente de respuesta", keys: ["asistente"] },
+  { id: "analisis_parque", title: "Análisis del parque (IA)", keys: ["analisis_parque"] },
 ];
 
 /** Estado de guardado de una sección: `saved` = el último guardado fue bien
@@ -1807,6 +1809,18 @@ export default function ErpSettingsPage() {
             onChange={(asistente) => patch({ asistente })}
           />
         </SettingsSection>
+        {/* El análisis del parque de la ficha de empresa: qué modelo, cada cuánto
+            se rehace y quién lo ve mientras se prueba. */}
+        <SettingsSection
+          {...sectionProps("analisis_parque")}
+          lead="El análisis del parque de la ficha de empresa: los datos los calcula BoHub (cada uno con su factura, su albarán o su fecha) y la IA solo escribe el resumen y «por dónde entrar», citándolos. Aquí, el modelo que lo escribe, cada cuánto se rehace aunque no cambien los datos, desde cuántos años una máquina sin baja sale como «no se sabe si sigue en servicio», qué catálogo se puede proponer y quién lo ve. El coste de cada análisis está en ERP · Leads → «Uso de la IA»."
+        >
+          <AnalisisParqueSettings
+            value={cfg.analisis_parque}
+            modelos={cfg.asistente?.modelos ?? ASISTENTE_DEFECTOS.modelos}
+            onChange={(analisis_parque) => patch({ analisis_parque })}
+          />
+        </SettingsSection>
         {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}
         <GeneiSettingsCard canEdit={canEdit} />
       </div>
@@ -2292,6 +2306,64 @@ const ASISTENTE_DEFECTOS: AsistenteConfig = {
 /** «Ayúdame a contestar» — el modelo por tarea (primer borrador y
  *  correcciones), la lista de modelos, el pensamiento extendido, el
  *  presupuesto de tokens, el histórico y los dominios gratuitos. */
+const ANALISIS_DEFECTOS: AnalisisParqueConfig = {
+  modelo: "claude-sonnet-5-5", caducidad_meses: 3, anios_sin_confirmar: 6, meses_catalogo: 24,
+  solo_admin: true,
+};
+
+function AnalisisParqueSettings({ value, modelos, onChange }: {
+  value: AnalisisParqueConfig | undefined;
+  modelos: string[];
+  onChange: (next: AnalisisParqueConfig) => void;
+}) {
+  const cfg = value ?? ANALISIS_DEFECTOS;
+  const opciones = modelos.includes(cfg.modelo) ? modelos : [...modelos, cfg.modelo];
+  const numero = (campo: "caducidad_meses" | "anios_sin_confirmar" | "meses_catalogo",
+                  raw: string, min: number, max: number) => {
+    const n = Number(raw);
+    if (raw === "" || Number.isNaN(n)) return;
+    onChange({ ...cfg, [campo]: Math.min(max, Math.max(min, Math.round(n))) });
+  };
+  return (
+    <>
+      <label className="field">
+        <span>Modelo que lo escribe</span>
+        <select aria-label="Modelo del análisis del parque" value={cfg.modelo}
+                onChange={(e) => onChange({ ...cfg, modelo: e.target.value })}>
+          {opciones.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <span className="muted small">
+          La lista es la del asistente. Para comparar modelos con los mismos datos:
+          scripts.comparar_analisis_parque.
+        </span>
+      </label>
+      <label className="field">
+        <span>Se rehace pasados (meses)</span>
+        <input type="number" min={1} max={24} value={cfg.caducidad_meses}
+               aria-label="Meses tras los que se rehace el análisis"
+               onChange={(e) => numero("caducidad_meses", e.target.value, 1, 24)} />
+      </label>
+      <label className="field">
+        <span>Máquina sin baja: «no se sabe» desde (años)</span>
+        <input type="number" min={1} max={30} value={cfg.anios_sin_confirmar}
+               aria-label="Años desde los que una máquina sin baja sale como no se sabe"
+               onChange={(e) => numero("anios_sin_confirmar", e.target.value, 1, 30)} />
+      </label>
+      <label className="field">
+        <span>Catálogo: vendido en los últimos (meses)</span>
+        <input type="number" min={3} max={120} value={cfg.meses_catalogo}
+               aria-label="Meses del catálogo que se puede proponer"
+               onChange={(e) => numero("meses_catalogo", e.target.value, 3, 120)} />
+      </label>
+      <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <input type="checkbox" checked={cfg.solo_admin} style={{ width: "auto" }}
+               onChange={(e) => onChange({ ...cfg, solo_admin: e.target.checked })} />
+        <span>Solo administradores (mientras se prueba)</span>
+      </label>
+    </>
+  );
+}
+
 function AsistenteSettings({
   value, onChange,
 }: {

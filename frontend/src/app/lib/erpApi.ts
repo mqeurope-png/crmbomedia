@@ -2321,6 +2321,8 @@ export type ErpSettings = {
    *  de correo gratuitos (la empresa se agrupa por su registro, nunca por uno
    *  de estos dominios). */
   asistente?: AsistenteConfig;
+  /** Análisis del parque (IA): modelo, caducidad, umbrales y «solo administradores». */
+  analisis_parque?: import("./analisisParqueApi").AnalisisParqueConfig;
   /** Ofertas — prefijo de la numeración (`OF` → `OF-2026-0001`) y validez por
    *  defecto en días (1–365). El PATCH acepta cualquiera de los dos. */
   ofertas?: { prefijo: string; validez_dias: number };
