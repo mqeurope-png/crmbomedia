@@ -6,8 +6,10 @@ import {
   anadirMaquinaParque,
   borrarMaquinaParque,
   buscarMaquinasCatalogo,
+  contestarMismaVenta,
   darBajaMaquina,
   deshacerBajaMaquina,
+  deshacerMismaVenta,
   fichaDocumentoHref,
   getComprasEmpresa,
   getHistoricoFamilias,
@@ -68,6 +70,62 @@ function porCodigoExacto(texto: string, encontradas: MaquinaCatalogo[] | null): 
   const t = compacto(texto);
   if (!t || !encontradas) return null;
   return encontradas.find((m) => [m.codart, ...m.equivalentes].some((c) => compacto(c) === t)) ?? null;
+}
+
+const euros = (v: number | null | undefined) => (v == null ? "importe desconocido" : `${NF.format(v)} €`);
+const referencia = (r: string | null | undefined) => (r ? `«${r}»` : "sin referencia");
+
+type Aviso = NonNullable<ParqueMaquina["posible_misma_venta"]>;
+
+/** «lo dijo X el 1/11/2026», a la vista (no en un tooltip). */
+function quienCuando(por: string | null, at: string | null): string {
+  return `lo dijo ${por ?? "alguien"}${at ? ` el ${fecha(at)}` : ""}`;
+}
+
+/** El aviso «¿misma venta?» de un albarán, con lo que hace falta para
+ *  decidir sin abrir nada (el importe y la referencia de los dos) y la
+ *  respuesta en dos botones (1/11/2026). */
+function AvisoMismaVenta({ m, aviso, puedeEditar, ocupado, contestar }: {
+  m: ParqueMaquina; aviso: Aviso; puedeEditar: boolean; ocupado: boolean;
+  contestar: (esMisma: boolean) => void;
+}) {
+  const propuesta = aviso.propuesta === "sustitucion";
+  const factura = (
+    <Link href={fichaDocumentoHref(aviso.tipo, aviso.ejercicio, aviso.serie, aviso.codigo)} prefetch={false}>
+      factura <span className="mono">{aviso.numero}</span>
+    </Link>
+  );
+  return (
+    <div className="erp-aviso-misma-venta" role="group"
+         aria-label={`¿Misma venta? Albarán ${m.documento?.numero ?? ""} y factura ${aviso.numero}`}>
+      {propuesta ? (
+        <span>
+          <span className="badge warn">Propuesto: la misma venta</span> que la {factura}: es un envío de
+          sustitución a 0 €. No cuenta como otra máquina mientras nadie diga que no.
+        </span>
+      ) : (
+        <span>
+          <span className="badge warn">{m.baja ? "¿Era la misma venta?" : "¿Misma venta?"}</span> Sin enlace en
+          FACTUSOL con la {factura}, del mismo modelo{m.baja ? " (se dio de baja como retirada)" : ""}.
+        </span>
+      )}
+      <span className="erp-aviso-misma-venta__datos">
+        Este albarán: <strong>{euros(aviso.albaran?.importe)}</strong> · {referencia(aviso.albaran?.referencia)}
+        <br />
+        La factura: <strong>{euros(aviso.importe)}</strong> · {referencia(aviso.referencia)}
+      </span>
+      {puedeEditar ? (
+        <span className="erp-historico-acciones">
+          <button type="button" className="button small" disabled={ocupado} onClick={() => contestar(true)}>
+            Sí, es la misma venta
+          </button>
+          <button type="button" className="button small secondary" disabled={ocupado} onClick={() => contestar(false)}>
+            No, son dos compras
+          </button>
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 /** Lo que puede ser algo que no es una máquina. */
@@ -237,22 +295,43 @@ export function CompanyParquePanel({
                         </span>
                       </div>
                     )) : null}
-                    {m.posible_misma_venta && !m.baja ? (
-                      <div>
-                        <span className="badge warn"
-                              title="Sin enlace en FACTUSOL entre los dos: puede ser la misma venta o dos compras. Si es la misma, da de baja este albarán.">
-                          ¿Misma venta que la{" "}
-                          <Link href={fichaDocumentoHref(m.posible_misma_venta.tipo, m.posible_misma_venta.ejercicio,
-                                                         m.posible_misma_venta.serie, m.posible_misma_venta.codigo)}
-                                prefetch={false}>
-                            factura <span className="mono">{m.posible_misma_venta.numero}</span>
-                          </Link>?
-                        </span>
-                      </div>
+                    {m.posible_misma_venta ? (
+                      <AvisoMismaVenta m={m} aviso={m.posible_misma_venta} puedeEditar={puedeEditar} ocupado={ocupado}
+                                       contestar={(esMisma) => void hacer(
+                                         () => contestarMismaVenta(companyId, {
+                                           clave: m.clave as string, factura: m.posible_misma_venta!.clave,
+                                         }, esMisma),
+                                         "No se ha podido guardar la respuesta.")} />
                     ) : null}
+                    {m.dos_compras?.map((d) => (
+                      <div key={`dc-${d.clave}`} className="muted">
+                        Revisado: no es la misma venta que la factura <span className="mono">{d.numero}</span>
+                        {" · "}{quienCuando(d.por, d.at)}{" "}
+                        {puedeEditar && m.clave ? (
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  aria-label={`Deshacer «dos compras» con la factura ${d.numero}`}
+                                  onClick={() => void hacer(() => deshacerMismaVenta(companyId, {
+                                    clave: m.clave as string, factura: d.clave,
+                                  }), "No se ha podido deshacer.")}>
+                            Deshacer
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
                   </td>
                   <td data-label="Estado">
-                    {m.baja ? (
+                    {m.baja?.propuesta ? (
+                      <span className="badge warn" title="Envío de sustitución a 0 €: no cuenta como otra máquina.">
+                        No cuenta: sustitución (propuesto)
+                      </span>
+                    ) : m.misma_venta ? (
+                      <>
+                        <span className="badge muted">
+                          No cuenta: misma venta que la factura <span className="mono">{m.misma_venta.numero}</span>
+                        </span>
+                        <div className="muted">Un duplicado, no una retirada · {quienCuando(m.misma_venta.por, m.misma_venta.at)}</div>
+                      </>
+                    ) : m.baja ? (
                       <span className="badge warn" title={m.baja.motivo ?? undefined}>
                         Dada de baja{m.baja.motivo ? `: ${m.baja.motivo}` : ""}
                       </span>
@@ -306,6 +385,24 @@ export function CompanyParquePanel({
                             Cancelar
                           </button>
                         </span>
+                      ) : m.misma_venta ? (
+                        <span className="erp-historico-acciones">
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  title="El aviso «¿misma venta?» vuelve a salir."
+                                  onClick={() => void hacer(() => deshacerMismaVenta(companyId, {
+                                    clave: m.clave as string, factura: m.misma_venta!.clave,
+                                  }), "No se ha podido deshacer.")}>
+                            Deshacer «misma venta»
+                          </button>
+                        </span>
+                      ) : m.baja?.propuesta ? (
+                        // Propuesta: se contesta en el aviso (sí / no).
+                        puedeClasificar && m.codart ? (
+                          <button type="button" className="button small secondary" disabled={ocupado}
+                                  onClick={() => setNoMaquina({ codart: m.codart as string, clase: "accesorio" })}>
+                            No es una máquina
+                          </button>
+                        ) : null
                       ) : m.baja ? (
                         <span className="erp-historico-acciones">
                           <button type="button" className="button small secondary" disabled={ocupado}

@@ -340,3 +340,27 @@ class ParqueBaja(Base):
     motivo: Mapped[str | None] = mapped_column(String(255))
     por: Mapped[str | None] = mapped_column(String(255))
     at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ParqueMismaVenta(Base):
+    """La respuesta al aviso «¿misma venta?» (0171) de un albarán con una
+    factura, las dos por la clave de su línea:
+
+    - `misma` verdadero, «Sí, es la misma venta»: el albarán no cuenta en el
+      parque, como duplicado de esa factura. No es una baja: no toca
+      `parque_bajas` (la baja que diera Bart sigue ahí) ni cuenta en «tiene
+      máquina dada de baja». Uno por albarán.
+    - `misma` falso, «No, son dos compras»: el aviso no vuelve a salir para
+      ese par; si hay otra factura cerca, sí para esa.
+
+    Solo vale para la fila del propio albarán: si después se empareja con su
+    factura por el enlace, deja de salir y la respuesta ya no hace nada."""
+
+    __tablename__ = "parque_misma_venta"
+
+    albaran: Mapped[str] = mapped_column(String(160), primary_key=True)
+    factura: Mapped[str] = mapped_column(String(160), primary_key=True)
+    misma: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    company_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)

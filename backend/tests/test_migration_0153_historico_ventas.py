@@ -449,3 +449,17 @@ def test_0170_no_cliente_final_solo_esquema(alembic_setup):
     command.downgrade(cfg, "20261101_0169")
     assert "no_cliente_final" not in {
         col["name"] for col in inspect(engine).get_columns("companies")}
+
+
+def test_0171_misma_venta_solo_esquema(alembic_setup):
+    # Una tabla nueva y vacía; las bajas que había no se tocan. Y se deshace.
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261101_0170")
+    command.upgrade(cfg, "20261101_0171")
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT COUNT(*) FROM parque_misma_venta").scalar() == 0
+    cols = {col["name"] for col in inspect(engine).get_columns("parque_misma_venta")}
+    assert cols == {"albaran", "factura", "misma", "company_id", "por", "at"}
+    command.downgrade(cfg, "20261101_0170")
+    assert "parque_misma_venta" not in inspect(engine).get_table_names()

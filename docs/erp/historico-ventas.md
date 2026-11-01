@@ -160,9 +160,28 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
     salen los dos. Cuando un albarán que queda solo tiene una factura del
     mismo artículo a menos de 60 días (`DIAS_MISMA_VENTA`, también entre años)
     —aunque esa factura ya esté emparejada con otro albarán (31/10/2026: es
-    justo el caso del albarán duplicado)—, la fila avisa «¿Misma venta que la
-    factura …?»;
-    si lo es, se da de baja el albarán. El enlace no lleva el ejercicio: se
+    justo el caso del albarán duplicado)—, la fila avisa «¿Misma venta?». El
+    aviso lleva el importe de la línea y la referencia de los dos documentos, y
+    se contesta (1/11/2026, migración 0171, tabla `parque_misma_venta`: albarán,
+    factura y `misma` sí o no, una respuesta por par):
+    - **«sí»:** el albarán no cuenta, como duplicado de esa factura. No es una
+      baja: no toca `parque_bajas` (la baja que se hubiera dado sigue ahí y
+      vuelve si se deshace la respuesta) ni cuenta en `tiene_baja`. Solo vale
+      para la fila del propio albarán: si después se empareja con su factura
+      por el enlace, deja de salir y la respuesta ya no hace nada;
+    - **«no»:** ese par ya no avisa.
+
+    Un albarán con la máquina a 0 € y «sustitución» en la referencia o la línea
+    sale **propuesto** como la misma venta que la factura **anterior** del
+    modelo, a cualquier distancia, con tres condiciones:
+    - que esa factura no esté dada de baja (si la máquina se retiró, la
+      sustitución es la que cuenta);
+    - que no haya abonos del modelo (no se sabe qué venta anulan);
+    - que nadie haya dicho ya «no» a ese albarán.
+
+    No se escribe nada: el parque no lo cuenta mientras nadie diga que no. Si el
+    albarán está dado de baja, se pregunta sin proponer. La API es
+    `POST /empresas/{id}/misma-venta` (`clave`, `factura`, `es_misma`) y `…/misma-venta/deshacer`. El enlace no lleva el ejercicio: se
     casa por serie y número dentro del cliente. Una factura a otro código de
     cliente que el albarán tampoco se empareja. Los pedidos de cliente no se
     vuelcan: dos entregas del mismo pedido (un albarán y una factura directa)

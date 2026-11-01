@@ -120,10 +120,16 @@ def _parque_activo(session: Session, *,
     out: dict[str, list[dict[str, Any]]] = {}
     for cli, filas in volcadas.items():
         for m in filas:
+            # La misma venta que una factura (contestado «sí»): un duplicado,
+            # no una máquina retirada; no cuenta en «tiene baja» (1/11/2026).
+            if m.get("misma_venta"):
+                continue
             if any(c in bajas for c in parque._claves_heredables(m)):
                 if con_baja is not None:
                     con_baja.add(cli)
                 continue
+            if (m.get("posible_misma_venta") or {}).get("propuesta"):
+                continue                    # sustitución a 0 €: propuesta como duplicado
             out.setdefault(cli, []).append({
                 "codart": m["codart"], "articulo": m["articulo"], "gama": m["gama"],
                 # La familia que manda (con el respaldo de otro ejercicio y la

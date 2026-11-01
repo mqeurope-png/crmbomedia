@@ -15995,6 +15995,14 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   max-height: 220px; overflow-y: auto;
 }
 .erp-maquinas-catalogo .button { width: 100%; justify-content: flex-start; text-align: left; height: auto; }
+/* «¿Misma venta?» con respuesta (1/11/2026): el aviso, lo que hace falta para
+   decidir y los dos botones, uno debajo de otro. */
+.erp-aviso-misma-venta {
+  display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2); border-left: 3px solid var(--st-amber-ink);
+  background: var(--st-amber-bg);
+}
+.erp-aviso-misma-venta__datos { font-size: var(--fs-label); }
 .erp-historico-propuestas { margin-bottom: 12px; }
 .erp-historico-nueva-gama { margin-top: 16px; align-items: end; }
 .erp-historico-reglas { margin-top: 16px; }
