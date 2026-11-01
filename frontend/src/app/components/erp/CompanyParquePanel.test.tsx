@@ -122,7 +122,48 @@ test("buscar «3000» ofrece las del catálogo y elegir una pone la gama de su f
   await user.click(screen.getByRole("button", { name: "Añadir" }));
   expect(api().anadirMaquinaParque).toHaveBeenCalledWith("emp-1", expect.objectContaining({
     codart: "A3000U", descripcion: "Impresora UV Figurante A3000U" }));
-  expect(api().anadirMaquinaParque.mock.calls[0][1]).not.toHaveProperty("gama");
+  // La gama no se manda: es la de su familia.
+  expect(api().anadirMaquinaParque.mock.calls[0][1].gama).toBeUndefined();
+});
+
+test("del catálogo sin gama en su familia: se manda la que se elige", async () => {
+  const user = userEvent.setup();
+  api().buscarMaquinasCatalogo.mockResolvedValue([{ ...CATALOGO[0], gama: null, gama_nombre: null }]);
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  await screen.findByText(/2 en servicio/);
+  await user.click(screen.getByRole("button", { name: "Añadir una máquina a mano" }));
+  await user.type(screen.getByLabelText("Máquina"), "3000");
+  const lista = await screen.findByRole("list", { name: "Máquinas del catálogo" });
+  await user.click(within(lista).getByRole("button", { name: /A3000U/ }));
+  expect(screen.getByText(/Su familia no tiene gama/)).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText(/Gama/), "laser");
+  await user.click(screen.getByRole("button", { name: "Añadir" }));
+  expect(api().anadirMaquinaParque.mock.calls[0][1]).toEqual(expect.objectContaining({
+    codart: "A3000U", gama: "laser" }));
+});
+
+test("escribir el código exacto y añadir sin pinchar la sugerencia la vincula", async () => {
+  const user = userEvent.setup();
+  api().buscarMaquinasCatalogo.mockResolvedValue(CATALOGO);
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  await screen.findByText(/2 en servicio/);
+  await user.click(screen.getByRole("button", { name: "Añadir una máquina a mano" }));
+  await user.type(screen.getByLabelText("Máquina"), "a3000u");
+  expect(await screen.findByText(/Es el código de una del catálogo/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Añadir" }));
+  expect(api().anadirMaquinaParque.mock.calls[0][1]).toEqual(expect.objectContaining({
+    codart: "A3000U" }));
+});
+
+test("si falla la búsqueda no dice que no está en el catálogo", async () => {
+  const user = userEvent.setup();
+  api().buscarMaquinasCatalogo.mockRejectedValue(new Error("500"));
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  await screen.findByText(/2 en servicio/);
+  await user.click(screen.getByRole("button", { name: "Añadir una máquina a mano" }));
+  await user.type(screen.getByLabelText("Máquina"), "3000");
+  expect(await screen.findByText(/No se ha podido buscar en el catálogo/)).toBeInTheDocument();
+  expect(screen.queryByText(/Ninguna máquina del catálogo casa/)).not.toBeInTheDocument();
 });
 
 test("si el catálogo no la tiene, se añade escrita a mano y se avisa", async () => {

@@ -147,9 +147,11 @@ def _parque_activo(session: Session, *,
                 if del_cat is None:
                     del_cat = parque._por_codigo(parque.catalogo_maquinas(session))
                 c = del_cat.get(parque.equivalencias.clave(man.codart))
+                if c is None:
+                    continue        # su artículo ya no es una máquina: no cuenta
             out.setdefault(cli, []).append({
                 "codart": man.codart, "articulo": man.descripcion,
-                "gama": (c["gama"] if c else None) or man.gama,
+                "gama": parque.gama_de_manual(man, c),
                 "familia": c["familia"] if c else None, "fecha": man.fecha, "origen": "manual"})
     return out
 

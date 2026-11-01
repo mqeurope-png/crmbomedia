@@ -162,3 +162,39 @@ def test_el_recuento_de_la_cabecera_cuadra_con_el_script(session_factory) -> Non
         assert script == {"contactos": est["ya_cliente_contactos"],
                           "empresas": est["ya_cliente_empresas"]}
         assert ids[SIN_CONTACTOS]
+
+
+def test_la_del_catalogo_sigue_a_su_familia_y_a_la_marca(session_factory) -> None:  # noqa: F811
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        empresa = s.get(Company, ids[CON_CATALOGO])
+        parque.anadir_manual(s, empresa.id, {"codart": A3000, "fecha": "2021-03-01"}, por="bart")
+        # Bart le quita la gama a la familia: la de factura y la del catálogo
+        # se quedan las dos sin gama (no tira de una copia guardada).
+        cl.clasificar(s, "UVM", {"gama": None}, por="bart")
+        activo = pc._parque_activo(s)
+        assert [m["gama"] for m in activo[CON_FACTURA]] == [None]
+        assert [m["gama"] for m in activo[CON_CATALOGO]] == [None]
+        cl.clasificar(s, "UVM", {"gama": "uv-led"}, por="bart")
+        # Bart dice que el artículo no es una máquina: deja de contar, como la
+        # de factura; en la ficha se ve y se dice por qué.
+        hm.marcar(s, A3000, False, por="bart")
+        activo = pc._parque_activo(s)
+        assert CON_FACTURA not in activo and CON_CATALOGO not in activo
+        p = parque.parque(s, empresa)
+        assert p["activas"] == 0 and p["maquinas"][0]["no_cuenta"] is True
+
+
+def test_un_articulo_sin_nombre_se_puede_anadir(session_factory) -> None:  # noqa: F811
+    from app.erp.models.historico import HistoricoArticulo
+
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        for a in s.scalars(select(HistoricoArticulo).where(HistoricoArticulo.codart == ARTIS)):
+            a.descripcion = None
+        s.commit()
+        m = next(x for x in parque.buscar_maquinas(s, "art-3000") if x["codart"] == ARTIS)
+        assert m["descripcion"] == ARTIS
+        nueva = parque.anadir_manual(s, ids[A_MANO], {"codart": ARTIS, "descripcion": ""},
+                                     por="bart")
+        assert nueva.descripcion == ARTIS and nueva.gama is None    # la gama, la de su familia

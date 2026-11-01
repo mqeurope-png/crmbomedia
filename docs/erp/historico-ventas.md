@@ -180,8 +180,13 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
       equivalentes). Al elegir uno, la gama sale de la familia del artículo y
       la máquina queda vinculada a su código. Cuenta igual que una de factura
       en el parque, los dormidos, los huecos y las reglas de filtro (gama y
-      modelo). Si Bart cambia la gama de la familia, cambia también aquí. Se
-      ve «Añadida a mano · del catálogo».
+      modelo). Si Bart cambia la gama de la familia, o se la quita, cambia
+      también aquí (la gama no se copia). Si desmarca el artículo como
+      máquina, deja de contar, igual que una de factura. En la ficha se sigue
+      viendo, con «No cuenta: su artículo ya no es una máquina». Si la familia
+      del artículo no tiene gama, se puede elegir una al añadirla. Escribir el
+      código exacto y pulsar «Añadir» sin pinchar la sugerencia la vincula
+      igual. Se ve «Añadida a mano · del catálogo».
     - **Escrita a mano**, para lo que no está en el catálogo. Cuenta con la
       gama que se le ponga y se ve «Escrita a mano», marcada aparte.
 

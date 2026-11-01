@@ -60,6 +60,16 @@ type Nueva = {
 
 const NUEVA: Nueva = { texto: "", elegida: null, gama: "", fecha: "", nota: "" };
 
+const compacto = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** La del catálogo cuyo código (o uno equivalente) es exactamente lo escrito:
+ *  escribir «A3000U» y pulsar Añadir sin pinchar la sugerencia la vincula igual. */
+function porCodigoExacto(texto: string, encontradas: MaquinaCatalogo[] | null): MaquinaCatalogo | null {
+  const t = compacto(texto);
+  if (!t || !encontradas) return null;
+  return encontradas.find((m) => [m.codart, ...m.equivalentes].some((c) => compacto(c) === t)) ?? null;
+}
+
 /** Lo que puede ser algo que no es una máquina. */
 const NO_MAQUINA = (Object.keys(HISTORICO_CLASE_LABEL) as HistoricoClase[]).filter((c) => c !== "maquina");
 
@@ -77,21 +87,25 @@ export function CompanyParquePanel({
   const [motivo, setMotivo] = useState("");
   const [noMaquina, setNoMaquina] = useState<{ codart: string; clase: HistoricoClase } | null>(null);
   const [nueva, setNueva] = useState<Nueva | null>(null);
-  const [encontradas, setEncontradas] = useState<MaquinaCatalogo[] | null>(null);
+  // Lo que devolvió el catálogo, con el texto que se buscó: solo vale si es
+  // el que hay escrito ahora.
+  const [busqueda, setBusqueda] = useState<
+    { texto: string; items: MaquinaCatalogo[] | null; error: boolean } | null>(null);
   const textoBuscado = nueva && !nueva.elegida ? nueva.texto.trim() : "";
+  const vigente = textoBuscado.length >= 2 && busqueda?.texto === textoBuscado ? busqueda : null;
+  const encontradas = vigente?.items ?? null;
+  const errorBusqueda = Boolean(vigente?.error);
 
   // El buscador del catálogo: a partir de dos letras, un momento después de
   // dejar de escribir.
   useEffect(() => {
-    if (textoBuscado.length < 2) {
-      setEncontradas(null);
-      return;
-    }
+    if (textoBuscado.length < 2) return;
     let vivo = true;
     const t = setTimeout(() => {
       buscarMaquinasCatalogo(textoBuscado)
-        .then((r) => { if (vivo) setEncontradas(r); })
-        .catch(() => { if (vivo) setEncontradas([]); });
+        .then((r) => { if (vivo) setBusqueda({ texto: textoBuscado, items: r, error: false }); })
+        // Un fallo no es «no está en el catálogo»: se dice aparte.
+        .catch(() => { if (vivo) setBusqueda({ texto: textoBuscado, items: null, error: true }); });
     }, 250);
     return () => { vivo = false; clearTimeout(t); };
   }, [textoBuscado]);
@@ -236,6 +250,11 @@ export function CompanyParquePanel({
                       <span className="badge warn" title={m.baja.motivo ?? undefined}>
                         Dada de baja{m.baja.motivo ? `: ${m.baja.motivo}` : ""}
                       </span>
+                    ) : m.no_cuenta ? (
+                      <span className="badge warn"
+                            title="Su artículo ya no está marcado como máquina: como una de factura, no cuenta en el parque. Si es una máquina, quítala y añádela escrita a mano.">
+                        No cuenta: su artículo ya no es una máquina
+                      </span>
                     ) : <span className="badge ok">En servicio</span>}
                   </td>
                   {puedeEditar || puedeClasificar ? (
@@ -332,8 +351,11 @@ export function CompanyParquePanel({
         {puedeEditar ? (nueva ? (
           <form className="erp-historico-filtros" onSubmit={(e) => {
             e.preventDefault();
-            const datos = nueva.elegida
-              ? { codart: nueva.elegida.codart, descripcion: nueva.elegida.descripcion }
+            const elegida = nueva.elegida ?? porCodigoExacto(nueva.texto, encontradas);
+            const datos = elegida
+              // La gama, la de su familia; la elegida aquí solo si su familia no tiene.
+              ? { codart: elegida.codart, descripcion: elegida.descripcion,
+                  gama: elegida.gama ? undefined : nueva.gama || undefined }
               : { descripcion: nueva.texto.trim(), gama: nueva.gama || undefined };
             void hacer(() => anadirMaquinaParque(companyId, {
               ...datos, fecha: nueva.fecha || undefined, nota: nueva.nota.trim() || undefined,
@@ -372,16 +394,27 @@ export function CompanyParquePanel({
                     ))}
                   </ul>
                 ) : null}
-                {textoBuscado.length >= 2 && encontradas !== null ? (
+                {errorBusqueda ? (
+                  <span className="form-error" role="alert">
+                    No se ha podido buscar en el catálogo. Vuelve a probar antes de añadirla escrita a mano.
+                  </span>
+                ) : textoBuscado.length >= 2 && encontradas !== null ? (
                   <span className="form-hint">
                     {encontradas.length === 0
                       ? `Ninguna máquina del catálogo casa con «${textoBuscado}»: se añadirá escrita a mano.`
-                      : "Elige una del catálogo o, si no está, se añadirá escrita a mano tal cual."}
+                      : porCodigoExacto(nueva.texto, encontradas)
+                        ? "Es el código de una del catálogo: se añadirá vinculada a ella."
+                        : "Elige una del catálogo o, si no está, se añadirá escrita a mano tal cual."}
                   </span>
                 ) : null}
               </div>
             )}
             <label className="field"><span>Gama</span>
+              {nueva.elegida && !nueva.elegida.gama ? (
+                <span className="form-hint">
+                  Su familia no tiene gama: elígela aquí o, mejor, dásela a la familia.
+                </span>
+              ) : null}
               <select value={nueva.gama} disabled={Boolean(nueva.elegida?.gama)}
                       title={nueva.elegida?.gama ? "La de la familia del artículo" : undefined}
                       onChange={(e) => setNueva({ ...nueva, gama: e.target.value })}>

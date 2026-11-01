@@ -8295,6 +8295,8 @@ export type ParqueMaquina = {
   codart: string | null;
   /** Máquina manual: elegida del catálogo (con su artículo) o escrita a mano. */
   del_catalogo?: boolean;
+  /** Del catálogo, pero su artículo ya no está marcado como máquina: no cuenta. */
+  no_cuenta?: boolean;
   articulo: string | null;
   familia: string | null;
   gama: string | null;
