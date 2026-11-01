@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   anadirMaquinaParque,
   borrarMaquinaParque,
+  buscarMaquinasCatalogo,
   darBajaMaquina,
   deshacerBajaMaquina,
   fichaDocumentoHref,
@@ -16,6 +17,7 @@ import {
   type ComprasEmpresa,
   type HistoricoClase,
   type HistoricoGama,
+  type MaquinaCatalogo,
   type ParqueEmpresa,
   type ParqueMaquina,
 } from "../../lib/erpApi";
@@ -40,6 +42,24 @@ function claveDe(m: ParqueMaquina): string {
   return m.clave ?? `manual-${m.id}`;
 }
 
+/** De dónde sale, con la diferencia entre la del catálogo y la escrita a mano. */
+function origenDe(m: ParqueMaquina): string {
+  if (m.origen !== "manual") return ORIGEN[m.origen];
+  return m.del_catalogo ? "Añadida a mano · del catálogo" : "Escrita a mano";
+}
+
+type Nueva = {
+  /** Lo escrito: lo que se busca en el catálogo y, si no se elige nada, la máquina. */
+  texto: string;
+  /** La elegida del catálogo (entonces la gama es la de su familia). */
+  elegida: MaquinaCatalogo | null;
+  gama: string;
+  fecha: string;
+  nota: string;
+};
+
+const NUEVA: Nueva = { texto: "", elegida: null, gama: "", fecha: "", nota: "" };
+
 /** Lo que puede ser algo que no es una máquina. */
 const NO_MAQUINA = (Object.keys(HISTORICO_CLASE_LABEL) as HistoricoClase[]).filter((c) => c !== "maquina");
 
@@ -56,7 +76,25 @@ export function CompanyParquePanel({
   const [bajaDe, setBajaDe] = useState<string | null>(null);
   const [motivo, setMotivo] = useState("");
   const [noMaquina, setNoMaquina] = useState<{ codart: string; clase: HistoricoClase } | null>(null);
-  const [nueva, setNueva] = useState<{ descripcion: string; gama: string; fecha: string; nota: string } | null>(null);
+  const [nueva, setNueva] = useState<Nueva | null>(null);
+  const [encontradas, setEncontradas] = useState<MaquinaCatalogo[] | null>(null);
+  const textoBuscado = nueva && !nueva.elegida ? nueva.texto.trim() : "";
+
+  // El buscador del catálogo: a partir de dos letras, un momento después de
+  // dejar de escribir.
+  useEffect(() => {
+    if (textoBuscado.length < 2) {
+      setEncontradas(null);
+      return;
+    }
+    let vivo = true;
+    const t = setTimeout(() => {
+      buscarMaquinasCatalogo(textoBuscado)
+        .then((r) => { if (vivo) setEncontradas(r); })
+        .catch(() => { if (vivo) setEncontradas([]); });
+    }, 250);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [textoBuscado]);
 
   const leerParque = useCallback(async () => {
     try {
@@ -148,7 +186,14 @@ export function CompanyParquePanel({
                                                      m.documento.codigo)} prefetch={false}>
                         {ORIGEN[m.origen]} <span className="mono">{m.documento.numero}</span>
                       </Link>
-                    ) : <span className="badge muted">{ORIGEN[m.origen]}</span>}
+                    ) : (
+                      <span className={`badge ${m.origen === "manual" && !m.del_catalogo ? "warn" : "muted"}`}
+                            title={m.origen === "manual" && !m.del_catalogo
+                              ? "No es un artículo del catálogo: cuenta con la gama que se le puso."
+                              : undefined}>
+                        {origenDe(m)}
+                      </span>
+                    )}
                     {m.albaranes?.map((a) => (
                       <div key={`${a.ejercicio}-${a.numero}`} className="muted">
                         y su{" "}
@@ -280,25 +325,71 @@ export function CompanyParquePanel({
         )}
         <p className="form-hint">
           Sale de sus facturas y albaranes desde 2014 (las familias de clase «Máquina»). Lo vendido
-          antes, como línea de nota o en otro sitio no sale: añádelo a mano. Lo que ya no está en
-          servicio, dalo de baja.
+          antes, como línea de nota o en otro sitio no sale: añádelo a mano, buscándolo en el
+          catálogo (cuenta como una de factura) o, si no está, escrito tal cual. Lo que ya no está
+          en servicio, dalo de baja.
         </p>
         {puedeEditar ? (nueva ? (
           <form className="erp-historico-filtros" onSubmit={(e) => {
             e.preventDefault();
+            const datos = nueva.elegida
+              ? { codart: nueva.elegida.codart, descripcion: nueva.elegida.descripcion }
+              : { descripcion: nueva.texto.trim(), gama: nueva.gama || undefined };
             void hacer(() => anadirMaquinaParque(companyId, {
-              descripcion: nueva.descripcion.trim(), gama: nueva.gama || undefined,
-              fecha: nueva.fecha || undefined, nota: nueva.nota.trim() || undefined,
+              ...datos, fecha: nueva.fecha || undefined, nota: nueva.nota.trim() || undefined,
             }), "No se ha podido añadir la máquina.").then((ok) => { if (ok) setNueva(null); });
           }}>
-            <label className="field"><span>Máquina</span>
-              <input value={nueva.descripcion} maxLength={255} required
-                     onChange={(e) => setNueva({ ...nueva, descripcion: e.target.value })} />
-            </label>
+            {nueva.elegida ? (
+              <div className="field">
+                <span>Máquina</span>
+                <p role="status" aria-label="Máquina elegida" style={{ margin: 0 }}>
+                  <span className="badge ok">Del catálogo</span> {nueva.elegida.descripcion}{" "}
+                  <span className="mono muted">{nueva.elegida.codart}</span>{" "}
+                  <button type="button" className="button small secondary"
+                          onClick={() => setNueva({ ...nueva, elegida: null, gama: "" })}>
+                    Cambiar
+                  </button>
+                </p>
+              </div>
+            ) : (
+              <div className="field">
+                <label htmlFor={`maquina-${companyId}`} className="field-label">Máquina</label>
+                <input id={`maquina-${companyId}`} value={nueva.texto} maxLength={255} required
+                       placeholder="Código o nombre (p. ej. A3000U)" autoComplete="off"
+                       onChange={(e) => setNueva({ ...nueva, texto: e.target.value })} />
+                {encontradas && encontradas.length > 0 ? (
+                  <ul className="erp-maquinas-catalogo" aria-label="Máquinas del catálogo">
+                    {encontradas.map((m) => (
+                      <li key={m.codart}>
+                        <button type="button" className="button small secondary"
+                                onClick={() => setNueva({ ...nueva, elegida: m, gama: m.gama ?? "" })}>
+                          <span>
+                            {m.descripcion} <span className="mono">{m.codart}</span>
+                            {" · "}{m.gama_nombre ?? "Sin gama"}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {textoBuscado.length >= 2 && encontradas !== null ? (
+                  <span className="form-hint">
+                    {encontradas.length === 0
+                      ? `Ninguna máquina del catálogo casa con «${textoBuscado}»: se añadirá escrita a mano.`
+                      : "Elige una del catálogo o, si no está, se añadirá escrita a mano tal cual."}
+                  </span>
+                ) : null}
+              </div>
+            )}
             <label className="field"><span>Gama</span>
-              <select value={nueva.gama} onChange={(e) => setNueva({ ...nueva, gama: e.target.value })}>
+              <select value={nueva.gama} disabled={Boolean(nueva.elegida?.gama)}
+                      title={nueva.elegida?.gama ? "La de la familia del artículo" : undefined}
+                      onChange={(e) => setNueva({ ...nueva, gama: e.target.value })}>
                 <option value="">Sin gama</option>
                 {gamas.map((g) => <option key={g.codigo} value={g.codigo}>{g.nombre}</option>)}
+                {nueva.elegida?.gama && !gamas.some((g) => g.codigo === nueva.elegida?.gama) ? (
+                  <option value={nueva.elegida.gama}>{nueva.elegida.gama_nombre ?? nueva.elegida.gama}</option>
+                ) : null}
               </select>
             </label>
             <label className="field"><span>Fecha (aprox.)</span>
@@ -309,15 +400,15 @@ export function CompanyParquePanel({
                      onChange={(e) => setNueva({ ...nueva, nota: e.target.value })} />
             </label>
             <div className="erp-historico-acciones">
-              <button type="submit" className="button small" disabled={ocupado || !nueva.descripcion.trim()}>
+              <button type="submit" className="button small"
+                      disabled={ocupado || !(nueva.elegida || nueva.texto.trim())}>
                 Añadir
               </button>
               <button type="button" className="button small secondary" onClick={() => setNueva(null)}>Cancelar</button>
             </div>
           </form>
         ) : (
-          <button type="button" className="button small secondary"
-                  onClick={() => setNueva({ descripcion: "", gama: "", fecha: "", nota: "" })}>
+          <button type="button" className="button small secondary" onClick={() => setNueva({ ...NUEVA })}>
             Añadir una máquina a mano
           </button>
         )) : null}

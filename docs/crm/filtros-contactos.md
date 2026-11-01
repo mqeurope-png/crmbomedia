@@ -190,6 +190,11 @@ el recálculo no se la vuelve a poner; si alguien se la vuelve a añadir a mano,
 el apunte se borra y vuelve al régimen normal. Encima del panel se ve cuántos
 contactos tienen ese apunte.
 
+La cabecera dice «YA CLIENTE N contactos (M empresas)»: los contactos que llevan
+la etiqueta ahora y las empresas de esos contactos (1/11/2026). Es la misma
+cuenta que la del script del despegue. Una empresa que ha comprado pero no tiene
+ningún contacto no entra, porque nadie suyo lleva la etiqueta.
+
 ---
 
 ## Un contacto por empresa (1/11/2026)

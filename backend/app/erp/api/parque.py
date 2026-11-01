@@ -103,8 +103,20 @@ def compras_empresa(
             "en_curso": en_curso, "ejercicios": ejercicios, "documentos": docs}
 
 
+@router.get("/catalogo-maquinas")
+def catalogo_maquinas(
+    q: str = Query("", max_length=80),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """1/11/2026: las máquinas del catálogo que casan con `q` (código o
+    nombre), para «Añadir una máquina» sin escribirla a mano."""
+    return {"items": svc.buscar_maquinas(session, q)}
+
+
 class MaquinaIn(BaseModel):
-    descripcion: str = Field(min_length=1, max_length=255)
+    #: Con `codart` (del catálogo) se puede dejar vacía: va la del artículo.
+    descripcion: str = Field(default="", max_length=255)
     codart: str | None = Field(default=None, max_length=64)
     gama: str | None = Field(default=None, max_length=32)
     fecha: date | None = None
@@ -124,7 +136,9 @@ def anadir_maquina(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
             "code": f"{exc}_no_valida",
-            "detail": "Esa gama no existe." if str(exc) == "gama" else "Falta la descripción.",
+            "detail": {"gama": "Esa gama no existe.",
+                       "codart": "Ese artículo no es una máquina del catálogo."}.get(
+                           str(exc), "Falta la descripción."),
         }) from exc
     return {"id": m.id}
 

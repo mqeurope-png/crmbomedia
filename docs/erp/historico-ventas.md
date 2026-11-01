@@ -174,7 +174,19 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
   - **Abonos:** una línea en negativo anula la venta más reciente de ese
     artículo.
   - **A mano** (`parque_maquinas_manuales`): lo vendido antes de 2014, como
-    línea de nota o en otro sitio. Se ven marcadas «Añadida a mano».
+    línea de nota o en otro sitio. Dos formas (1/11/2026):
+    - **Del catálogo.** El campo «Máquina» busca, por código o por nombre, entre
+      los artículos marcados como máquina (uno por modelo, con sus códigos
+      equivalentes). Al elegir uno, la gama sale de la familia del artículo y
+      la máquina queda vinculada a su código. Cuenta igual que una de factura
+      en el parque, los dormidos, los huecos y las reglas de filtro (gama y
+      modelo). Si Bart cambia la gama de la familia, cambia también aquí. Se
+      ve «Añadida a mano · del catálogo».
+    - **Escrita a mano**, para lo que no está en el catálogo. Cuenta con la
+      gama que se le ponga y se ve «Escrita a mano», marcada aparte.
+
+    Como todo el parque, solo cuenta en los dormidos, los huecos y las reglas
+    si la empresa tiene cliente de FACTUSOL vinculado.
   - **Bajas:** una máquina que ya no está en servicio deja de contar en el
     parque activo (lo que usarán dormidos y huecos). Las volcadas se guardan
     en `parque_bajas` por una clave estable a las recargas

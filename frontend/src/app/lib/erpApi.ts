@@ -8293,6 +8293,8 @@ export type ParqueMaquina = {
   /** Máquina manual: su id. */
   id: string | null;
   codart: string | null;
+  /** Máquina manual: elegida del catálogo (con su artículo) o escrita a mano. */
+  del_catalogo?: boolean;
   articulo: string | null;
   familia: string | null;
   gama: string | null;
@@ -8359,9 +8361,29 @@ export async function getComprasEmpresa(
     qs({ ejercicio })}`);
 }
 
+/** Una máquina del catálogo (1/11/2026): los artículos marcados como
+ *  máquina, uno por modelo, con la gama de su familia. */
+export type MaquinaCatalogo = {
+  codart: string;
+  descripcion: string;
+  familia: string | null;
+  gama: string | null;
+  gama_nombre: string | null;
+  /** Otros códigos del mismo modelo (el de FACTUSOL y el de la web). */
+  equivalentes: string[];
+};
+
+export async function buscarMaquinasCatalogo(q: string): Promise<MaquinaCatalogo[]> {
+  const r = await apiFetch<{ items: MaquinaCatalogo[] }>(
+    `/api/erp/parque/catalogo-maquinas?q=${encodeURIComponent(q)}`);
+  return r.items;
+}
+
+/** Con `codart` (una máquina del catálogo), la gama y la descripción salen del
+ *  artículo; sin él, es una máquina escrita a mano. */
 export async function anadirMaquinaParque(
   companyId: string,
-  datos: { descripcion: string; codart?: string; gama?: string; fecha?: string; nota?: string },
+  datos: { descripcion?: string; codart?: string; gama?: string; fecha?: string; nota?: string },
 ): Promise<{ id: string }> {
   return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/maquinas`, {
     method: "POST", body: JSON.stringify(datos),

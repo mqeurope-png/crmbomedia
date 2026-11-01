@@ -133,15 +133,24 @@ def _parque_activo(session: Session, *,
                 "fecha": _fecha(m), "origen": m["origen"]})
     from app.models.crm import Company  # noqa: PLC0415
 
+    del_cat: dict[str, dict[str, Any]] | None = None
     for man, codcli in session.execute(
             select(ParqueMaquinaManual, Company.factusol_company_id)
             .join(Company, Company.id == ParqueMaquinaManual.company_id)
             .where(ParqueMaquinaManual.baja_at.is_(None))):
         cli = parque.clave_cliente(codcli)
         if cli:
+            # La del catálogo cuenta con la gama y la familia de su artículo,
+            # como una de factura; la escrita a mano, con la que se le puso.
+            c = None
+            if man.codart:
+                if del_cat is None:
+                    del_cat = parque._por_codigo(parque.catalogo_maquinas(session))
+                c = del_cat.get(parque.equivalencias.clave(man.codart))
             out.setdefault(cli, []).append({
-                "codart": man.codart, "articulo": man.descripcion, "gama": man.gama,
-                "familia": None, "fecha": man.fecha, "origen": "manual"})
+                "codart": man.codart, "articulo": man.descripcion,
+                "gama": (c["gama"] if c else None) or man.gama,
+                "familia": c["familia"] if c else None, "fecha": man.fecha, "origen": "manual"})
     return out
 
 

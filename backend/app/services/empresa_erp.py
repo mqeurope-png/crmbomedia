@@ -244,6 +244,25 @@ def _tag(session: Session, nombre: str) -> Any:
     return tag
 
 
+def recuento_ya_cliente(session: Session) -> dict[str, int]:
+    """Los contactos con la etiqueta YA CLIENTE AHORA y las empresas de esos
+    contactos (1/11/2026). Es la cifra de la cabecera de Contactos y la del
+    script del despegue: antes la cabecera daba las empresas que cumplen,
+    tengan o no contactos, y no cuadraba."""
+    from app.models.crm import Contact, ContactTag, Tag  # noqa: PLC0415
+
+    tag_id = session.scalar(select(Tag.id).where(
+        Tag.name_normalized == YA_CLIENTE.strip().lower()))
+    if tag_id is None:
+        return {"contactos": 0, "empresas": 0}
+    contactos = session.scalar(select(func.count()).select_from(ContactTag).where(
+        ContactTag.tag_id == tag_id)) or 0
+    empresas = session.scalar(select(func.count(func.distinct(Contact.company_id))).select_from(
+        ContactTag).join(Contact, Contact.id == ContactTag.contact_id).where(
+        ContactTag.tag_id == tag_id, Contact.company_id.is_not(None))) or 0
+    return {"contactos": int(contactos), "empresas": int(empresas)}
+
+
 def _mantener_etiqueta(session: Session, nombre: str, deseados: Iterable[str]) -> dict[str, int]:
     """Pone y quita una etiqueta automática sin pisar lo hecho a mano:
 
@@ -371,7 +390,7 @@ def recalcular(session: Session, *, hoy: date | None = None) -> dict[str, Any]:
         est.ok_at, est.fallo_at, est.fallo = _ahora(), None, None
         est.duracion_ms = int((time.perf_counter() - t0) * 1000)
         est.empresas = len(datos["empresas"])
-        est.ya_cliente_empresas = len(ya)
+        est.ya_cliente_empresas = recuento_ya_cliente(session)["empresas"]
         est.ya_cliente_contactos = e_ya["con_etiqueta"]
         est.origen_woo_contactos = e_woo["con_etiqueta"]
         est.quitadas_a_mano = e_ya["quitadas_a_mano"] + e_woo["quitadas_a_mano"]
@@ -402,9 +421,12 @@ def estado(session: Session) -> dict[str, Any]:
 
     if est is None:
         return {"ok_at": None, "fallo_at": None, "fallo": None, "calculado": False}
+    # La etiqueta, como está AHORA (también lo quitado o puesto a mano desde el
+    # último recálculo): contactos con ella y las empresas de esos contactos.
+    ya = recuento_ya_cliente(session)
     return {"calculado": est.ok_at is not None, "ok_at": iso(est.ok_at),
             "fallo_at": iso(est.fallo_at), "fallo": est.fallo, "duracion_ms": est.duracion_ms,
-            "empresas": est.empresas, "ya_cliente_empresas": est.ya_cliente_empresas,
-            "ya_cliente_contactos": est.ya_cliente_contactos,
+            "empresas": est.empresas, "ya_cliente_empresas": ya["empresas"],
+            "ya_cliente_contactos": ya["contactos"],
             "origen_woo_contactos": est.origen_woo_contactos,
             "quitadas_a_mano": est.quitadas_a_mano}
