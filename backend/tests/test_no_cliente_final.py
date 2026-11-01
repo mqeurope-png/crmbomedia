@@ -82,3 +82,34 @@ def test_los_contactos_sin_empresa_siguen_en_las_campanas(session_factory) -> No
         s.commit()
         assert suelto.id in set(s.scalars(select(Contact.id).where(
             un_por_empresa.sin_no_clientes_finales())))
+
+
+def test_codigo_compartido_solo_sale_si_todas_sus_fichas_estan_marcadas(session_factory) -> None:  # noqa: F811,E501
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        marcada = s.get(Company, ids[CON_FACTURA])
+        marcada.no_cliente_final = True
+        otra = Company(name="Otra ficha figurante", factusol_company_id=CON_FACTURA)
+        s.add(otra)
+        s.commit()
+        # La otra ficha activa con el mismo código no lo dice: el parque cuenta.
+        assert CON_FACTURA not in pc.clientes_no_finales(s)
+        otra.is_archived = True          # una absorbida archivada no cuenta
+        s.commit()
+        assert CON_FACTURA in pc.clientes_no_finales(s)
+
+
+def test_un_segmento_estatico_tampoco_los_manda_a_brevo(session_factory) -> None:  # noqa: F811
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        cid = ids[CON_FACTURA]
+        contacto = s.scalar(select(Contact).where(Contact.company_id == cid))
+        seg = Segment(name="Estático", owner_user_id="u", is_dynamic=False,
+                      static_contact_ids=json.dumps([contacto.id]))
+        s.add(seg)
+        s.flush()
+        target = BrevoSyncTarget(segment_id=seg.id, name="figurante", brevo_list_id="1")
+        assert [c.id for c in resolve_target_contacts(s, target)] == [contacto.id]
+        s.get(Company, cid).no_cliente_final = True
+        s.flush()
+        assert resolve_target_contacts(s, target) == []

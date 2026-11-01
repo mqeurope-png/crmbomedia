@@ -37,8 +37,10 @@ HOY = date(2026, 11, 1)
 COMPRA, OTRO, SIN_NADA = "4901", "4902", "4904"
 # Clientes «como él» (compran su mismo filtro) y otros que compran el filtro Pro.
 OTRO2, OTRO3, PRO1, PRO2 = "4905", "4906", "4907", "4908"
+PROS = ("4911", "4912", "4913", "4914")        # más clientes de la gama que compran el Pro
 LASER, FILTRO, FILTRO_NUEVO, FILTRO_VIEJO, PIEZA, UV, TINTA, CAJON, FILTRO_PRO = (
     "LAS100", "FIL200", "FIL300", "FIL400", "PZA500", "UVM600", "TIN700", "CAJ800", "FIL900")
+LENTE = "LEN950"   # un consumible que compra todo el mundo
 CAT = [_art(LASER, "LASER FIGURANTE 40W", "021"),
        _art(FILTRO, "Filtro figurante A", "251"),
        _art(FILTRO_NUEVO, "Filtro figurante B", "251"),
@@ -47,7 +49,8 @@ CAT = [_art(LASER, "LASER FIGURANTE 40W", "021"),
        _art(UV, "IMPRESORA UV FIGURANTE", "UVM"),
        _art(TINTA, "Tinta UV figurante", "UV"),
        _art(CAJON, "Consumible figurante sin gama", "SIN"),
-       _art(FILTRO_PRO, "Filtro figurante Pro", "251")]
+       _art(FILTRO_PRO, "Filtro figurante Pro", "251"),
+       _art(LENTE, "Lente figurante común", "251")]
 FAM = [{"CODFAM": c, "DESFAM": d} for c, d in (
     ("021", "FLUX"), ("251", "Filtros"), ("211", "Recambios láser"), ("UVM", "Impresoras UV"),
     ("UV", "Consumible UV"), ("SIN", "Cajón de sastre"))]
@@ -66,6 +69,7 @@ def _datos() -> dict[str, dict[str, Any]]:
     return {
         "2019": _anio([(190001, OTRO, "2019-05-01", FILTRO_VIEJO, 50)]),
         "2021": _anio([(210001, COMPRA, "2021-01-15", LASER, 4000),
+                       (210005, COMPRA, "2021-03-01", LENTE, 20),
                        (210002, COMPRA, "2021-03-01", FILTRO, 100),
                        (210003, COMPRA, "2021-07-01", FILTRO, 100),
                        (210004, COMPRA, "2021-11-01", FILTRO, 100)]),
@@ -80,7 +84,12 @@ def _datos() -> dict[str, dict[str, Any]]:
                        (260006, OTRO2, "2026-05-01", FILTRO_NUEVO, 90),
                        (260007, OTRO3, "2026-04-01", FILTRO, 100),
                        *[(260100 + i, PRO1 if i % 2 else PRO2, f"2026-0{3 + i}-01", FILTRO_PRO, 120)
-                         for i in range(6)]]),
+                         for i in range(6)],
+                       *[(260200 + i, cli, "2026-07-01", FILTRO_PRO, 120)
+                         for i, cli in enumerate(PROS)],
+                       # La lente común: la compran él y casi todos los demás.
+                       *[(260300 + i, cli, "2026-08-01", LENTE, 20) for i, cli in enumerate(
+                           (OTRO, OTRO2, PRO1, PRO2, *PROS))]]),
     }
 
 
@@ -102,7 +111,8 @@ def _preparar(session_factory) -> dict[str, str]:  # noqa: F811
         ids = {}
         for nombre, cli in (("compra", COMPRA), ("sin_nada", SIN_NADA), ("sin_cliente", None),
                             ("otro", OTRO), ("otro2", OTRO2), ("otro3", OTRO3),
-                            ("pro1", PRO1), ("pro2", PRO2)):
+                            ("pro1", PRO1), ("pro2", PRO2),
+                            *((f"pro_{c}", c) for c in PROS)):
             e = Company(name=f"Cliente Figurante {nombre}", factusol_company_id=cli)
             s.add(e)
             s.flush()
@@ -178,6 +188,8 @@ def test_lo_que_no_compra_va_por_encaje_no_por_lo_mas_vendido(session_factory) -
         textos = [x.texto for x in h.hechos if x.bloque == hx.NO_COMPRA]
         assert "Ha dejado de comprar" in textos[0] and "[P1]" in textos[0]
         assert "lo compran 2 de los 3 clientes que compran sus mismos consumibles" in textos[1]
+        # Ni el Pro, aunque él y los del Pro compren la misma lente común: esa
+        # lente la compra casi toda la gama y no dice qué filtro usa.
         assert all(FILTRO_PRO not in t for t in textos)
 
 
@@ -433,3 +445,20 @@ def test_el_lote_sigue_si_una_empresa_falla(session_factory, monkeypatch) -> Non
     monkeypatch.setattr(servicio, "generar", falla)
     r = servicio.generar_lote([ids["compra"], ids["sin_nada"], "no-existe"], por="test")
     assert r == {"generados": 0, "al_dia": 0, "sin_datos": 1, "fallidos": 1}
+
+
+def test_dejo_de_comprar_resuelve_el_alias(session_factory) -> None:  # noqa: F811
+    from app.erp import historico_alias
+
+    ids = _preparar(session_factory)
+    datos = _datos()
+    # Compró el filtro A hace un mes, con otro código de línea (alias del A).
+    datos["2026"]["F_FAC"].append(_fac(260900, COMPRA, "Cliente Figurante", "2026-10-01T00:00:00"))
+    datos["2026"]["F_LFA"].append(_lfa(260900, 1, "0FIL200", "0FIL200", 1, 100))
+    with session_factory() as s:
+        historico.cargar(s, FactusolFalso(datos), ["2026"], en_curso="2026")
+        historico_alias.declarar_articulo(s, "0FIL200", FILTRO, por="bart")
+        s.commit()
+        h = _hechos(s, ids["compra"])
+        assert not any("Ha dejado de comprar" in x.texto and FILTRO in x.texto
+                       for x in h.hechos)

@@ -72,9 +72,13 @@ def resolve_target_contacts(
     if segment is None:
         raise ValueError(f"Segment {target.segment_id!r} no longer exists")
     if not segment.is_dynamic:
+        from app.services.segments import un_por_empresa  # noqa: PLC0415
+
         ids = segments_repository.decode_static_ids(segment)
+        # 1/11/2026: tampoco los de empresas que no son cliente final.
         rows = (
-            list(session.scalars(select(Contact).where(Contact.id.in_(ids))))
+            list(session.scalars(select(Contact).where(
+                Contact.id.in_(ids), un_por_empresa.sin_no_clientes_finales())))
             if ids
             else []
         )
