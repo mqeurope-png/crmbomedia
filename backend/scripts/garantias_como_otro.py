@@ -61,10 +61,10 @@ CLASE = "otro"
 REGISTRO = "garantias_como_otro"
 #: Lo que dice «garantía» en la descripción (sin tildes ni mayúsculas): «Gar.»,
 #: «GAR», «Garant.», «Gtía.», «garantía», «garantie» (no «garantiert»),
-#: «garanzia», «warranty», «guarantee». No «garantizado»: un filtro «de calidad
-#: garantizada» sigue siendo un filtro.
+#: «garanzia», «warranty», «guarantee». No «garantizado» ni «guaranteed»: un
+#: filtro «de calidad garantizada» sigue siendo un filtro.
 PATRON = re.compile(r"\b(?:gar|garant|gtia)\b|\bgarantia|\bgarantie(?!rt)|\bgaranzia"
-                    r"|\bwarranty|\bguarantee")
+                    r"|\bwarranty|\bguarantee(?!d)")
 #: …salvo si va negada o es lo que cubre: «sin garantía», «fuera de garantía»,
 #: «cabezal en garantía», «bajo garantía», «kit con garantía».
 NEGADO = re.compile(r"\b(?:sin|fuera de|en|bajo|con)\s+$")
@@ -72,7 +72,9 @@ CONSUMIBLE_O_RECAMBIO = ("consumible", "recambio")
 
 
 def _normal(t: str | None) -> str:
-    return unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    """Sin tildes ni mayúsculas, y con los espacios juntos («fuera  de»)."""
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(t.split())
 
 
 def palabra_de_garantia(descripcion: str | None) -> str | None:
@@ -96,20 +98,32 @@ def _registro(session: Session) -> dict[str, list[str]]:
             for k in ("puestos", "excluidos")}
 
 
-def _guardar_registro(session: Session, reg: dict[str, list[str]]) -> None:
-    """Junto al resto de ajustes del blob, sin tocarlos. Si el blob no se puede
-    leer, no se escribe (se perderían los demás ajustes): error."""
+def _guardar_registro(session: Session, *, puestos: Any = (), excluidos: Any = (),
+                      quitar: Any = ()) -> None:
+    """Añade (o quita) al apunte, junto al resto de ajustes del blob, sin
+    tocarlos. Se llama justo antes del commit y lee el blob de nuevo, con
+    cerrojo: si alguien ha guardado Ajustes ERP mientras el script medía (son
+    minutos), no se pisa lo suyo. Si el blob no se puede leer, no se escribe
+    (se perderían los demás ajustes): error."""
     from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings
 
-    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID, with_for_update=True,
+                      populate_existing=True)
     if cfg is None:
         cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
         session.add(cfg)
     datos = json.loads(cfg.factusol_series_json) if cfg.factusol_series_json else {}
     if not isinstance(datos, dict):
         raise ValueError("los ajustes del ERP no se pueden leer")
-    datos[REGISTRO] = {"puestos": sorted(set(reg["puestos"])),
-                       "excluidos": sorted(set(reg["excluidos"]))}
+    actual = datos.get(REGISTRO) if isinstance(datos.get(REGISTRO), dict) else {}
+
+    def _de(k: str) -> set[str]:
+        return {_clave(c) for c in actual.get(k) or [] if isinstance(c, str)}
+
+    quitar = {_clave(c) for c in quitar}
+    datos[REGISTRO] = {
+        "puestos": sorted((_de("puestos") | {_clave(c) for c in puestos}) - quitar),
+        "excluidos": sorted(_de("excluidos") | {_clave(c) for c in excluidos})}
     cfg.factusol_series_json = json.dumps(datos)
     session.flush()
 
@@ -338,10 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             mias = HistoricoArticuloClase.por == POR, HistoricoArticuloClase.clase == CLASE
             codigos = list(s.scalars(select(HistoricoArticuloClase.codart).where(*mias)))
             s.execute(delete(HistoricoArticuloClase).where(*mias))
-            reg = _registro(s)
-            quitar = {_clave(c) for c in codigos}
-            _guardar_registro(s, {"puestos": [c for c in reg["puestos"] if c not in quitar],
-                                  "excluidos": reg["excluidos"]})
+            _guardar_registro(s, quitar=codigos)
             s.commit()
             print(f"Revertido: {len(codigos)} artículos vuelven a la clase de su familia.")
             return _recalcular(s) if codigos else 0
@@ -372,6 +383,10 @@ def main(argv: list[str] | None = None) -> int:
         _listar("Dejadas fuera (--excluir, de ahora o de antes)", c["fuera"])
         _listar("Dudosas: la descripción dice garantía unos años y otros no (el código se "
                 "reutilizó). No se tocan: decide a mano", c["dudosos"])
+        suyas = {_clave(t["codart"]) for t in c["ya_script"]} & {_clave(x) for x in args.excluir}
+        if suyas:
+            print(f"\nOjo: --excluir no quita la «Otro» que ya puso este script a "
+                  f"{', '.join(sorted(suyas))}: para eso, --revertir o a mano en Familias.")
         if c["excluir_desconocidos"]:
             print(f"\nOjo: --excluir con códigos que no están en ninguna lista (se ignoran): "
                   f"{', '.join(c['excluir_desconocidos'])}")
@@ -384,10 +399,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\nNo se ha escrito nada. Para hacerlo: --apply --yes"
                   + (f" --excluir {' '.join(args.excluir)}" if args.excluir else ""))
             return 0
-        reg = _registro(s)
-        nuevos_fuera = {_clave(t["codart"]) for t in c["fuera"]}
-        _guardar_registro(s, {"puestos": reg["puestos"] + [_clave(t["codart"]) for t in tocar],
-                              "excluidos": reg["excluidos"] + sorted(nuevos_fuera)})
+        # Todo lo excluido que está en alguna lista, se recuerda (también lo que
+        # hoy no se toca por otro motivo: si mañana cambia, sigue fuera).
+        desconocidos = {_clave(x) for x in c["excluir_desconocidos"]}
+        _guardar_registro(s, puestos=[t["codart"] for t in tocar],
+                          excluidos=[x for x in args.excluir if _clave(x) not in desconocidos])
         s.commit()
         print(f"\nHecho: {len(tocar)} artículos con clase propia «Otro» (firmados «{POR}»).")
         r = _recalcular(s) if tocar else 0

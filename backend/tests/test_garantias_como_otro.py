@@ -107,7 +107,8 @@ def test_que_es_una_garantia() -> None:
         assert g(si), si
     for no in ("Tubo (sin garantía)", "Reparación fuera de garantía", "Cabezal en garantía",
                "Kit filtros con garantía 6 meses", "Qualität garantiert",
-               "Filtro de calidad garantizada", "Garaje figurante", "Filtro figurante"):
+               "Filtro de calidad garantizada", "Lens quality guaranteed",
+               "Reparación fuera  de garantía", "Garaje figurante", "Filtro figurante"):
         assert g(no) is None, no
 
 
@@ -141,13 +142,16 @@ def test_probar_mide_lo_de_la_ficha_y_no_escribe(script, session_factory, capsys
 
 def test_apply_recuerda_y_no_pisa_lo_deshecho_a_mano(script, session_factory, capsys) -> None:  # noqa: F811,E501
     assert script.main(["--apply"]) == 2                                       # sin --yes, no
-    assert script.main(["--apply", "--yes", "--excluir", CAMBIA_FAMILIA]) == 0
+    # Lo excluido se recuerda aunque hoy no se tocara por otro motivo (el
+    # equivalente de la máquina): si mañana Bart quita la equivalencia, sigue fuera.
+    assert script.main(["--apply", "--yes", "--excluir", CAMBIA_FAMILIA, EQUIVALENTE]) == 0
     with session_factory() as s:
         p = s.get(HistoricoArticuloClase, GARANTIA)
         assert (p.clase, p.por) == ("otro", script.POR)
         assert s.get(HistoricoArticuloClase, GARANTIA_BART).clase == "recambio"
         assert s.get(HistoricoFamilia, "251").clase == "consumible"            # la familia, igual
-        assert script._registro(s) == {"puestos": [GARANTIA], "excluidos": [CAMBIA_FAMILIA]}
+        assert script._registro(s) == {"puestos": [GARANTIA],
+                                       "excluidos": [CAMBIA_FAMILIA, EQUIVALENTE]}
     assert _clase(session_factory, CAMBIA_FAMILIA) is None
     assert _clase(session_factory, REUSADO) is None                             # dudosa
     assert _clase(session_factory, EQUIVALENTE) is None                         # máquina
