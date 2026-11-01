@@ -234,6 +234,30 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
   y compradores la usan también.
 - Fuera de alcance: el modelo concreto (A2100, Beamo…).
 
+### Las garantías no son consumible (1/11/2026)
+
+Hay familias clasificadas como Consumible que mezclan filtros y garantías; la 251
+(«Consumible · Láser») es un ejemplo. Las garantías se venden con cada máquina
+(«Flux Gar. Las · 1 año de garantía limitada»). Contadas como consumible,
+inventan un ritmo de compra («cada 1 mes») y falsean los dormidos y los huecos.
+
+`scripts/garantias_como_otro.py` les da **clase propia «Otro»** con el mecanismo
+de siempre (`historico_articulos_clase`):
+- **Cuáles:** los artículos cuya descripción dice «Gar.», «garantía»,
+  «warranty» o «garantie» y que hoy cuentan como consumible o recambio por su
+  familia.
+- **Lo que no toca:** la familia, y un artículo que ya tenga clase propia,
+  porque eso lo decidió alguien.
+- **Antes de escribir** (`--probar`), dice cuántos son, cuántas líneas vendidas
+  llevan, cuánto se mueve el ritmo de compra de los clientes de la gama (láser
+  por defecto) y los dormidos y huecos, antes y después.
+- **Si la lista trae algo que no es una garantía:** `--excluir CODART …` lo deja
+  como está.
+- **Para aplicarlo:** `--apply --yes`, que después recalcula el resumen por
+  empresa.
+- **Para deshacerlo:** `--revertir --yes`. Quita solo lo que puso el script y
+  nadie ha cambiado después.
+
 ## API (`/api/erp/historico`)
 
 | Ruta | Permiso |
