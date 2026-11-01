@@ -134,6 +134,29 @@ guarda en el contacto (y «Centro público» la declaran cientos de centros).
   lista o ninguno, y no tienen pedidos, ofertas, tareas ni máquinas a mano.
 - Una empresa con cliente de FACTUSOL no se archiva nunca. Conserva su vínculo,
   su parque y su histórico; solo pierde los contactos que no eran suyos.
+- **El dominio de la empresa** (1/11/2026): si es de la lista (por ejemplo,
+  «Dominio: outlook.fr» en la ficha de un cliente), se quita. Es el dato que
+  pegó los contactos; dejarlo es dejar la trampa puesta para quien mire la
+  ficha o para una importación futura. Queda un apunte con el dominio que
+  tenía, y se deshace con el lote. Un dominio propio no se toca.
+
+**Los lotes anteriores al 1/11/2026** despegaron los contactos pero dejaron el
+dominio en la empresa. Se limpia con un script supervisado:
+
+```
+... python -m scripts.limpiar_dominio_empresas_despegadas --probar
+... python -m scripts.limpiar_dominio_empresas_despegadas --apply --yes
+```
+
+Por defecto, mira los lotes que no se han deshecho, ni a medias, y no toca una
+empresa a la que alguien ya le devolvió el dominio deshaciendo un lote;
+`--lote X` se puede repetir. Cada empresa lleva el apunte en el lote que trató
+su dominio (si ninguno, en el primero en el que salió): deshacer ese lote le
+devuelve el dominio.
+
+**El formulario de la ficha** no deja poner un dominio de la lista, ni al crear
+una empresa ni al cambiarlo (también los subdominios, como `alumnes.xtec.cat`).
+Una ficha que todavía tenga uno se puede seguir editando sin tocarlo.
 
 **Un cliente de FACTUSOL que se queda sin contactos** (el único que tenía era,
 por ejemplo, un `@xtec.cat` que no coincidía con F_CLI) no se revierte: ese
@@ -141,12 +164,14 @@ vínculo venía del dominio. Pero su ficha lo avisa («no hay a quién escribir�
 con cuántos contactos y de qué dominio se le quitaron), y el `--apply` dice
 cuántos hay.
 
-**Revertir:** cada contacto vuelve a su empresa anterior y cada empresa archivada
-se desarchiva. No se toca, y se cuenta:
+**Revertir:** cada contacto vuelve a su empresa anterior, cada empresa archivada
+se desarchiva y cada dominio quitado vuelve a su empresa. No se toca, y se
+cuenta:
 
 - un contacto al que le han puesto ya otra empresa, o cuya empresa anterior ya
   no existe;
-- una empresa que alguien ha vuelto a archivar por otro motivo.
+- una empresa que alguien ha vuelto a archivar por otro motivo;
+- un dominio, si la empresa ya tiene otro o lo tiene otra empresa.
 
 **Después del `--apply`** el script:
 

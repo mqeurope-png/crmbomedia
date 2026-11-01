@@ -174,8 +174,10 @@ def test_despegar_y_revertir(session_factory) -> None:  # noqa: F811
         s.get(Contact, ids["docentes"][0]).company_id = esc["propia"]
         s.commit()
         r = dd.revertir(s, lote, por="test")
+        # Y los dominios de la lista que se quitaron de sus empresas vuelven.
         assert r == {"contactos": 10, "empresas": 1, "con_otra_empresa": 1,
-                     "sin_empresa_anterior": 0}
+                     "sin_empresa_anterior": 0, "dominios": 3, "dominio_no_devuelto": 0,
+                     "dominio_empresa_borrada": 0}
     with session_factory() as s:
         for cid in ids["docentes"][1:]:
             assert s.get(Contact, cid).company_id == esc["cliente"]
