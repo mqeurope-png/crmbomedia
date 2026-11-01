@@ -234,6 +234,48 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
   y compradores la usan también.
 - Fuera de alcance: el modelo concreto (A2100, Beamo…).
 
+### Las garantías no son consumible (1/11/2026)
+
+Hay familias clasificadas como Consumible que mezclan filtros y garantías; la 251
+(«Consumible · Láser») es un ejemplo. Las garantías se venden con cada máquina
+(«Flux Gar. Las · 1 año de garantía limitada»). Contadas como consumible,
+inventan un ritmo de compra («cada 1 mes») y falsean los dormidos y los huecos.
+
+`scripts/garantias_como_otro.py` les da **clase propia «Otro»** con el mecanismo
+de siempre (`historico_articulos_clase`):
+- **Cuáles:** los artículos que cumplen las dos condiciones:
+  - la descripción dice «Gar.», «GAR», «Garant.», «Gtía.», «garantía»,
+    «garantie», «garanzia», «warranty» o «guarantee»;
+  - cuentan como consumible o recambio por su familia en algún año.
+
+  No cuentan las negadas o lo que cubre la garantía («sin garantía», «fuera de
+  garantía», «cabezal en garantía», «bajo garantía», «kit con garantía»), ni
+  «garantizado» o «garantiert».
+- **Lo que no toca** (lo lista aparte, con el motivo):
+  - la familia;
+  - un artículo con clase propia, porque eso lo decidió alguien. Los marcados
+    «no es una máquina» siguen contando como su familia: si son garantías, se
+    les pone «Otro» a mano en Familias;
+  - el equivalente de una máquina marcada, que cuenta como máquina;
+  - un código cuya descripción dice garantía unos años y otros no, porque se
+    reutilizó. Sale como dudoso;
+  - lo que puso una pasada anterior y alguien quitó después: no lo vuelve a
+    poner.
+- **Antes de escribir** (`--probar`), dice:
+  - cuántos son y cuántas líneas de factura llevan;
+  - cuánto se mueve el ritmo de compra de los clientes de la gama, antes y
+    después. Es el mismo cálculo que la ficha (`hechos.cada_meses`) y la gama
+    es láser por defecto (`--gama`, por código o nombre);
+  - los dormidos y los huecos de cada gama que cambie.
+- **Si la lista trae algo que no es una garantía:** `--excluir CODART …` lo deja
+  como está. Con `--apply` se recuerda para las próximas pasadas.
+- **Para aplicarlo:** `--apply --yes`. Programa el recálculo del resumen por
+  empresa en la cola, como un cambio en Familias; sin cola, lo hace allí mismo.
+- **Qué recuerda:** lo que puso y lo que se dejó fuera, en el blob de
+  `ErpSettings`, clave `garantias_como_otro`.
+- **Para deshacerlo:** `--revertir --yes`. Quita solo lo que puso el script y
+  nadie ha cambiado después.
+
 ## API (`/api/erp/historico`)
 
 | Ruta | Permiso |
