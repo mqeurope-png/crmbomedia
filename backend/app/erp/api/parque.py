@@ -195,3 +195,56 @@ def deshacer_baja(
     except LookupError as exc:
         raise _no_es_suya(exc) from exc
     return svc.parque(session, company)
+
+
+class MismaVentaIn(BaseModel):
+    """El aviso «¿misma venta?»: el albarán (`clave`) y la factura (`factura`),
+    las dos por clave de línea, como los da la ficha."""
+
+    clave: str = Field(max_length=160)
+    factura: str = Field(max_length=160)
+    #: Solo en la respuesta: true «Sí, es la misma venta», false «No, son dos compras».
+    es_misma: bool | None = None
+
+
+def _aviso_no_esta(exc: LookupError) -> HTTPException:
+    return HTTPException(status.HTTP_404_NOT_FOUND, {
+        "code": "aviso_no_existe",
+        "detail": "Ese aviso ya no está (quizá ya se contestó): vuelve a cargar la ficha."})
+
+
+@router.post("/empresas/{company_id}/misma-venta")
+def contestar_misma_venta(
+    company_id: str,
+    body: MismaVentaIn,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Sí: sale del parque como duplicado (no como retirada). No: el aviso no
+    vuelve a salir para ese par."""
+    if body.es_misma is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "falta_respuesta", "detail": "Falta la respuesta (sí o no)."})
+    company = _empresa(session, company_id)
+    try:
+        svc.contestar_misma_venta(session, company, clave=body.clave, factura=body.factura,
+                                  es_misma=body.es_misma, por=_por(user))
+    except LookupError as exc:
+        raise _aviso_no_esta(exc) from exc
+    return svc.parque(session, company)
+
+
+@router.post("/empresas/{company_id}/misma-venta/deshacer")
+def deshacer_dos_compras(
+    company_id: str,
+    body: MismaVentaIn,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Deshace un «No, son dos compras»: el aviso vuelve a salir."""
+    company = _empresa(session, company_id)
+    try:
+        svc.deshacer_dos_compras(session, company, clave=body.clave, factura=body.factura)
+    except LookupError as exc:
+        raise _aviso_no_esta(exc) from exc
+    return svc.parque(session, company)

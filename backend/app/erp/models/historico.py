@@ -340,3 +340,23 @@ class ParqueBaja(Base):
     motivo: Mapped[str | None] = mapped_column(String(255))
     por: Mapped[str | None] = mapped_column(String(255))
     at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: Por qué sale del parque (0171): None, retirada (ya no está en servicio);
+    #: `misma_venta`, un albarán que era la misma venta que una factura (un
+    #: duplicado, no una máquina retirada).
+    tipo: Mapped[str | None] = mapped_column(String(16))
+    #: Con `misma_venta`: la línea de la factura que duplica (su clave).
+    duplica: Mapped[str | None] = mapped_column(String(160))
+
+
+class ParqueDosCompras(Base):
+    """«No, son dos compras» (0171): este albarán y esta factura (sus líneas,
+    por clave) no son la misma venta. El aviso «¿misma venta?» no vuelve a
+    salir para ese par; si hay otra factura cerca, sí para esa."""
+
+    __tablename__ = "parque_dos_compras"
+
+    albaran: Mapped[str] = mapped_column(String(160), primary_key=True)
+    factura: Mapped[str] = mapped_column(String(160), primary_key=True)
+    company_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    por: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime | None] = mapped_column(DateTime)

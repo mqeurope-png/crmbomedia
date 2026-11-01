@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   generarAnalisisParque,
   getAnalisisParque,
@@ -66,12 +66,16 @@ function Fuente({ h }: { h: HechoAnalisis }) {
   return <span className="analisis-fuente muted">{fecha(f.fecha)}</span>;
 }
 
+/** Las citas, separadas (`D1 · D2 · D3`): pegadas se leían «D21D1D16». */
 function Citas({ citas, companyId }: { citas: string[]; companyId: string }) {
   return (
     <span className="analisis-citas">
-      {citas.map((c) => (
-        <a key={c} href={`#${anclaDe(companyId, c)}`} className="badge muted"
-           title="El dato en el que se apoya">{c}</a>
+      {citas.map((c, i) => (
+        <Fragment key={c}>
+          {i > 0 ? <span className="analisis-citas__sep" aria-hidden="true"> · </span> : null}
+          <a href={`#${anclaDe(companyId, c)}`} className="badge muted"
+             title="El dato en el que se apoya">{c}</a>
+        </Fragment>
       ))}
     </span>
   );

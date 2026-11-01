@@ -125,3 +125,14 @@ test("una empresa que no es cliente final no se analiza", async () => {
   expect(await screen.findByText(/no es cliente final/)).toBeInTheDocument();
   expect(api().generarAnalisisParque).not.toHaveBeenCalled();
 });
+
+test("las citas salen separadas (D2 · D1), no pegadas", async () => {
+  const conVarias = { ...GENERADO, analisis: { ...GENERADO.analisis,
+    lectura: [{ texto: "Dejó de comprar filtros hace tiempo.", citas: ["D2", "D1", "D4"] }] } };
+  api().generarAnalisisParque.mockResolvedValue(conVarias);
+  render(<AnalisisParquePanel companyId="emp-1" />);
+  const frase = (await screen.findByText(/Dejó de comprar filtros hace tiempo\./)).closest("li") as HTMLElement;
+  expect(frase).toHaveTextContent("D2 · D1 · D4");
+  expect(frase).not.toHaveTextContent("D2D1");
+  expect(within(frase).getAllByRole("link").map((a) => a.textContent)).toEqual(["D2", "D1", "D4"]);
+});

@@ -1036,10 +1036,26 @@ En la ficha de una empresa, bajo «Actividad reciente»:
     «y su albarán …» debajo. BoHub los junta por lo que FACTUSOL apunta en
     las líneas (la factura que viene del albarán, o los dos que vienen de la
     misma proforma o pedido).
-  - **«¿Misma venta que la factura …?»** en un albarán: FACTUSOL no los une
-    (se hicieron por separado) pero hay una factura del mismo artículo muy
-    cerca. Si es la misma venta, da de baja el albarán; si son dos compras,
-    déjalo.
+  - **«¿Misma venta?»** en un albarán: FACTUSOL no lo une con la factura (se
+    hicieron por separado), pero hay una factura del mismo modelo muy cerca.
+    El aviso enseña el **importe y la referencia** de los dos («Este albarán:
+    0,00 € · «ENVÍO MÁQUINA SUBSTITUCIÓN»»), para decidir sin abrirlos, y se
+    contesta con dos botones:
+    - **«Sí, es la misma venta»:** el albarán deja de contar como **duplicado**
+      («No cuenta: misma venta que la factura …»). No es una máquina retirada,
+      y no sale en «tiene máquina dada de baja». Se deshace con «Deshacer
+      «misma venta»».
+    - **«No, son dos compras»:** el aviso no vuelve a salir para ese par.
+      Queda la nota «Revisado: no es la misma venta…», con quién lo dijo, y
+      su «Deshacer».
+  - **Un envío de sustitución** (la máquina a 0 € y «SUSTITUCIÓN» o
+    «SUBSTITUCIÓN» en la referencia o en la línea) sale **ya propuesto** como
+    la misma venta que la factura anterior del modelo, aunque sea de hace
+    años: «No cuenta: sustitución (propuesto)». Si no lo es, «No, son dos
+    compras».
+  - **Una baja de antes** en un albarán con el aviso (cuando el aviso decía
+    «da de baja este albarán») pregunta «¿Era la misma venta?». El «sí» la
+    pasa a duplicado y conserva el motivo.
   - **Solo salen los artículos marcados como máquina** (31/10/2026): que la
     familia sea de clase «Máquina» ya no basta. Se marcan en **Histórico →
     Familias → «Máquinas, artículo a artículo»**: una casilla «es máquina»

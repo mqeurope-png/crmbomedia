@@ -8310,8 +8310,19 @@ export type ParqueMaquina = {
   documento: { tipo: "factura" | "albaran"; serie: string; codigo: number; numero: string } | null;
   /** Los albaranes de esta misma venta, emparejados por el enlace de FACTUSOL. */
   albaranes?: ParqueDocRef[];
-  /** Albarán sin enlace con una factura del mismo artículo cerca: quizá la misma venta. */
-  posible_misma_venta?: ParqueDocRef | null;
+  /** Albarán sin enlace con una factura del mismo artículo cerca: quizá la
+   *  misma venta. Con el importe y la referencia de los dos, para decidir sin
+   *  abrirlos; `propuesta` «sustitucion»: la máquina va a 0 € y dice
+   *  «sustitución», ya resuelto como la misma venta (1/11/2026). */
+  posible_misma_venta?: (ParqueDocRef & {
+    clave: string;
+    importe?: number | null;
+    referencia?: string | null;
+    albaran?: { importe: number | null; referencia: string | null };
+    propuesta?: "sustitucion" | null;
+  }) | null;
+  /** Facturas de las que alguien dijo «no, son dos compras» con este albarán. */
+  dos_compras?: (ParqueDocRef & { clave: string; por: string | null; at: string | null })[];
   /** Otras máquinas en servicio del mismo cliente que parecen el mismo modelo
    *  con OTRO código (el de FACTUSOL y el de la web): quizá la misma máquina. */
   mismo_modelo?: {
@@ -8319,7 +8330,14 @@ export type ParqueMaquina = {
     ejercicio: string | null;
   }[];
   nota?: string | null;
-  baja: { at: string | null; motivo: string | null; por: string | null } | null;
+  baja: {
+    at: string | null; motivo: string | null; por: string | null;
+    /** null: retirada. «misma_venta»: era la misma venta que `duplica` (un duplicado). */
+    tipo?: "misma_venta" | null;
+    duplica?: ParqueDocRef | null;
+    /** Propuesto (envío de sustitución a 0 €), no escrito: no cuenta mientras nadie diga que no. */
+    propuesta?: boolean;
+  } | null;
 };
 
 export type ParqueEmpresa = {
@@ -8407,6 +8425,25 @@ export async function darBajaMaquina(
 ): Promise<ParqueEmpresa> {
   return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/bajas`, {
     method: "POST", body: JSON.stringify({ ...maquina, motivo }),
+  });
+}
+
+/** El aviso «¿misma venta?» de un albarán con una factura (las dos, por su
+ *  clave de línea): sí, sale como duplicado; no, el aviso no vuelve para ese par. */
+export async function contestarMismaVenta(
+  companyId: string, aviso: { clave: string; factura: string }, esMisma: boolean,
+): Promise<ParqueEmpresa> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/misma-venta`, {
+    method: "POST", body: JSON.stringify({ ...aviso, es_misma: esMisma }),
+  });
+}
+
+/** Deshace un «No, son dos compras»: el aviso vuelve. */
+export async function deshacerDosCompras(
+  companyId: string, aviso: { clave: string; factura: string },
+): Promise<ParqueEmpresa> {
+  return apiFetch(`/api/erp/parque/empresas/${encodeURIComponent(companyId)}/misma-venta/deshacer`, {
+    method: "POST", body: JSON.stringify(aviso),
   });
 }
 

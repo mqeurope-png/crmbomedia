@@ -16,8 +16,10 @@ jest.mock("../../lib/erpApi", () => ({
   anadirMaquinaParque: jest.fn(),
   borrarMaquinaParque: jest.fn(),
   buscarMaquinasCatalogo: jest.fn(),
+  contestarMismaVenta: jest.fn(),
   darBajaMaquina: jest.fn(),
   deshacerBajaMaquina: jest.fn(),
+  deshacerDosCompras: jest.fn(),
   setClaseArticulo: jest.fn(),
   HISTORICO_CLASE_LABEL: jest.requireActual("../../lib/erpApi").HISTORICO_CLASE_LABEL,
 }));
@@ -250,15 +252,90 @@ test("la factura enseña su albarán y un albarán suelto avisa de la factura ce
       MAQ({ albaranes: [{ tipo: "albaran", serie: "3", codigo: 230001, ejercicio: "2023", numero: "3-230001" }] }),
       MAQ({ origen: "albaran", clave: "2023|albaran|3|230002|1|1712", ejercicio: "2023",
             documento: { tipo: "albaran", serie: "3", codigo: 230002, numero: "3-230002" },
-            posible_misma_venta: { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022",
-                                   numero: "1-123021" } }),
+            posible_misma_venta: AVISO }),
     ],
   });
   render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
   expect(await screen.findByText("3-230001")).toBeInTheDocument();
-  expect(screen.getByText(/¿Misma venta que la/)).toBeInTheDocument();
-  expect(screen.getByText("1-123021").closest("a")).toHaveAttribute(
+  const aviso = screen.getByRole("group", { name: "¿Misma venta?" });
+  expect(within(aviso).getByText("1-123021").closest("a")).toHaveAttribute(
     "href", expect.stringContaining("/factura/2022/1/123021"));
+  // Lo que hace falta para decidir, sin abrir nada; sin permiso, sin botones.
+  expect(aviso).toHaveTextContent("Este albarán: 0,00 € · «ENVÍO MÁQUINA SUBSTITUCIÓN»");
+  expect(aviso).toHaveTextContent("La factura: 9000,00 € · «Pedido figurante 123021»");
+  expect(within(aviso).queryByRole("button")).toBeNull();
+});
+
+const ALB = "2023|albaran|3|230002|1|1712";
+const FAC = "2022|factura|1|123021|1|1712";
+const AVISO = { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021",
+                clave: FAC, importe: 9000, referencia: "Pedido figurante 123021",
+                albaran: { importe: 0, referencia: "ENVÍO MÁQUINA SUBSTITUCIÓN" }, propuesta: null };
+const SUELTO = (over: Record<string, unknown> = {}) => MAQ({
+  origen: "albaran", clave: ALB, ejercicio: "2023",
+  documento: { tipo: "albaran", serie: "3", codigo: 230002, numero: "3-230002" },
+  posible_misma_venta: AVISO, ...over });
+
+test("el aviso se contesta: sí, es la misma venta; no, son dos compras", async () => {
+  const user = userEvent.setup();
+  api().getParqueEmpresa.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
+  api().contestarMismaVenta.mockResolvedValue({ ...PARQUE, activas: 0, maquinas: [SUELTO({
+    baja: { at: "2026-11-01T10:00:00Z", motivo: null, por: "bart@example.com", tipo: "misma_venta",
+            duplica: { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021" },
+            propuesta: false } })] });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  await user.click(within(aviso).getByRole("button", { name: "Sí, es la misma venta" }));
+  expect(api().contestarMismaVenta).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC }, true);
+  // Sale como duplicado, no como retirada; y se puede deshacer.
+  expect(await screen.findByText(/No cuenta: misma venta que la factura/)).toBeInTheDocument();
+  expect(screen.queryByText(/Dada de baja/)).toBeNull();
+  expect(screen.queryByRole("group", { name: "¿Misma venta?" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Deshacer «misma venta»" })).toBeInTheDocument();
+});
+
+test("«no, son dos compras» deja una nota que se puede deshacer", async () => {
+  const user = userEvent.setup();
+  api().getParqueEmpresa.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
+  api().contestarMismaVenta.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO({
+    posible_misma_venta: null,
+    dos_compras: [{ tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021",
+                    clave: FAC, por: "bart@example.com", at: "2026-11-01T10:00:00Z" }] })] });
+  api().deshacerDosCompras.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO()] });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  await user.click(within(aviso).getByRole("button", { name: "No, son dos compras" }));
+  expect(api().contestarMismaVenta).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC }, false);
+  expect(await screen.findByText(/Revisado: no es la misma venta que la factura/)).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "¿Misma venta?" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Deshacer" }));
+  expect(api().deshacerDosCompras).toHaveBeenCalledWith("emp-1", { clave: ALB, factura: FAC });
+  expect(await screen.findByRole("group", { name: "¿Misma venta?" })).toBeInTheDocument();
+});
+
+test("un envío de sustitución a 0 € sale ya propuesto, y se puede decir que no", async () => {
+  api().getParqueEmpresa.mockResolvedValue({ ...PARQUE, activas: 0, maquinas: [SUELTO({
+    posible_misma_venta: { ...AVISO, propuesta: "sustitucion" },
+    baja: { at: null, motivo: "Envío de sustitución a 0 €", por: null, tipo: "misma_venta",
+            duplica: { tipo: "factura", serie: "1", codigo: 123021, ejercicio: "2022", numero: "1-123021" },
+            propuesta: true } })] });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  expect(aviso).toHaveTextContent("Propuesto: la misma venta");
+  expect(screen.getByText("No cuenta: sustitución (propuesto)")).toBeInTheDocument();
+  expect(within(aviso).getByRole("button", { name: "No, son dos compras" })).toBeInTheDocument();
+  // Lo propuesto no se escribió: nada que «volver a poner en servicio».
+  expect(screen.queryByRole("button", { name: /Volver a poner en servicio|Deshacer/ })).toBeNull();
+});
+
+test("una baja de antes con el aviso pregunta si era la misma venta", async () => {
+  api().getParqueEmpresa.mockResolvedValue({ ...PARQUE, maquinas: [SUELTO({
+    baja: { at: "2026-10-30T10:00:00Z", motivo: "Repetido", por: "x", tipo: null, duplica: null,
+            propuesta: false } })] });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar />);
+  const aviso = await screen.findByRole("group", { name: "¿Misma venta?" });
+  expect(aviso).toHaveTextContent("¿Era la misma venta?");
+  expect(within(aviso).getByRole("button", { name: "Sí, es la misma venta" })).toBeInTheDocument();
 });
 
 test("la misma máquina con el código de FACTUSOL y el de la web sale avisada", async () => {

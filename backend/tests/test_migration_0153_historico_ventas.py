@@ -449,3 +449,26 @@ def test_0170_no_cliente_final_solo_esquema(alembic_setup):
     command.downgrade(cfg, "20261101_0169")
     assert "no_cliente_final" not in {
         col["name"] for col in inspect(engine).get_columns("companies")}
+
+
+def test_0171_misma_venta_solo_esquema(alembic_setup):
+    # Las bajas que había siguen como retiradas (tipo NULL); la tabla de «dos
+    # compras» nace vacía. Y se deshace.
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261101_0170")
+    with engine.begin() as c:
+        c.exec_driver_sql("CREATE TABLE parque_bajas (clave VARCHAR(160) PRIMARY KEY, "
+                          "company_id VARCHAR(36), motivo VARCHAR(255), por VARCHAR(255), "
+                          "at DATETIME)")
+        c.exec_driver_sql("INSERT INTO parque_bajas (clave, motivo) "
+                          "VALUES ('2023|albaran|3|1|1|X', 'Repetido')")
+    command.upgrade(cfg, "20261101_0171")
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT motivo, tipo, duplica FROM parque_bajas").one() == (
+            "Repetido", None, None)
+        assert c.exec_driver_sql("SELECT COUNT(*) FROM parque_dos_compras").scalar() == 0
+    command.downgrade(cfg, "20261101_0170")
+    assert "parque_dos_compras" not in inspect(engine).get_table_names()
+    assert {"tipo", "duplica"}.isdisjoint(
+        col["name"] for col in inspect(engine).get_columns("parque_bajas"))

@@ -30,6 +30,7 @@ from app.erp.models.historico import (
     HistoricoReglaFamilia,
     HistoricoSerie,
     ParqueBaja,
+    ParqueDosCompras,
     ParqueMaquinaManual,
 )
 from app.erp.models.integration_events import (
@@ -125,6 +126,7 @@ __all__ = [
     "HistoricoReglaFamilia",
     "HistoricoSerie",
     "ParqueBaja",
+    "ParqueDosCompras",
     "ParqueMaquinaManual",
     "BankAccount",
     "BankLearnedRule",

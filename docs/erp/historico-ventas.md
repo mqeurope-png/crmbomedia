@@ -160,9 +160,19 @@ En la ficha de empresa, dos bloques (`/api/erp/parque/empresas/{id}` y
     salen los dos. Cuando un albarán que queda solo tiene una factura del
     mismo artículo a menos de 60 días (`DIAS_MISMA_VENTA`, también entre años)
     —aunque esa factura ya esté emparejada con otro albarán (31/10/2026: es
-    justo el caso del albarán duplicado)—, la fila avisa «¿Misma venta que la
-    factura …?»;
-    si lo es, se da de baja el albarán. El enlace no lleva el ejercicio: se
+    justo el caso del albarán duplicado)—, la fila avisa «¿Misma venta?». El
+    aviso lleva el importe de la línea y la referencia de los dos documentos, y
+    se contesta (1/11/2026, migración 0171):
+    - «sí» guarda la baja con `tipo = misma_venta` y `duplica` (la clave de la
+      línea de la factura). Es un duplicado, no una retirada: no cuenta en
+      `tiene_baja`;
+    - «no» guarda el par en `parque_dos_compras`, y ese par ya no avisa.
+
+    Un albarán con la máquina a 0 € y «sustitución» en la referencia o la línea
+    sale **propuesto** como la misma venta que la factura anterior del modelo,
+    a cualquier distancia. No se escribe nada: el parque no lo cuenta mientras
+    nadie diga que no. La API es `POST /empresas/{id}/misma-venta` (`clave`,
+    `factura`, `es_misma`) y `…/misma-venta/deshacer`. El enlace no lleva el ejercicio: se
     casa por serie y número dentro del cliente. Una factura a otro código de
     cliente que el albarán tampoco se empareja. Los pedidos de cliente no se
     vuelcan: dos entregas del mismo pedido (un albarán y una factura directa)
