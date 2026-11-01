@@ -65,6 +65,11 @@ _CONCILIACION = ("erp.factusol_bulk_sync_by_email",
                  "erp.factusol_bulk_sync_by_email_create_company",
                  "erp.factusol_bulk_sync_by_email_reassign")
 TIPO_CONTACTO, TIPO_EMPRESA = "contacto", "empresa"
+#: 1/11/2026: el `domain` de la empresa, si es de la lista. Ese dato es el que
+#: pegó los contactos: despegarlos sin limpiarlo deja la trampa puesta para
+#: quien mire la ficha o para una importación futura.
+TIPO_DOMINIO = "dominio"
+MOTIVO_DOMINIO = "dominio_de_la_lista_en_la_empresa"
 
 
 def _ahora() -> datetime:
@@ -85,6 +90,8 @@ class PlanEmpresa:
     #: Los que se quedan, por la primera prueba que tienen.
     quedan: Counter = field(default_factory=Counter)
     archivar: bool = False
+    #: Su `domain` es de la lista: se limpia (con apunte, se deshace con el lote).
+    limpiar_dominio: bool = False
     #: Para el CSV de Bart (no sale en la consola).
     nombre: str = ""
 
@@ -118,6 +125,10 @@ class Plan:
     @property
     def a_archivar(self) -> list[PlanEmpresa]:
         return [e for e in self.empresas if e.archivar]
+
+    @property
+    def a_limpiar_dominio(self) -> list[PlanEmpresa]:
+        return [e for e in self.empresas if e.limpiar_dominio]
 
 
 def _marcas_manuales(raw: str | None) -> set[str]:
@@ -292,6 +303,8 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
             e.despegar.append((cid, dominio))
             por_dominio[dominio] += 1
     tocadas = [e for e in empresas.values() if e.candidatos]
+    for e in tocadas:
+        e.limpiar_dominio = bool(e.dominio) and lista.contiene(e.dominio)
     # Las que se quedan vacías: sin cliente de FACTUSOL, sin CIF, con dominio de
     # la lista (o sin dominio) y sin negocio que las sostenga. Se archivan, no
     # se borran. (Una con CIF no es residuo de un dominio: Brevo puede volver
@@ -319,13 +332,15 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
     transacción. Devuelve el lote. No recalcula: eso lo hace quien llama."""
     from app.models.crm import Company, Contact  # noqa: PLC0415
     from app.models.dominios import DespegueDominio  # noqa: PLC0415
+    from app.services import dominios_compartidos as dc  # noqa: PLC0415
 
     lote = f"{_ahora():%Y%m%d%H%M}-{uuid.uuid4().hex[:6]}"
     ahora = _ahora()
-    hechos = {"contactos": 0, "empresas": 0}
+    hechos = {"contactos": 0, "empresas": 0, "dominios": 0}
     # El plan se leyó en otra transacción: en MySQL (REPEATABLE READ) seguir
     # en ella sería mirar la foto vieja. Se empieza una nueva y se bloquea.
     session.rollback()
+    lista = dc.cargar(session, refrescar=True)
     try:
         for e in p.empresas:
             ids = [cid for cid, _d in e.despegar]
@@ -360,8 +375,12 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
                         empresa.archived_at = datetime.now(UTC)
                         empresa.archived_reason = _razon_archivo(lote)
                         hechos["empresas"] += 1
+            if e.limpiar_dominio and _limpiar_dominio(session, lote, e.company_id, lista,
+                                                      por=por, ahora=ahora):
+                hechos["dominios"] += 1
         _auditar(session, "contacts.despegue_dominio", lote, por,
-                 {"contactos": hechos["contactos"], "empresas_archivadas": hechos["empresas"]})
+                 {"contactos": hechos["contactos"], "empresas_archivadas": hechos["empresas"],
+                  "dominios_limpiados": hechos["dominios"]})
         session.commit()
     except Exception:
         session.rollback()
@@ -373,6 +392,93 @@ def aplicar(session: Session, p: Plan, *, por: str) -> str:
 
 def _razon_archivo(lote: str) -> str:
     return f"Dominio compartido (lote {lote})"
+
+
+def _limpiar_dominio(session: Session, lote: str, company_id: str, lista: Any, *, por: str,
+                     ahora: datetime) -> bool:
+    """Quita el `domain` de la empresa si (todavía) es de la lista, con su
+    apunte en el lote. True si lo ha quitado."""
+    from app.models.crm import Company  # noqa: PLC0415
+    from app.models.dominios import DespegueDominio  # noqa: PLC0415
+
+    # Bloqueada y RELEÍDA: si ya estaba en la sesión (la rama de archivar la
+    # carga antes), sin `populate_existing` se miraría el valor viejo. Antes, lo
+    # pendiente se vuelca (el archivado de esta misma pasada), o la relectura
+    # lo borraría.
+    session.flush()
+    empresa = session.get(Company, company_id, with_for_update=True, populate_existing=True)
+    if empresa is None or not empresa.domain or not lista.contiene(empresa.domain):
+        return False
+    session.add(DespegueDominio(lote=lote, tipo=TIPO_DOMINIO, objeto_id=company_id,
+                                dominio=empresa.domain, motivo=MOTIVO_DOMINIO, por=por, at=ahora))
+    empresa.domain = None
+    return True
+
+
+def limpiar_dominios_de_lotes(session: Session, lotes_pedidos: list[str] | None = None, *,
+                              por: str, aplicar: bool = False) -> list[dict[str, Any]]:
+    """Para los lotes ya pasados (antes del 1/11/2026 el despegue no limpiaba
+    el dominio): las empresas de esos lotes cuyo `domain` sigue siendo de la
+    lista. Con `aplicar`, lo limpia con el apunte en SU lote (el primero en el
+    que sale la empresa), para que deshacer ese lote lo devuelva. Sin
+    `aplicar`, solo lo dice."""
+    from app.models.crm import Company  # noqa: PLC0415
+    from app.models.dominios import DespegueDominio  # noqa: PLC0415
+    from app.services import dominios_compartidos as dc  # noqa: PLC0415
+
+    # Sin pedir lotes, los que no se han deshecho NI A MEDIAS (un lote que Bart
+    # deshizo deja pendientes los contactos que ya tenían otra empresa: ese
+    # lote ya no se toca si no se pide por su nombre).
+    deshechos = set() if lotes_pedidos else set(session.scalars(
+        select(DespegueDominio.lote).where(DespegueDominio.revertido_at.is_not(None)).distinct()))
+    q = select(DespegueDominio).where(DespegueDominio.revertido_at.is_(None)).order_by(
+        DespegueDominio.at, DespegueDominio.id)
+    if lotes_pedidos:
+        q = q.where(DespegueDominio.lote.in_(lotes_pedidos))
+    #: empresa → [(lote, dominio que trató ese lote)], en orden.
+    lotes_de: dict[str, list[tuple[str, str | None]]] = {}
+    ya_limpiadas: set[str] = set()
+    for ap in session.scalars(q):
+        if ap.lote in deshechos:
+            continue
+        if ap.tipo == TIPO_DOMINIO:
+            ya_limpiadas.add(ap.objeto_id)
+            continue
+        cid = ap.empresa_anterior if ap.tipo == TIPO_CONTACTO else ap.objeto_id
+        if cid:
+            lotes_de.setdefault(cid, []).append((ap.lote, ap.dominio))
+    lista = dc.cargar(session, refrescar=True)
+
+    def lote_para(cid: str, dominio: str) -> str:
+        # El lote que trató ESE dominio (deshacerlo es lo natural para
+        # devolverlo); si ninguno, el primero en el que salió la empresa.
+        suyo = lista.de_la_lista(dominio)
+        return next((lo for lo, d in lotes_de[cid] if d and d == suyo), lotes_de[cid][0][0])
+
+    filas = [{"lote": lote_para(cid, dominio), "company_id": cid, "codcli": codcli,
+              "dominio": dominio}
+             for cid, codcli, dominio in session.execute(
+                 select(Company.id, Company.factusol_company_id, Company.domain).where(
+                     Company.id.in_(list(lotes_de)), Company.domain.is_not(None)))
+             if cid not in ya_limpiadas and lista.contiene(dominio)] if lotes_de else []
+    filas.sort(key=lambda f: (f["lote"], f["dominio"] or "", f["company_id"]))
+    if not aplicar or not filas:
+        return filas
+    session.rollback()
+    ahora = _ahora()
+    hechas: list[dict[str, Any]] = []
+    try:
+        for f in filas:
+            if _limpiar_dominio(session, f["lote"], f["company_id"], lista, por=por, ahora=ahora):
+                hechas.append(f)
+        for lote in sorted({f["lote"] for f in hechas}):
+            _auditar(session, "contacts.despegue_dominio", lote, por,
+                     {"dominios_limpiados": sum(1 for f in hechas if f["lote"] == lote)})
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return hechas
 
 
 def revertir(session: Session, lote: str, *, por: str) -> dict[str, int]:
@@ -387,8 +493,26 @@ def revertir(session: Session, lote: str, *, por: str) -> dict[str, int]:
     if not apuntes:
         raise ValueError("lote_sin_apuntes")
     ahora = _ahora()
-    out = {"contactos": 0, "empresas": 0, "con_otra_empresa": 0, "sin_empresa_anterior": 0}
+    out = {"contactos": 0, "empresas": 0, "con_otra_empresa": 0, "sin_empresa_anterior": 0,
+           "dominios": 0, "dominio_no_devuelto": 0, "dominio_empresa_borrada": 0}
     try:
+        for ap in (a for a in apuntes if a.tipo == TIPO_DOMINIO):
+            empresa = session.get(Company, ap.objeto_id)
+            if empresa is None:
+                # La empresa ya no existe: no hay nada que devolver (se cierra).
+                out["dominio_empresa_borrada"] += 1
+                ap.revertido_at = ahora
+                continue
+            # Solo si sigue sin dominio y nadie más tiene ese (es único): si
+            # alguien le puso otro, eso se respeta.
+            ocupado = ap.dominio and session.scalar(select(Company.id).where(
+                Company.domain == ap.dominio, Company.id != ap.objeto_id)) is not None
+            if empresa.domain is not None or not ap.dominio or ocupado:
+                out["dominio_no_devuelto"] += 1
+                continue
+            empresa.domain = ap.dominio
+            out["dominios"] += 1
+            ap.revertido_at = ahora
         for ap in (a for a in apuntes if a.tipo == TIPO_EMPRESA):
             empresa = session.get(Company, ap.objeto_id)
             # Solo si sigue archivada por ESTE lote (si alguien la desarchivó y
@@ -434,8 +558,8 @@ def lotes(session: Session) -> list[dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for lote, tipo, n, at, revertidos in filas:
         d = out.setdefault(lote, {"lote": lote, "at": at, "contactos": 0, "empresas": 0,
-                                  "revertidos": 0})
-        d["contactos" if tipo == TIPO_CONTACTO else "empresas"] += n
+                                  "dominios": 0, "revertidos": 0})
+        d[{TIPO_CONTACTO: "contactos", TIPO_DOMINIO: "dominios"}.get(tipo, "empresas")] += n
         d["revertidos"] += revertidos
     return list(out.values())
 

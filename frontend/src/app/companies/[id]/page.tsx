@@ -737,6 +737,10 @@ export default function CompanyDetailPage() {
                 onChange={(e) => onChange("domain", e.target.value || null)}
                 placeholder="empresa.com"
               />
+              <span className="form-hint">
+                El propio de la empresa. Uno de correo gratuito o compartido (outlook.fr, xtec.cat…)
+                no vale: está en Administración → Dominios compartidos.
+              </span>
             </label>
             <label className="field">
               CIF

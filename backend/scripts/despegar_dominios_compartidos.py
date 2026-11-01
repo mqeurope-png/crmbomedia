@@ -7,7 +7,8 @@ despega de su empresa salvo que haya una prueba de que es de ella (cliente de
 FACTUSOL, su correo es el del cliente en F_CLI, la conciliación por correo lo
 llevó allí, pedido, oferta o vínculo puesto a mano). `company_id` a nulo, con
 un apunte por contacto; las empresas que se quedan vacías, sin cliente de
-FACTUSOL y sin CIF se archivan. Todo en un lote que se deshace entero.
+FACTUSOL y sin CIF se archivan; y el dominio de la empresa, si es de la lista,
+se quita (1/11/2026). Todo en un lote que se deshace entero.
 
 Lee F_CLI de FACTUSOL (solo lectura) para la prueba del correo. Si no se puede
 leer, se para; `--sin-factusol` sigue sin esa prueba (no recomendable).
@@ -48,17 +49,21 @@ def _imprimir_plan(s: Session, p, *, completo: bool) -> None:  # noqa: ANN001
     print(f"Se despegan: {p.a_despegar} · se quedan con su empresa: {sum(quedan.values())} "
           f"({', '.join(f'{k} {v}' for k, v in quedan.most_common()) or '—'})")
     print(f"Empresas que se archivan (vacías, sin cliente de FACTUSOL): {len(p.a_archivar)}")
+    print(f"Empresas a las que se limpia el dominio (es de la lista): "
+          f"{len(p.a_limpiar_dominio)}")
     if not p.con_factusol:
         print("ATENCIÓN: sin leer F_CLI (--sin-factusol): no se ha mirado el correo de los "
               "clientes de FACTUSOL.")
     print("\nPOR EMPRESA")
     print(f"  {'empresa':8} {'cliente':>8} {'dominio de la empresa':26} {'contactos':>9} "
-          f"{'despegan':>8} {'quedan':>6}  motivos de los que quedan          archiva")
+          f"{'despegan':>8} {'quedan':>6}  motivos de los que quedan          archiva  "
+          f"dominio")
     for e in p.empresas if completo else p.empresas[:40]:
         motivos = ", ".join(f"{k} {v}" for k, v in e.quedan.most_common()) or "—"
         print(f"  {e.company_id[:8]} {e.codcli or '—':>8} {(e.dominio or '—')[:26]:26} "
               f"{e.total:9} {len(e.despegar):8} {sum(e.quedan.values()):6}  "
-              f"{motivos[:34]:34} {'sí' if e.archivar else ''}")
+              f"{motivos[:34]:34} {'sí' if e.archivar else '  '}       "
+              f"{'se limpia' if e.limpiar_dominio else ''}")
     if not completo and len(p.empresas) > 40:
         print(f"  … y {len(p.empresas) - 40} empresas más (--completo para verlas todas)")
     print("\nPOR DOMINIO (se despegan)")
@@ -103,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.lotes:
             for x in dd.lotes(s):
                 print(f"  {x['lote']}  {x['at']}  contactos {x['contactos']} · empresas "
-                      f"{x['empresas']} · revertidos {x['revertidos']}")
+                      f"{x['empresas']} · dominios {x['dominios']} · revertidos "
+                      f"{x['revertidos']}")
             return 0
         if args.revertir:
             if not args.yes:
@@ -112,9 +118,12 @@ def main(argv: list[str] | None = None) -> int:
             antes = dd.ya_cliente(s)
             r = dd.revertir(s, args.revertir, por=POR)
             print(f"Revertido el lote {args.revertir}: {r['contactos']} contactos vuelven a su "
-                  f"empresa, {r['empresas']} empresas desarchivadas. No tocados: "
+                  f"empresa, {r['empresas']} empresas desarchivadas, {r['dominios']} dominios "
+                  f"devueltos a su empresa. No tocados: "
                   f"{r['con_otra_empresa']} ya tienen otra empresa, "
-                  f"{r['sin_empresa_anterior']} cuya empresa ya no existe.")
+                  f"{r['sin_empresa_anterior']} cuya empresa ya no existe, "
+                  f"{r['dominio_no_devuelto']} dominios que ya no se pueden devolver (la "
+                  "empresa tiene otro o lo tiene otra).")
             empresa_erp.recalcular(s)
             print(f"YA CLIENTE: {antes['contactos']} → {dd.ya_cliente(s)['contactos']} contactos")
             return 0
@@ -141,12 +150,14 @@ def main(argv: list[str] | None = None) -> int:
                 with open(args.csv, "w", newline="", encoding="utf-8") as f:
                     w = csv.writer(f)
                     w.writerow(["company_id", "nombre", "cliente", "dominio", "contactos",
-                                "se_despegan", "se_quedan", "motivos", "se_archiva"])
+                                "se_despegan", "se_quedan", "motivos", "se_archiva",
+                                "se_limpia_el_dominio"])
                     for e in p.empresas:
                         w.writerow([e.company_id, e.nombre, e.codcli or "", e.dominio or "",
                                     e.total, len(e.despegar), sum(e.quedan.values()),
                                     "; ".join(f"{k} {v}" for k, v in e.quedan.items()),
-                                    "sí" if e.archivar else ""])
+                                    "sí" if e.archivar else "",
+                                    "sí" if e.limpiar_dominio else ""])
                 print(f"\nListado con nombres en {args.csv} (solo en el servidor).")
             print("\nNo se ha escrito nada. Para hacerlo: --apply --yes")
             return 0
@@ -161,7 +172,8 @@ def main(argv: list[str] | None = None) -> int:
         gamas_antes = {g["gama"]: g for g in dd.huecos_por_gama(s)}
         lote = dd.aplicar(s, p, por=POR)
         print(f"\nAplicado. Lote {lote}: {p.hechos['contactos']} contactos despegados, "
-              f"{p.hechos['empresas']} empresas archivadas. Para deshacerlo: "
+              f"{p.hechos['empresas']} empresas archivadas, {p.hechos['dominios']} dominios "
+              "de la lista quitados de su empresa. Para deshacerlo: "
               f"--revertir {lote} --yes")
         sin = dd.clientes_sin_contactos(s)
         print(f"Clientes de FACTUSOL sin ningún contacto tras el despegue (contando todos los "

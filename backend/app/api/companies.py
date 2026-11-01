@@ -116,6 +116,27 @@ def _sector_valido(payload: CompanyWrite, actual: str | None) -> None:
         ) from exc
 
 
+def _dominio_no_de_la_lista(session: Session, dominio: str | None) -> None:
+    """1/11/2026: un dominio de la lista de compartidos (correo gratuito como
+    outlook.fr, o compartido como xtec.cat) no identifica a una empresa. Fue
+    ese dato el que pegó contactos a la empresa equivocada: no se deja poner."""
+    from app.services import dominios_compartidos as dc  # noqa: PLC0415
+    from app.services.company_extraction import normalise_domain  # noqa: PLC0415
+
+    # Como lo escriba quien sea: «https://outlook.fr/», «x@outlook.fr», «outlook.fr.».
+    limpio = (dominio or "").strip().lower()
+    if "@" in limpio:
+        limpio = limpio.rsplit("@", 1)[1]
+    limpio = (normalise_domain(limpio) or limpio).rstrip(".")
+    if limpio and dc.cargar(session).contiene(limpio):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(f"«{dominio}» es de la lista de dominios compartidos (correo gratuito o "
+                    "compartido por muchas organizaciones): no identifica a una empresa. "
+                    "Déjalo vacío o pon el dominio propio de la empresa."),
+        )
+
+
 def _apply(row: Company, payload: CompanyWrite) -> None:
     """Snapshot-style update — clears NULL when the operator
     explicitly sends an empty value. Matches the v2.4d draft
@@ -232,6 +253,7 @@ def create_company(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> CompanyRead:
+    _dominio_no_de_la_lista(session, payload.domain)
     if payload.domain:
         clash = session.scalar(
             select(Company).where(Company.domain == payload.domain)
@@ -507,6 +529,9 @@ def update_company(
         raise not_found("Company")
     # Domain uniqueness: only enforce when changing AND new value
     # isn't NULL — otherwise the UNIQUE constraint takes over.
+    if payload.domain != row.domain:
+        # Solo al cambiarlo: una ficha que aún lo tenga se puede seguir editando.
+        _dominio_no_de_la_lista(session, payload.domain)
     if payload.domain and payload.domain != row.domain:
         clash = session.scalar(
             select(Company).where(

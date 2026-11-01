@@ -306,7 +306,30 @@ def empresa_agrupable(contacto: Contact, dominios_gratuitos: Iterable[str]) -> C
     nombre = (empresa.name or "").strip().lower()
     if dominio in gratuitos or nombre in gratuitos:
         return None
+    if _empresa_de_dominio_compartido(empresa, dominio):
+        return None
     return empresa
+
+
+def _empresa_de_dominio_compartido(empresa: Company, dominio: str) -> bool:
+    """1/11/2026: una «empresa» que es en realidad un dominio de la lista de
+    compartidos (outlook.fr, xtec.cat…), la tenga aún o se la quitara el
+    despegue (apunte sin deshacer), juntaría a desconocidos: sus contactos no
+    son compañeros entre sí."""
+    from sqlalchemy.orm import object_session  # noqa: PLC0415
+
+    from app.models.dominios import DespegueDominio  # noqa: PLC0415
+    from app.services import despegue_dominios as dd  # noqa: PLC0415
+    from app.services import dominios_compartidos as dc  # noqa: PLC0415
+
+    session = object_session(empresa)
+    if session is None:
+        return False
+    if dominio:
+        return dc.cargar(session).contiene(dominio)
+    return session.scalar(select(DespegueDominio.id).where(
+        DespegueDominio.tipo == dd.TIPO_DOMINIO, DespegueDominio.objeto_id == empresa.id,
+        DespegueDominio.revertido_at.is_(None)).limit(1)) is not None
 
 
 def hilos_de_la_empresa(

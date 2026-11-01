@@ -106,7 +106,7 @@ def test_create_get_update_delete_company(client: TestClient) -> None:
 
     res = client.post(
         "/api/companies",
-        json={"name": "Bomedia", "domain": "bomedia.net"},
+        json={"name": "Taller figurante", "domain": "taller-figurante.es"},
         headers=headers,
     )
     assert res.status_code == 201, res.text
@@ -120,15 +120,15 @@ def test_create_get_update_delete_company(client: TestClient) -> None:
     res = client.put(
         f"/api/companies/{company_id}",
         json={
-            "name": "Bomedia Studios",
-            "domain": "bomedia.net",
+            "name": "Taller figurante Studios",
+            "domain": "taller-figurante.es",
             "tax_id": "B12345678",
             "country": "España",
         },
         headers=headers,
     )
     assert res.status_code == 200
-    assert res.json()["name"] == "Bomedia Studios"
+    assert res.json()["name"] == "Taller figurante Studios"
 
     # delete is admin-only — the seeded admin works.
     res = client.delete(f"/api/companies/{company_id}", headers=headers)
@@ -136,15 +136,17 @@ def test_create_get_update_delete_company(client: TestClient) -> None:
 
 
 def test_create_company_with_taken_domain_is_409(client: TestClient) -> None:
+    # 1/11/2026: el dominio de casa está en la lista de compartidos y el
+    # formulario ya no lo admite; un dominio propio de figurante.
     headers = auth_headers(client, "admin")
     client.post(
         "/api/companies",
-        json={"name": "Bomedia", "domain": "bomedia.net"},
+        json={"name": "Taller figurante", "domain": "taller-figurante.es"},
         headers=headers,
     )
     res = client.post(
         "/api/companies",
-        json={"name": "Otra", "domain": "bomedia.net"},
+        json={"name": "Otra", "domain": "taller-figurante.es"},
         headers=headers,
     )
     assert res.status_code == 409
