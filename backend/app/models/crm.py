@@ -229,6 +229,13 @@ class Company(TimestampMixin, Base):
     )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archived_reason: Mapped[str | None] = mapped_column(String(255))
+    #: 1/11/2026 — «no es cliente final» (la financiera del leasing, un
+    #: revendedor, nosotros): sus máquinas no cuentan en el parque, ni en
+    #: dormidos y huecos, y sus contactos quedan fuera de las campañas. No se
+    #: borra nada; se marca y se desmarca en la ficha.
+    no_cliente_final: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=false(),
+    )
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 

@@ -278,3 +278,11 @@ test("la misma máquina con el código de FACTUSOL y el de la web sale avisada",
   expect(within(avisos[0]).getByText("60995").closest("a")).toHaveAttribute(
     "href", expect.stringContaining("/factura/2025/5/250009"));
 });
+
+
+test("marcada «no es cliente final»: se ven sus máquinas y se dice que no cuentan", async () => {
+  api().getParqueEmpresa.mockResolvedValue({ ...PARQUE, no_cliente_final: true });
+  render(<CompanyParquePanel companyId="emp-1" puedeEditar={false} />);
+  expect(await screen.findByText(/Marcada «no es cliente final»/)).toBeInTheDocument();
+  expect(screen.getByText("Láser Figurante 1390")).toBeInTheDocument();
+});

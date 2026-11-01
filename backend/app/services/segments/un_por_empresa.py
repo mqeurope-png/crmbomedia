@@ -218,7 +218,22 @@ def _motivo(a: Any, b: Any, orden: Sequence[str]) -> dict[str, str]:
 # --- segmentos ------------------------------------------------------------------------
 
 
+def sin_no_clientes_finales() -> Any:
+    """Fuera los contactos de empresas marcadas «no es cliente final» (la
+    financiera, un revendedor, nosotros): no entran en las campañas
+    (1/11/2026). Los sin empresa, sí."""
+    from sqlalchemy import or_  # noqa: PLC0415
+
+    from app.models.crm import Company  # noqa: PLC0415
+
+    return or_(Contact.company_id.is_(None), Contact.company_id.not_in(
+        select(Company.id).where(Company.no_cliente_final.is_(True))))
+
+
 def filtro_de_segmento(segmento: Any, base: Any) -> Any:
-    """El filtro de un segmento con su «uno por empresa», si lo lleva."""
+    """El filtro de un segmento (lo que usan las campañas y Brevo): con su «uno
+    por empresa», si lo lleva, y sin los contactos de empresas que no son
+    cliente final."""
+    base = and_(base, sin_no_clientes_finales())
     return filtro(base, uno_por_empresa=bool(getattr(segmento, "uno_por_empresa", False)),
                   orden=getattr(segmento, "orden_contacto", None))

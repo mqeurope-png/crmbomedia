@@ -4179,6 +4179,10 @@ def push_view_to_brevo_list(
         ) from exc
 
     uno, orden = _view_uno_por_empresa(view, rules, payload)
+    from app.services.segments import un_por_empresa as _upe  # noqa: PLC0415
+
+    # Lo que empujará Brevo: sin los contactos de empresas que no son cliente final.
+    filter_clause = and_(filter_clause, _upe.sin_no_clientes_finales())
     if uno:
         # Lo mismo que empujará Brevo: uno por empresa entre los que tienen
         # email y están activos (`resolve_target_contacts`).

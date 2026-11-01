@@ -27,7 +27,7 @@ export type ProductoAnalisis = {
 };
 
 export type HechosAnalisis = {
-  estado: "sin_cliente" | "sin_datos" | "con_datos";
+  estado: "sin_cliente" | "sin_datos" | "con_datos" | "no_cliente_final";
   hechos: HechoAnalisis[];
   productos: ProductoAnalisis[];
 };

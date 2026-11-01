@@ -22,7 +22,7 @@ import { extractErrorMessage } from "../../lib/errors";
 const TITULO: Record<BloqueAnalisis, string> = {
   tiene: "Qué tiene",
   consume: "Qué consume",
-  no_compra: "Qué no compra",
+  no_compra: "Qué no compra (o ha dejado de comprar)",
   cambio: "Qué ha cambiado",
   no_se_sabe: "Lo que no se sabe",
 };
@@ -153,6 +153,10 @@ export function AnalisisParquePanel({ companyId }: { companyId: string }) {
           Esta empresa no tiene cliente de FACTUSOL vinculado: no hay datos de los que hacer un
           análisis, y no se inventa uno.
         </p>
+      ) : a.datos === "no_cliente_final" ? (
+        <p className="muted" role="status">
+          Marcada «no es cliente final» (financiera, revendedor, nosotros): no se analiza su parque.
+        </p>
       ) : a.datos === "sin_datos" ? (
         <p className="muted" role="status">
           Sin máquinas en servicio ni compras de consumible o recambio: no hay de qué hacer un análisis.
@@ -256,7 +260,8 @@ export function AnalisisResumenContacto({ companyId, companyName }: {
       {!a ? null : a.datos !== "con_datos" ? (
         <p className="muted small">
           {a.datos === "sin_cliente" ? "Su empresa no tiene cliente de FACTUSOL: no hay análisis."
-            : "Su empresa no tiene parque ni compras de consumible: no hay análisis."}
+            : a.datos === "no_cliente_final" ? "Su empresa no es cliente final: no hay análisis."
+              : "Su empresa no tiene parque ni compras de consumible: no hay análisis."}
         </p>
       ) : guardado ? (
         <>

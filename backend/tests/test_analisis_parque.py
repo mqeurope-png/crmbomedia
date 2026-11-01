@@ -35,8 +35,10 @@ from tests.test_erp_historico import (  # noqa: F401 — fixtures
 
 HOY = date(2026, 11, 1)
 COMPRA, OTRO, SIN_NADA = "4901", "4902", "4904"
-LASER, FILTRO, FILTRO_NUEVO, FILTRO_VIEJO, PIEZA, UV, TINTA, CAJON = (
-    "LAS100", "FIL200", "FIL300", "FIL400", "PZA500", "UVM600", "TIN700", "CAJ800")
+# Clientes «como él» (compran su mismo filtro) y otros que compran el filtro Pro.
+OTRO2, OTRO3, PRO1, PRO2 = "4905", "4906", "4907", "4908"
+LASER, FILTRO, FILTRO_NUEVO, FILTRO_VIEJO, PIEZA, UV, TINTA, CAJON, FILTRO_PRO = (
+    "LAS100", "FIL200", "FIL300", "FIL400", "PZA500", "UVM600", "TIN700", "CAJ800", "FIL900")
 CAT = [_art(LASER, "LASER FIGURANTE 40W", "021"),
        _art(FILTRO, "Filtro figurante A", "251"),
        _art(FILTRO_NUEVO, "Filtro figurante B", "251"),
@@ -44,7 +46,8 @@ CAT = [_art(LASER, "LASER FIGURANTE 40W", "021"),
        _art(PIEZA, "Pieza figurante", "211"),
        _art(UV, "IMPRESORA UV FIGURANTE", "UVM"),
        _art(TINTA, "Tinta UV figurante", "UV"),
-       _art(CAJON, "Consumible figurante sin gama", "SIN")]
+       _art(CAJON, "Consumible figurante sin gama", "SIN"),
+       _art(FILTRO_PRO, "Filtro figurante Pro", "251")]
 FAM = [{"CODFAM": c, "DESFAM": d} for c, d in (
     ("021", "FLUX"), ("251", "Filtros"), ("211", "Recambios láser"), ("UVM", "Impresoras UV"),
     ("UV", "Consumible UV"), ("SIN", "Cajón de sastre"))]
@@ -67,8 +70,17 @@ def _datos() -> dict[str, dict[str, Any]]:
                        (210003, COMPRA, "2021-07-01", FILTRO, 100),
                        (210004, COMPRA, "2021-11-01", FILTRO, 100)]),
         "2022": _anio([(220001, COMPRA, "2022-03-01", FILTRO, 100)]),
+        # 2026: el filtro A se sigue vendiendo (a los que lo compran como él), dos
+        # de ellos compran además el B; el Pro es lo más vendido, pero solo lo
+        # compran otros que no compran el A.
         "2026": _anio([(260001, OTRO, "2026-05-01", FILTRO_NUEVO, 90),
-                       (260002, OTRO, "2026-06-01", CAJON, 30)]),
+                       (260002, OTRO, "2026-06-01", CAJON, 30),
+                       (260004, OTRO, "2026-04-01", FILTRO, 100),
+                       (260005, OTRO2, "2026-04-01", FILTRO, 100),
+                       (260006, OTRO2, "2026-05-01", FILTRO_NUEVO, 90),
+                       (260007, OTRO3, "2026-04-01", FILTRO, 100),
+                       *[(260100 + i, PRO1 if i % 2 else PRO2, f"2026-0{3 + i}-01", FILTRO_PRO, 120)
+                         for i in range(6)]]),
     }
 
 
@@ -88,12 +100,18 @@ def _preparar(session_factory) -> dict[str, str]:  # noqa: F811
         hm.marcar(s, LASER, True, por="bart")
         hm.marcar(s, UV, True, por="bart")
         ids = {}
-        for nombre, cli in (("compra", COMPRA), ("sin_nada", SIN_NADA), ("sin_cliente", None)):
+        for nombre, cli in (("compra", COMPRA), ("sin_nada", SIN_NADA), ("sin_cliente", None),
+                            ("otro", OTRO), ("otro2", OTRO2), ("otro3", OTRO3),
+                            ("pro1", PRO1), ("pro2", PRO2)):
             e = Company(name=f"Cliente Figurante {nombre}", factusol_company_id=cli)
             s.add(e)
             s.flush()
             ids[nombre] = e.id
         s.commit()
+        # El resumen por empresa: de ahí sale quién es «como él».
+        from app.services import empresa_erp
+
+        empresa_erp.recalcular(s, hoy=HOY)
     return ids
 
 
@@ -148,15 +166,34 @@ def test_los_hechos_calculados_con_su_documento_o_su_fecha(session_factory) -> N
         assert (doc["tipo"], doc["ejercicio"], doc["codigo"]) == ("factura", "2022", 220001)
 
 
-def test_lo_que_no_compra_sale_del_catalogo_real_y_de_su_gama(session_factory) -> None:  # noqa: F811
+def test_lo_que_no_compra_va_por_encaje_no_por_lo_mas_vendido(session_factory) -> None:  # noqa: F811,E501
     ids = _preparar(session_factory)
     with session_factory() as s:
         h = _hechos(s, ids["compra"])
-        # El filtro B: consumible de láser, vendido a otro este año, nunca a él.
-        # No el A (ya lo compra), ni el descatalogado (2019), ni el del cajón de
-        # sastre (sin gama), ni la tinta UV (no tiene UV).
-        assert [p.codart for p in h.productos] == [FILTRO_NUEVO]
-        assert h.productos[0].gama == "laser"
+        # 1) El filtro A, que compraba cada 4 meses y dejó de pedir (y se sigue vendiendo).
+        # 2) El B: nunca lo ha comprado, y lo compran 2 de los 3 que compran el A.
+        # El Pro, lo más vendido, no: solo lo compran otros que no compran el A.
+        # Ni el descatalogado, ni el del cajón de sastre (sin gama), ni la tinta UV.
+        assert [p.codart for p in h.productos] == [FILTRO, FILTRO_NUEVO]
+        textos = [x.texto for x in h.hechos if x.bloque == hx.NO_COMPRA]
+        assert "Ha dejado de comprar" in textos[0] and "[P1]" in textos[0]
+        assert "lo compran 2 de los 3 clientes que compran sus mismos consumibles" in textos[1]
+        assert all(FILTRO_PRO not in t for t in textos)
+
+
+def test_sin_dato_de_compatibilidad_no_se_supone(session_factory) -> None:  # noqa: F811
+    ids = _preparar(session_factory)
+    with session_factory() as s:
+        # Nadie más compra el filtro A: no hay clientes «como él» con los que comparar.
+        for cli in (OTRO, OTRO2, OTRO3):
+            otro = s.scalar(select(Company).where(Company.factusol_company_id == cli))
+            otro.no_cliente_final = True
+        s.commit()
+        h = _hechos(s, ids["compra"])
+        assert FILTRO_NUEVO not in [p.codart for p in h.productos]
+        aviso = next(x for x in h.hechos if x.bloque == hx.NO_SE_SABE
+                     and "le encajaría" in x.texto)
+        assert "la compatibilidad no se supone" in aviso.texto and aviso.fuente
 
 
 def test_lo_que_no_se_sabe_se_dice(session_factory) -> None:  # noqa: F811
@@ -186,7 +223,7 @@ def test_se_guarda_y_no_se_regenera_si_nada_cambia(session_factory, con_clave) -
         empresa = s.get(Company, ids["compra"])
         r = servicio.generar(s, empresa, por="test", hoy=HOY)
         assert r["estado"] == servicio.AL_DIA and r["analisis"]["entrada"]["productos"][0][
-            "codart"] == FILTRO_NUEVO
+            "codart"] == FILTRO
         servicio.generar(s, empresa, por="test", hoy=HOY)
         assert len(falso.llamadas) == 1                          # guardado: no se repite
         assert s.scalar(select(LlamadaIA.proposito)) == "analisis_parque"
@@ -237,8 +274,9 @@ def test_lo_que_no_cita_un_dato_se_descarta(session_factory) -> None:  # noqa: F
                        codigos_catalogo=catalogo)
         assert r.entrada is None and "no está en la lista" in r.descartado[0]
         # Anclado en un dato calculado y con un producto de la lista: se queda.
+        p_b = next(p.id for p in h.productos if p.codart == FILTRO_NUEVO)
         r = ia.validar({"entrada": {"texto": f"Ofrecerle el {FILTRO_NUEVO}.",
-                                    "citas": [cambio], "productos": ["P1"]}}, h,
+                                    "citas": [cambio], "productos": [p_b]}}, h,
                        codigos_catalogo=catalogo)
         assert r.entrada and r.entrada["productos"][0]["codart"] == FILTRO_NUEVO
 

@@ -80,6 +80,8 @@ class CompanyRead(BaseModel):
     #: Limpieza de empresas: archivado reversible (fuera de listados por
     #: defecto). `is_archived=True` → «Restaurar» la devuelve.
     is_archived: bool = False
+    #: 1/11/2026: la financiera, un revendedor, nosotros (fuera del parque y de campañas).
+    no_cliente_final: bool = False
     archived_at: datetime | None = None
     archived_reason: str | None = None
     external_references: dict[str, Any] = Field(

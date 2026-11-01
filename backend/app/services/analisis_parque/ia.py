@@ -33,8 +33,10 @@ MAX_LECTURA = 4
 
 SISTEMA = """Eres un analista comercial de Bomedia (máquinas láser, UV, DTF y sus consumibles). \
 Te paso HECHOS ya calculados sobre el parque y las compras de un cliente, cada uno con su id \
-(D1, D2…), y una lista de PRODUCTOS (P1, P2…): los consumibles de la gama de sus máquinas que \
-nunca ha comprado.
+(D1, D2…), y una lista de PRODUCTOS (P1, P2…) que se le pueden proponer, ORDENADA POR ENCAJE \
+con ese cliente: primero lo que compraba y ha dejado de comprar; después lo que nunca ha \
+comprado pero compran clientes como él (que compran sus mismos consumibles o tienen su misma \
+máquina). No está ordenada por lo más vendido.
 
 Escribe en castellano, para un comercial que va a llamar o escribir al cliente:
 
@@ -44,7 +46,9 @@ ni datos, ni fechas, ni cifras, ni suposiciones.
 2. "entrada": UNA frase concreta de «por dónde entrar» (qué decirle o qué ofrecerle). Tiene que \
 apoyarse en un hueco, un cambio o un dato concreto de los hechos, y citarlo en "citas". Si \
 propone un producto, solo uno de la lista PRODUCTOS, y pon su id en "productos". Si no hay un \
-dato en el que apoyarla, devuelve "entrada": null. Nada de frases de venta genéricas.
+dato en el que apoyarla, devuelve "entrada": null. Nada de frases de venta genéricas. Si propones \
+producto, el PRIMERO de la lista que tenga sentido con los hechos; mejor recuperar lo que ya \
+compraba que ofrecer algo nuevo.
 
 Reglas:
 - Si un hecho dice que algo no se sabe (por ejemplo, que una máquina puede no estar en \

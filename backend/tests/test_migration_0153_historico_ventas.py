@@ -434,3 +434,18 @@ def test_0169_analisis_parque_solo_esquema(alembic_setup):
             "coste_usd"} <= cols
     command.downgrade(cfg, "20261101_0168")
     assert "crm_analisis_empresa" not in inspect(engine).get_table_names()
+
+
+def test_0170_no_cliente_final_solo_esquema(alembic_setup):
+    cfg, db_url = alembic_setup
+    engine = create_engine(db_url)
+    command.stamp(cfg, "20261101_0168")
+    with engine.begin() as c:
+        c.exec_driver_sql("CREATE TABLE companies (id VARCHAR(36) PRIMARY KEY)")
+        c.exec_driver_sql("INSERT INTO companies (id) VALUES ('e1')")
+    command.upgrade(cfg, "20261101_0170")
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT no_cliente_final FROM companies").scalar() in (0, False)
+    command.downgrade(cfg, "20261101_0169")
+    assert "no_cliente_final" not in {
+        col["name"] for col in inspect(engine).get_columns("companies")}

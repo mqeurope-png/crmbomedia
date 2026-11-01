@@ -593,6 +593,8 @@ def parque(session: Session, company: Any) -> dict[str, Any]:
         # Sin cliente de FACTUSOL vinculado no se sabe qué ha comprado: se dice,
         # porque una lista vacía se leería como «no ha comprado nunca».
         "sin_cliente_factusol": codcli is None,
+        # Marcada «no es cliente final»: se ven, pero no cuentan (1/11/2026).
+        "no_cliente_final": bool(getattr(company, "no_cliente_final", False)),
         "maquinas": rows,
         "activas": len(activas),
     }

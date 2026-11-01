@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from statistics import median
@@ -45,9 +46,16 @@ BLOQUES = (TIENE, CONSUME, NO_COMPRA, CAMBIO, NO_SE_SABE)
 ANCLAS = frozenset({TIENE, CONSUME, NO_COMPRA, CAMBIO})
 
 SIN_CLIENTE, SIN_DATOS, CON_DATOS = "sin_cliente", "sin_datos", "con_datos"
+#: Marcada «no es cliente final» (la financiera, un revendedor, nosotros).
+NO_CLIENTE_FINAL = "no_cliente_final"
 
 MAX_ARTICULOS_CONSUMO = 6
-MAX_PRODUCTOS_POR_GAMA = 5
+#: «Qué no compra», por encaje (1/11/2026).
+MAX_RECOMPRA = 3            # lo que compraba y ha dejado de comprar
+MAX_COMPATIBLES = 4         # lo que compran clientes como él
+MESES_DEJO_MIN = 6          # «ha dejado de comprarlo»: al menos esto, y 2 veces su ritmo
+MIN_CLIENTES_COMO_EL = 2    # para dar por compatible: lo compran al menos tantos…
+MIN_PROPORCION = 0.2        # …y al menos esta parte de los clientes como él
 
 
 @dataclass
@@ -195,6 +203,44 @@ def _comprado_alguna_vez(session: Session, codcli: str) -> set[str]:
     return {eq.canonico(al_art.resuelve(c)) for c in codigos if (c or "").strip()}
 
 
+def _clientes_como_el(session: Session, company: Any, codcli: str, eq: Any, *,
+                      modelos: set[str], consumibles: set[str], candidatos: list[str]
+                      ) -> tuple[int, dict[str, int]]:
+    """Cuántos clientes «como él» hay y cuántos de ellos compran cada candidato
+    (por el resumen por empresa: `crm_empresa_compra` y `crm_empresa_modelo`).
+    «Como él»: los que compran alguno de sus mismos `consumibles`; si no se
+    pasan, los que tienen alguno de sus `modelos` de máquina. Fuera él mismo
+    (y las empresas con su mismo cliente de FACTUSOL) y las que no son cliente
+    final."""
+    from app.erp.models.resumen_empresa import CrmEmpresaCompra, CrmEmpresaModelo  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    def grupo(codigos: Iterable[str]) -> list[str]:
+        return sorted({c.strip().upper() for k in codigos for c in eq.grupo(k) if c})
+
+    vecinos: set[str] = set()
+    if consumibles:
+        vecinos = set(session.scalars(select(CrmEmpresaCompra.company_id).distinct().where(
+            func.upper(CrmEmpresaCompra.codart).in_(grupo(consumibles)))))
+    elif modelos:
+        vecinos = set(session.scalars(select(CrmEmpresaModelo.company_id).distinct().where(
+            CrmEmpresaModelo.modelo.in_(sorted(modelos)))))
+    fuera = {company.id} | set(session.scalars(select(Company.id).where(
+        Company.no_cliente_final.is_(True))))
+    fuera |= set(session.scalars(select(Company.id).where(
+        Company.factusol_company_id == codcli)))
+    vecinos -= fuera
+    if not vecinos:
+        return 0, {}
+    compran: dict[str, set[str]] = defaultdict(set)
+    for cid, codart in session.execute(
+            select(CrmEmpresaCompra.company_id, CrmEmpresaCompra.codart).where(
+                func.upper(CrmEmpresaCompra.codart).in_(grupo(candidatos)),
+                CrmEmpresaCompra.company_id.in_(sorted(vecinos)))):
+        compran[eq.canonico(codart)].add(cid)
+    return len(vecinos), {k: len(v) for k, v in compran.items()}
+
+
 def _catalogo_consumibles(session: Session, gamas: set[str], *, desde: date, hasta: date
                           ) -> dict[str, list[dict[str, Any]]]:
     """Por gama: los artículos de clase consumible (con gama de verdad, la de
@@ -261,6 +307,9 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
     cfg = normalizar(cfg)
     hoy = hoy or date.today()
     codcli = (getattr(company, "factusol_company_id", None) or "").strip() or None
+    if getattr(company, "no_cliente_final", False):
+        # La financiera, un revendedor, nosotros: su parque no es de cliente final.
+        return Hechos(estado=NO_CLIENTE_FINAL, huella=_huella(NO_CLIENTE_FINAL))
     if codcli is None:
         return Hechos(estado=SIN_CLIENTE, huella=_huella(SIN_CLIENTE))
     gamas_nombre = parque._gamas(session)
@@ -364,23 +413,90 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
                            f"({len(fechas)}); la última, hace {sin} meses.",
                   {"tipo": "documento", "doc": ultima["doc"]}, gama)
 
-    # 3. Qué no compra: el consumible de la gama de sus máquinas que nunca ha comprado.
+    # 3. Qué no compra, ordenado por ENCAJE con este cliente (no por lo más
+    #    vendido, que llevaba a ofrecer lo que no le sirve):
+    #    1) lo que le compraba y ha dejado de comprar, si sigue a la venta;
+    #    2) lo que nunca ha comprado pero compran clientes como él: los que
+    #       compran sus mismos consumibles (o, si no compra ninguno, los que
+    #       tienen su mismo modelo de máquina). Es lo que dicen los datos de la
+    #       compatibilidad; sin ese dato no se supone, se dice;
+    #    3) el volumen de ventas, solo para desempatar.
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_art = historico_alias.articulos(session)
     productos: list[Producto] = []
     desde = hoy - timedelta(days=int(cfg["meses_catalogo"]) * 30.44)
     catalogo = _catalogo_consumibles(session, gamas_maquinas, desde=desde, hasta=hoy)
-    for gama in sorted(catalogo):
+    modelos_de: dict[str, set[str]] = defaultdict(set)
+    fuente_maquina: dict[str, dict[str, Any]] = {}
+    for m, h_tiene in zip(maquinas, [x for x in hechos if x.bloque == TIENE], strict=False):
+        if m.get("gama") and m.get("codart"):
+            modelos_de[m["gama"]].add(eq.canonico(al_art.resuelve(
+                m.get("codart_catalogo") or m["codart"])))
+        if m.get("gama"):
+            fuente_maquina.setdefault(m["gama"], h_tiene.fuente or {})
+
+    def producto(x: dict[str, Any], gama: str, nombre_g: str) -> str:
+        pid = f"P{len(productos) + 1}"
+        productos.append(Producto(id=pid, codart=x["codart"], descripcion=x["descripcion"],
+                                  gama=gama, gama_nombre=nombre_g, ventas=x["ventas"],
+                                  ultima_venta=_iso(x["ultima"])))
+        return pid
+
+    for gama in sorted(gamas_maquinas):
         nombre_g = gamas_nombre.get(gama, gama)
-        nuevos = [x for x in catalogo[gama] if eq.canonico(x["codart"]) not in comprados]
-        for x in nuevos[:MAX_PRODUCTOS_POR_GAMA]:
-            pid = f"P{len(productos) + 1}"
-            productos.append(Producto(id=pid, codart=x["codart"], descripcion=x["descripcion"],
-                                      gama=gama, gama_nombre=nombre_g, ventas=x["ventas"],
-                                      ultima_venta=_iso(x["ultima"])))
+        vigentes = {eq.canonico(x["codart"]): x for x in catalogo.get(gama, [])}
+        mios: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for c in por_gama.get(gama, []):
+            if c["clase"] == "consumible" and c["codart"]:
+                mios[eq.canonico(c["codart"])].append(c)
+        # 1) Lo que compraba y ha dejado de comprar (y se sigue vendiendo).
+        dejados = []
+        for k, xs in mios.items():
+            fechas = sorted({x["fecha"] for x in xs if x["fecha"]})
+            if len(fechas) < 2 or k not in vigentes:
+                continue
+            cada = max(1, round(median(
+                [(b - a).days for a, b in zip(fechas, fechas[1:], strict=False)]) / 30.44))
+            sin = _meses(fechas[-1], hoy)
+            if sin >= max(MESES_DEJO_MIN, 2 * cada):
+                dejados.append((len(fechas), xs[-1], cada, sin, vigentes[k]))
+        dejados.sort(key=lambda d: (-d[0], -d[4]["ventas"]))
+        for n, ultima, cada, sin, x in dejados[:MAX_RECOMPRA]:
+            pid = producto(x, gama, nombre_g)
+            nuevo(NO_COMPRA, f"Ha dejado de comprar {ultima['descripcion']} ({ultima['codart']}), "
+                             f"consumible de {nombre_g} [{pid}]: lo pedía cada {cada} meses "
+                             f"({n} compras) y lleva {sin} sin pedirlo (la última, el "
+                             f"{_fecha(ultima['fecha'])}).",
+                  {"tipo": "documento", "doc": ultima["doc"]}, gama)
+        # 2) Lo que nunca ha comprado y compran clientes como él.
+        nunca = [x for k, x in vigentes.items() if k not in comprados]
+        if not nunca:
+            continue
+        por_consumo = bool(mios)
+        n, compran = _clientes_como_el(
+            session, company, codcli, eq, modelos=modelos_de.get(gama, set()),
+            consumibles=set(mios) if por_consumo else set(),
+            candidatos=[x["codart"] for x in nunca])
+        como_el = ("clientes que compran sus mismos consumibles" if por_consumo
+                   else "clientes con su mismo modelo de máquina")
+        encajan = sorted(
+            ((compran.get(eq.canonico(x["codart"]), 0), x) for x in nunca),
+            key=lambda kx: (-kx[0], -kx[1]["ventas"], kx[1]["descripcion"].lower()))
+        encajan = [(k, x) for k, x in encajan
+                   if n and k >= MIN_CLIENTES_COMO_EL and k / n >= MIN_PROPORCION]
+        for k, x in encajan[:MAX_COMPATIBLES]:
+            pid = producto(x, gama, nombre_g)
             nuevo(NO_COMPRA, f"Nunca ha comprado {x['descripcion']} ({x['codart']}), consumible "
-                             f"de {nombre_g} [{pid}]: se ha vendido {_veces(x['ventas'])} en los "
-                             f"últimos {cfg['meses_catalogo']} meses, la última el "
-                             f"{_fecha(x['ultima'])}.",
+                             f"de {nombre_g} [{pid}]: lo compran {k} de los {n} {como_el}.",
                   {"tipo": "fecha", "fecha": _iso(x["ultima"])}, gama)
+        if not encajan:
+            nuevo(NO_SE_SABE,
+                  f"No se sabe qué consumible de {nombre_g} que no compra le encajaría: ninguno "
+                  f"lo compran al menos {MIN_CLIENTES_COMO_EL} de los {n} {como_el}, y la "
+                  "compatibilidad no se supone."
+                  + (" Mejor ofrecerle lo que ya compraba." if mios else ""),
+                  fuente_maquina.get(gama) or {"tipo": "fecha", "fecha": _iso(hoy)}, gama)
 
     return Hechos(estado=CON_DATOS, hechos=hechos, productos=productos,
                   huella=_huella(CON_DATOS, codcli, maquinas, compras, cfg))

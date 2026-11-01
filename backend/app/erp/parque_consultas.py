@@ -153,7 +153,21 @@ def _parque_activo(session: Session, *,
                 "codart": man.codart, "articulo": man.descripcion,
                 "gama": parque.gama_de_manual(man, c),
                 "familia": c["familia"] if c else None, "fecha": man.fecha, "origen": "manual"})
+    # Las empresas marcadas «no es cliente final» (la financiera, un revendedor,
+    # nosotros): sus máquinas no cuentan en el parque, ni en dormidos y huecos.
+    for cli in clientes_no_finales(session):
+        out.pop(cli, None)
     return out
+
+
+def clientes_no_finales(session: Session) -> set[str]:
+    """Los clientes de FACTUSOL (`clave_cliente`) de las empresas marcadas «no
+    es cliente final» (1/11/2026)."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    return {cli for codcli in session.scalars(select(Company.factusol_company_id).where(
+        Company.no_cliente_final.is_(True), Company.factusol_company_id.is_not(None)))
+        if (cli := parque.clave_cliente(codcli))}
 
 
 def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]:

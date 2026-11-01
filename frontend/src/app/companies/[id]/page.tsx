@@ -22,6 +22,7 @@ import {
   listCompanyContacts,
   getDespegueEmpresa,
   setContactoPrincipal,
+  setNoClienteFinal,
   type DespegueEmpresa,
   mergeCompanies,
   updateCompany,
@@ -128,6 +129,22 @@ export default function CompanyDetailPage() {
 
   // Contacto principal (uno por empresa): marcar uno desmarca los demás.
   const [principalBusy, setPrincipalBusy] = useState(false);
+  const [noFinalBusy, setNoFinalBusy] = useState(false);
+  // Para volver a leer el parque y el análisis al marcar o desmarcar.
+  const [parqueVersion, setParqueVersion] = useState(0);
+  async function marcarNoClienteFinal(valor: boolean) {
+    setNoFinalBusy(true);
+    try {
+      const r = await setNoClienteFinal(params.id, valor);
+      setCompany((prev) => (prev ? { ...prev, no_cliente_final: r.no_cliente_final } : prev));
+      setParqueVersion((v) => v + 1);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se ha podido cambiar «no es cliente final»."));
+    } finally {
+      setNoFinalBusy(false);
+    }
+  }
+
   async function marcarPrincipal(contactId: string | null) {
     setPrincipalBusy(true);
     try {
@@ -512,6 +529,11 @@ export default function CompanyDetailPage() {
             </span>
           )}
           {fiscal ? <RegimePill regime={fiscal.regime} country={fiscal.country_iso2} /> : null}
+          {company.no_cliente_final ? (
+            <span className="badge warn" title="Fuera del parque, de dormidos y huecos y de las campañas">
+              No es cliente final
+            </span>
+          ) : null}
           {viesChip ? (
             <span className={`badge ${viesChip.tone}`} style={{ textTransform: "none", letterSpacing: 0 }}
                   title={vies?.name ? `Según VIES: ${vies.name}` : undefined}>
@@ -682,12 +704,22 @@ export default function CompanyDetailPage() {
 
       {/* key: al vincular otro cliente de FACTUSOL o pasar a otra empresa, se lee de nuevo. */}
       {canSeeParque ? (
-        <CompanyParquePanel key={`${company.id}|${company.factusol_company_id ?? ""}`}
+        <CompanyParquePanel key={`${company.id}|${company.factusol_company_id ?? ""}|${parqueVersion}`}
                             companyId={company.id} puedeEditar={canEditParque}
                             puedeClasificar={canClasificarParque} />
       ) : null}
+      <label className="field company-no-final" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <input type="checkbox" style={{ width: "auto" }} checked={Boolean(company.no_cliente_final)}
+               disabled={!canEdit || noFinalBusy}
+               onChange={(e) => void marcarNoClienteFinal(e.target.checked)} />
+        <span>
+          No es cliente final (la financiera del leasing, un revendedor, nosotros): sus máquinas no
+          cuentan en el parque, ni en dormidos y huecos, y sus contactos no entran en las campañas.
+          No se borra nada; se deshace desmarcándola.
+        </span>
+      </label>
       {/* El análisis del parque: solo si el usuario puede verlo (lo dice el servidor). */}
-      <AnalisisParquePanel key={`analisis|${company.id}|${company.factusol_company_id ?? ""}`}
+      <AnalisisParquePanel key={`analisis|${company.id}|${company.factusol_company_id ?? ""}|${parqueVersion}`}
                            companyId={company.id} />
 
       <div className="tab-bar">
