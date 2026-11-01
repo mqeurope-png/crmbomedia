@@ -10,7 +10,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.crm import Contact, ContactTag, Segment
@@ -258,6 +258,9 @@ def preview_rules(
         condition = build_filter(rules)
     except SegmentRuleError:
         return 0, []
+    # Lo mismo que contará el segmento guardado: sin los de empresas que no son
+    # cliente final (1/11/2026).
+    condition = and_(condition, un_por_empresa.sin_no_clientes_finales())
     count = int(
         session.scalar(
             select(func.count()).select_from(Contact).where(condition)

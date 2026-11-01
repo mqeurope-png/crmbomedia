@@ -72,9 +72,13 @@ def resolve_target_contacts(
     if segment is None:
         raise ValueError(f"Segment {target.segment_id!r} no longer exists")
     if not segment.is_dynamic:
+        from app.services.segments import un_por_empresa  # noqa: PLC0415
+
         ids = segments_repository.decode_static_ids(segment)
+        # 1/11/2026: tampoco los de empresas que no son cliente final.
         rows = (
-            list(session.scalars(select(Contact).where(Contact.id.in_(ids))))
+            list(session.scalars(select(Contact).where(
+                Contact.id.in_(ids), un_por_empresa.sin_no_clientes_finales())))
             if ids
             else []
         )
@@ -93,6 +97,11 @@ def resolve_target_contacts(
             condition = un_por_empresa.filtro_de_segmento(segment, and_(
                 condition, func.coalesce(func.trim(Contact.email), "") != "",
                 Contact.is_active.is_(True)))
+        else:
+            # 1/11/2026: fuera los de empresas que no son cliente final.
+            from app.services.segments import un_por_empresa  # noqa: PLC0415
+
+            condition = and_(condition, un_por_empresa.sin_no_clientes_finales())
         rows = list(session.scalars(select(Contact).where(condition)))
     return [c for c in rows if c.email and c.is_active]
 

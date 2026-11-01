@@ -162,6 +162,12 @@ export function CompanyParquePanel({
       <section className="erp-card" aria-label="Máquinas">
         <h3>Máquinas {parque ? <span className="muted">· {parque.activas} en servicio</span> : null}</h3>
         {error ? <p className="form-error" role="alert">{error}</p> : null}
+        {parque?.no_cliente_final ? (
+          <p className="notice" role="status">
+            Marcada «no es cliente final»: sus máquinas se ven aquí, pero no cuentan en el parque, ni
+            en dormidos y huecos.
+          </p>
+        ) : null}
         {parque?.sin_cliente_factusol ? (
           <p className="form-error" role="status">
             Esta empresa no tiene cliente de FACTUSOL vinculado: no se sabe qué ha comprado.

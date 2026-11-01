@@ -8323,6 +8323,8 @@ export type ParqueMaquina = {
 };
 
 export type ParqueEmpresa = {
+  /** 1/11/2026: marcada «no es cliente final» (se ve, no cuenta). */
+  no_cliente_final?: boolean;
   codcli: string | null;
   /** Sin cliente de FACTUSOL vinculado: no se sabe qué ha comprado. */
   sin_cliente_factusol: boolean;

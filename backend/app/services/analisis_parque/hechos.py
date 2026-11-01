@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from statistics import median
@@ -36,7 +37,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 #: Cambia si cambia cómo se calculan los hechos: obliga a regenerar.
-VERSION = "1"
+VERSION = "2"
 
 TIENE, CONSUME, NO_COMPRA, CAMBIO, NO_SE_SABE = (
     "tiene", "consume", "no_compra", "cambio", "no_se_sabe")
@@ -45,9 +46,19 @@ BLOQUES = (TIENE, CONSUME, NO_COMPRA, CAMBIO, NO_SE_SABE)
 ANCLAS = frozenset({TIENE, CONSUME, NO_COMPRA, CAMBIO})
 
 SIN_CLIENTE, SIN_DATOS, CON_DATOS = "sin_cliente", "sin_datos", "con_datos"
+#: Marcada «no es cliente final» (la financiera, un revendedor, nosotros).
+NO_CLIENTE_FINAL = "no_cliente_final"
 
 MAX_ARTICULOS_CONSUMO = 6
-MAX_PRODUCTOS_POR_GAMA = 5
+#: «Qué no compra», por encaje (1/11/2026).
+MAX_RECOMPRA = 3            # lo que compraba y ha dejado de comprar
+MAX_COMPATIBLES = 4         # lo que compran clientes como él
+MESES_DEJO_MIN = 6          # «ha dejado de comprarlo»: al menos esto, y 2 veces su ritmo
+MIN_CLIENTES_COMO_EL = 2    # para dar por compatible: lo compran al menos tantos…
+MIN_PROPORCION = 0.2        # …y al menos esta parte de los clientes como él…
+DESTACA = 2.0               # …y entre ellos, al menos el doble que en toda la gama
+COMUN = 0.5                 # un consumible que compra más de esta parte de la gama no
+                            # define a los «clientes como él» (lo compra cualquiera)
 
 
 @dataclass
@@ -195,6 +206,79 @@ def _comprado_alguna_vez(session: Session, codcli: str) -> set[str]:
     return {eq.canonico(al_art.resuelve(c)) for c in codigos if (c or "").strip()}
 
 
+def _compradores(session: Session, eq: Any, codigos: Iterable[str],
+                 excluir: set[str]) -> dict[str, set[str]]:
+    """Por modelo de artículo (código canónico): los CLIENTES (`clave_cliente`,
+    no fichas de empresa: un cliente con dos fichas cuenta una vez) que lo
+    compran, según el resumen por empresa. Sin los de `excluir`."""
+    from app.erp import parque  # noqa: PLC0415
+    from app.erp.models.resumen_empresa import CrmEmpresaCompra, CrmEmpresaErp  # noqa: PLC0415
+
+    todos = sorted({c.strip().upper() for k in codigos for c in eq.grupo(k) if c})
+    out: dict[str, set[str]] = defaultdict(set)
+    if not todos:
+        return out
+    for codcli, codart in session.execute(
+            select(CrmEmpresaErp.codcli, CrmEmpresaCompra.codart)
+            .join(CrmEmpresaErp, CrmEmpresaErp.company_id == CrmEmpresaCompra.company_id)
+            .where(func.upper(CrmEmpresaCompra.codart).in_(todos))):
+        cli = parque.clave_cliente(codcli)
+        if cli and cli not in excluir:
+            out[eq.canonico(codart)].add(cli)
+    return out
+
+
+def _clientes_como_el(session: Session, codcli: str, eq: Any, gama: str, *,
+                      modelos: set[str], consumibles: set[str], candidatos: list[str]
+                      ) -> tuple[int, dict[str, int], dict[str, float], str]:
+    """Cuántos clientes «como él» hay, cuántos de ellos compran cada candidato
+    y qué parte de TODOS los que compran consumible de la gama lo compran (la
+    referencia para saber si entre los suyos destaca o es lo que compra todo
+    el mundo). «Como él»: los que compran alguno de sus mismos `consumibles`;
+    si no se pasan, los que tienen alguno de sus `modelos` de máquina. Por
+    cliente de FACTUSOL; fuera él mismo y los que no son cliente final."""
+    from app.erp import parque  # noqa: PLC0415
+    from app.erp import parque_consultas as pc  # noqa: PLC0415
+    from app.erp.models.historico import HistoricoFamilia  # noqa: PLC0415
+    from app.erp.models.resumen_empresa import (  # noqa: PLC0415
+        CrmEmpresaCompra,
+        CrmEmpresaErp,
+        CrmEmpresaModelo,
+    )
+
+    excluir = pc.clientes_no_finales(session) | {parque.clave_cliente(codcli)}
+    # La referencia: todos los clientes que compran consumible de la gama.
+    familias = list(session.scalars(select(HistoricoFamilia.codigo).where(
+        HistoricoFamilia.gama == gama)))
+    de_la_gama = {cli for c in session.scalars(
+        select(CrmEmpresaErp.codcli).join(
+            CrmEmpresaCompra, CrmEmpresaCompra.company_id == CrmEmpresaErp.company_id)
+        .where(CrmEmpresaCompra.familia.in_(familias),
+               CrmEmpresaCompra.clase == "consumible").distinct())
+        if (cli := parque.clave_cliente(c)) and cli not in excluir} if familias else set()
+    total = max(len(de_la_gama), 1)
+    # «Como él» por sus consumibles PROPIOS: los que no compra media gama (una
+    # lente que compra todo el mundo no dice nada de qué máquina tiene).
+    suyos = _compradores(session, eq, consumibles, excluir) if consumibles else {}
+    propios = [v for v in suyos.values() if len(v) / total <= COMUN]
+    if propios:
+        vecinos, base = set().union(*propios), "clientes que compran sus mismos consumibles"
+    elif modelos:
+        base = "clientes con su mismo modelo de máquina"
+        vecinos = {cli for c in session.scalars(
+            select(CrmEmpresaErp.codcli).join(
+                CrmEmpresaModelo, CrmEmpresaModelo.company_id == CrmEmpresaErp.company_id)
+            .where(CrmEmpresaModelo.modelo.in_(sorted(modelos))).distinct())
+            if (cli := parque.clave_cliente(c)) and cli not in excluir}
+    else:
+        vecinos, base = set(), "clientes como él"
+    if not vecinos:
+        return 0, {}, {}, base
+    compran = _compradores(session, eq, candidatos, excluir)
+    return (len(vecinos), {k: len(v & vecinos) for k, v in compran.items()},
+            {k: len(v) / total for k, v in compran.items()}, base)
+
+
 def _catalogo_consumibles(session: Session, gamas: set[str], *, desde: date, hasta: date
                           ) -> dict[str, list[dict[str, Any]]]:
     """Por gama: los artículos de clase consumible (con gama de verdad, la de
@@ -261,6 +345,9 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
     cfg = normalizar(cfg)
     hoy = hoy or date.today()
     codcli = (getattr(company, "factusol_company_id", None) or "").strip() or None
+    if getattr(company, "no_cliente_final", False):
+        # La financiera, un revendedor, nosotros: su parque no es de cliente final.
+        return Hechos(estado=NO_CLIENTE_FINAL, huella=_huella(NO_CLIENTE_FINAL))
     if codcli is None:
         return Hechos(estado=SIN_CLIENTE, huella=_huella(SIN_CLIENTE))
     gamas_nombre = parque._gamas(session)
@@ -364,23 +451,117 @@ def calcular(session: Session, company: Any, *, hoy: date | None = None,
                            f"({len(fechas)}); la última, hace {sin} meses.",
                   {"tipo": "documento", "doc": ultima["doc"]}, gama)
 
-    # 3. Qué no compra: el consumible de la gama de sus máquinas que nunca ha comprado.
+    # 3. Qué no compra, ordenado por ENCAJE con este cliente (no por lo más
+    #    vendido, que llevaba a ofrecer lo que no le sirve). En toda la lista,
+    #    sea cual sea la gama:
+    #    1) lo que le compraba y ha dejado de comprar, si sigue a la venta;
+    #    2) lo que nunca ha comprado pero compran clientes como él (los que
+    #       compran sus mismos consumibles o, si no compra ninguno, los que
+    #       tienen su mismo modelo de máquina), y entre ellos DESTACA: no basta
+    #       con que lo compren, tiene que comprarse entre los suyos al menos el
+    #       doble que en toda la gama (si no, es lo que compra todo el mundo, no
+    #       lo que le encaja a él). Sin ese dato no se supone: se dice;
+    #    3) el volumen de ventas, solo para desempatar.
+    from app.erp import historico_alias  # noqa: PLC0415
+
+    al_art = historico_alias.articulos(session)
     productos: list[Producto] = []
     desde = hoy - timedelta(days=int(cfg["meses_catalogo"]) * 30.44)
     catalogo = _catalogo_consumibles(session, gamas_maquinas, desde=desde, hasta=hoy)
-    for gama in sorted(catalogo):
+    modelos_de: dict[str, set[str]] = defaultdict(set)
+    fuente_maquina: dict[str, dict[str, Any]] = {}
+    for m, h_tiene in zip(maquinas, [x for x in hechos if x.bloque == TIENE], strict=False):
+        if m.get("gama") and m.get("codart"):
+            modelos_de[m["gama"]].add(eq.canonico(al_art.resuelve(
+                m.get("codart_catalogo") or m["codart"])))
+        if m.get("gama"):
+            fuente_maquina.setdefault(m["gama"], h_tiene.fuente or {})
+
+    def producto(x: dict[str, Any], gama: str, nombre_g: str) -> str:
+        pid = f"P{len(productos) + 1}"
+        productos.append(Producto(id=pid, codart=x["codart"], descripcion=x["descripcion"],
+                                  gama=gama, gama_nombre=nombre_g, ventas=x["ventas"],
+                                  ultima_venta=_iso(x["ultima"])))
+        return pid
+
+    def vigentes_de(gama: str) -> dict[str, dict[str, Any]]:
+        """Lo que se sigue vendiendo de la gama, por modelo: con códigos
+        equivalentes, el más vendido y las ventas de todos juntos."""
+        out: dict[str, dict[str, Any]] = {}
+        for x in catalogo.get(gama, []):
+            k = eq.canonico(x["codart"])
+            if k in out:
+                y = out[k]
+                rep = x if x["ventas"] > y["ventas"] else y
+                out[k] = {**rep, "ventas": x["ventas"] + y["ventas"],
+                          "ultima": max(filter(None, (x["ultima"], y["ultima"])), default=None)}
+            else:
+                out[k] = dict(x)
+        return out
+
+    def mios_de(gama: str) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for c in por_gama.get(gama, []):
+            if c["clase"] == "consumible" and c["codart"]:
+                out[eq.canonico(al_art.resuelve(c["codart"]))].append(c)
+        return out
+
+    gamas_orden = sorted(gamas_maquinas)
+    # 1) Lo que compraba y ha dejado de comprar (y se sigue vendiendo), de todas las gamas.
+    dejados = []
+    for gama in gamas_orden:
+        vigentes = vigentes_de(gama)
+        for k, xs in mios_de(gama).items():
+            fechas = sorted({x["fecha"] for x in xs if x["fecha"]})
+            if len(fechas) < 2 or k not in vigentes:
+                continue
+            cada = max(1, round(median(
+                [(b - a).days for a, b in zip(fechas, fechas[1:], strict=False)]) / 30.44))
+            sin = _meses(fechas[-1], hoy)
+            if sin >= max(MESES_DEJO_MIN, 2 * cada):
+                ultima = max(xs, key=lambda x: (x["fecha"] or date.min, x["doc"]["numero"]))
+                dejados.append((len(fechas), ultima, cada, sin, vigentes[k], gama))
+    dejados.sort(key=lambda d: (-d[0], -d[4]["ventas"]))
+    for n, ultima, cada, sin, x, gama in dejados[:MAX_RECOMPRA]:
         nombre_g = gamas_nombre.get(gama, gama)
-        nuevos = [x for x in catalogo[gama] if eq.canonico(x["codart"]) not in comprados]
-        for x in nuevos[:MAX_PRODUCTOS_POR_GAMA]:
-            pid = f"P{len(productos) + 1}"
-            productos.append(Producto(id=pid, codart=x["codart"], descripcion=x["descripcion"],
-                                      gama=gama, gama_nombre=nombre_g, ventas=x["ventas"],
-                                      ultima_venta=_iso(x["ultima"])))
+        pid = producto(x, gama, nombre_g)
+        nuevo(NO_COMPRA, f"Ha dejado de comprar {ultima['descripcion']} ({x['codart']}), "
+                         f"consumible de {nombre_g} [{pid}]: lo pedía cada {cada} meses "
+                         f"({n} compras) y lleva {sin} sin pedirlo (la última, el "
+                         f"{_fecha(ultima['fecha'])}).",
+              {"tipo": "documento", "doc": ultima["doc"]}, gama)
+    # 2) Lo que nunca ha comprado y, entre los clientes como él, destaca.
+    for gama in gamas_orden:
+        nombre_g = gamas_nombre.get(gama, gama)
+        vigentes = vigentes_de(gama)
+        mios = mios_de(gama)
+        nunca = [x for k, x in vigentes.items() if k not in comprados]
+        if not nunca:
+            continue
+        n, compran, en_la_gama, como_el = _clientes_como_el(
+            session, codcli, eq, gama, modelos=modelos_de.get(gama, set()),
+            consumibles=set(mios), candidatos=[x["codart"] for x in nunca])
+        encajan = []
+        for x in nunca:
+            k_ = eq.canonico(x["codart"])
+            k = compran.get(k_, 0)
+            if (n and k >= MIN_CLIENTES_COMO_EL and k / n >= MIN_PROPORCION
+                    and k / n >= DESTACA * en_la_gama.get(k_, 0.0)):
+                encajan.append((k, x))
+        encajan.sort(key=lambda kx: (-kx[0], -kx[1]["ventas"], kx[1]["descripcion"].lower()))
+        for k, x in encajan[:MAX_COMPATIBLES]:
+            pid = producto(x, gama, nombre_g)
             nuevo(NO_COMPRA, f"Nunca ha comprado {x['descripcion']} ({x['codart']}), consumible "
-                             f"de {nombre_g} [{pid}]: se ha vendido {_veces(x['ventas'])} en los "
-                             f"últimos {cfg['meses_catalogo']} meses, la última el "
-                             f"{_fecha(x['ultima'])}.",
+                             f"de {nombre_g} [{pid}]: lo compran {k} de los {n} {como_el}, "
+                             "bastante más que el resto de clientes de la gama.",
                   {"tipo": "fecha", "fecha": _iso(x["ultima"])}, gama)
+        if not encajan:
+            nuevo(NO_SE_SABE,
+                  f"No se sabe qué consumible de {nombre_g} que no compra le encajaría: entre los "
+                  f"{n} {como_el}, ninguno destaca sobre lo que compra cualquier cliente de la "
+                  "gama, y la compatibilidad no se supone."
+                  + (" Mejor ofrecerle lo que ya compraba." if mios else ""),
+                  fuente_maquina.get(gama) or {"tipo": "fecha", "fecha": _iso(hoy)}, gama)
 
     return Hechos(estado=CON_DATOS, hechos=hechos, productos=productos,
                   huella=_huella(CON_DATOS, codcli, maquinas, compras, cfg))

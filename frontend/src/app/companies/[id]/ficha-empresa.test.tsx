@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import CompanyDetailPage from "./page";
 import {
   archiveCompany, fiscalCheck, getCompany, getDespegueEmpresa, listCompanyContacts, restoreCompany,
-  setContactoPrincipal, updateCompany, viesRevalidate,
+  setContactoPrincipal, setNoClienteFinal, updateCompany, viesRevalidate,
 } from "../../lib/companiesApi";
 import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib/erpApi";
 
@@ -52,6 +52,7 @@ jest.mock("../../lib/companiesApi", () => ({
   viesRevalidate: jest.fn(),
   getDespegueEmpresa: jest.fn(() => Promise.resolve({ contactos: 0, dominios: [], at: null })),
   setContactoPrincipal: jest.fn(() => Promise.resolve({})),
+  setNoClienteFinal: jest.fn((_id: string, valor: boolean) => Promise.resolve({ no_cliente_final: valor })),
 }));
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
@@ -620,5 +621,20 @@ describe("Dominio de la lista de compartidos (1/11/2026)", () => {
     await user.click(screen.getByRole("button", { name: /Guardar/ }));
     expect(await screen.findByText(/lista de dominios compartidos/)).toBeInTheDocument();
     expect((screen.getByLabelText(/Dominio/) as HTMLInputElement).value).toBe("outlook.fr");
+  });
+});
+
+
+describe("No es cliente final (1/11/2026)", () => {
+  it("la casilla la marca, sale la etiqueta y se puede desmarcar", async () => {
+    const user = userEvent.setup();
+    render(<CompanyDetailPage />);
+    const casilla = (await screen.findByRole("checkbox", { name: /No es cliente final/ })) as HTMLInputElement;
+    expect(casilla.checked).toBe(false);
+    await user.click(casilla);
+    expect(setNoClienteFinal).toHaveBeenCalledWith("c1", true);
+    expect(await screen.findByText("No es cliente final", { selector: ".badge" })).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: /No es cliente final/ }));
+    expect(setNoClienteFinal).toHaveBeenLastCalledWith("c1", false);
   });
 });

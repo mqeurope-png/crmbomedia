@@ -13,7 +13,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -777,6 +777,41 @@ def _puede_editar_empresas(current_user: User = Depends(get_current_user)) -> Us
     if not has_capability(current_user, Cap.COMPANIES):
         raise forbidden()
     return current_user
+
+
+class NoClienteFinalPayload(BaseModel):
+    valor: bool
+
+
+@router.post("/{company_id}/no-cliente-final")
+def set_no_cliente_final(
+    company_id: str,
+    payload: NoClienteFinalPayload,
+    tareas: BackgroundTasks,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(_puede_editar_empresas),
+) -> dict[str, Any]:
+    """1/11/2026: marca o desmarca la empresa como «no es cliente final» (la
+    financiera del leasing, un revendedor, nosotros). Sus máquinas dejan de
+    contar en el parque, en dormidos y huecos, y sus contactos salen de las
+    campañas. No se borra nada; se deshace desmarcando. Recalcula el resumen
+    por empresa en segundo plano."""
+    row = session.get(Company, company_id)
+    if row is None:
+        raise not_found("Company")
+    antes = bool(row.no_cliente_final)
+    row.no_cliente_final = payload.valor
+    record_event(
+        session, action=Action.COMPANY_UPDATED, target_type="company", target_id=row.id,
+        actor=current_user,
+        metadata={"field": "no_cliente_final", "from": antes, "to": payload.valor},
+    )
+    session.commit()
+    if antes != payload.valor:
+        from app.services.empresa_erp_job import tras_cambio  # noqa: PLC0415
+
+        tareas.add_task(tras_cambio)
+    return {"no_cliente_final": row.no_cliente_final}
 
 
 @router.post("/{company_id}/contacto-principal")

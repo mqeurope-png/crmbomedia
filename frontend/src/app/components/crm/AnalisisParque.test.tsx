@@ -116,3 +116,12 @@ test("en la ficha de contacto: el de su empresa, dicho, y con enlace; sin empres
   rerender(<AnalisisResumenContacto companyId={null} companyName={null} />);
   expect(container).toBeEmptyDOMElement();
 });
+
+
+test("una empresa que no es cliente final no se analiza", async () => {
+  api().getAnalisisParque.mockResolvedValue({ ...GENERADO, datos: "no_cliente_final", analisis: null,
+                                              hechos_actuales: { ...HECHOS, hechos: [] } });
+  render(<AnalisisParquePanel companyId="emp-1" />);
+  expect(await screen.findByText(/no es cliente final/)).toBeInTheDocument();
+  expect(api().generarAnalisisParque).not.toHaveBeenCalled();
+});

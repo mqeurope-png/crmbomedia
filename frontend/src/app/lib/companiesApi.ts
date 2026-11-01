@@ -47,6 +47,8 @@ export type Company = {
   /** Limpieza de empresas: archivado reversible (fuera de listados por
    *  defecto). «Restaurar» la devuelve. Ausentes en respuestas antiguas. */
   is_archived?: boolean;
+  /** 1/11/2026: la financiera, un revendedor, nosotros: fuera del parque y de las campañas. */
+  no_cliente_final?: boolean;
   archived_at?: string | null;
   archived_reason?: string | null;
   /** C-3: CODCLI del cliente en FACTUSOL (null si no está vinculado). */
@@ -182,6 +184,14 @@ export type CompanyContact = {
 
 /** Marca el contacto principal de la empresa (los demás se desmarcan);
  *  `null` = ninguno. Manda en «un contacto por empresa». */
+export async function setNoClienteFinal(
+  companyId: string, valor: boolean,
+): Promise<{ no_cliente_final: boolean }> {
+  return apiFetch(`/api/companies/${companyId}/no-cliente-final`, {
+    method: "POST", body: JSON.stringify({ valor }),
+  });
+}
+
 export async function setContactoPrincipal(
   companyId: string, contactId: string | null,
 ): Promise<{ company_id: string; contacto_principal: string | null }> {

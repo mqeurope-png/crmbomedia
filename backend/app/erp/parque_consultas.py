@@ -153,7 +153,27 @@ def _parque_activo(session: Session, *,
                 "codart": man.codart, "articulo": man.descripcion,
                 "gama": parque.gama_de_manual(man, c),
                 "familia": c["familia"] if c else None, "fecha": man.fecha, "origen": "manual"})
+    # Las empresas marcadas «no es cliente final» (la financiera, un revendedor,
+    # nosotros): sus máquinas no cuentan en el parque, ni en dormidos y huecos.
+    for cli in clientes_no_finales(session):
+        out.pop(cli, None)
     return out
+
+
+def clientes_no_finales(session: Session) -> set[str]:
+    """Los clientes de FACTUSOL (`clave_cliente`) que no son cliente final
+    (1/11/2026): aquellos cuyas fichas ACTIVAS (no archivadas) están TODAS
+    marcadas. Si el código lo comparte otra ficha activa sin marcar, cuenta: no
+    se le quita el parque a una empresa que no lo dice."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    marcadas: dict[str, list[bool]] = {}
+    for codcli, marca in session.execute(
+            select(Company.factusol_company_id, Company.no_cliente_final).where(
+                Company.factusol_company_id.is_not(None), Company.is_archived.is_(False))):
+        if cli := parque.clave_cliente(codcli):
+            marcadas.setdefault(cli, []).append(bool(marca))
+    return {cli for cli, ms in marcadas.items() if ms and all(ms)}
 
 
 def _compras_por_gama(session: Session) -> dict[tuple[str, str], dict[str, Any]]:
