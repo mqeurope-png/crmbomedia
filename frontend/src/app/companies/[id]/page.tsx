@@ -21,6 +21,7 @@ import {
   restoreCompany,
   listCompanyContacts,
   getDespegueEmpresa,
+  setContactoPrincipal,
   type DespegueEmpresa,
   mergeCompanies,
   updateCompany,
@@ -123,6 +124,20 @@ export default function CompanyDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Contacto principal (uno por empresa): marcar uno desmarca los demás.
+  const [principalBusy, setPrincipalBusy] = useState(false);
+  async function marcarPrincipal(contactId: string | null) {
+    setPrincipalBusy(true);
+    try {
+      await setContactoPrincipal(params.id, contactId);
+      setContacts((prev) => prev.map((c) => ({ ...c, contacto_principal: c.id === contactId })));
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se ha podido marcar el contacto principal."));
+    } finally {
+      setPrincipalBusy(false);
+    }
+  }
 
   const sinContactos = !loading && !!company?.factusol_company_id && !company?.is_archived
     && contacts.length === 0;
@@ -839,6 +854,9 @@ export default function CompanyDetailPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th title="El que sale cuando una lista va «un contacto por empresa»">
+                    Principal
+                  </th>
                   <th>Nombre</th>
                   <th>Email</th>
                   <th>Teléfono</th>
@@ -848,6 +866,16 @@ export default function CompanyDetailPage() {
               <tbody>
                 {contacts.map((c) => (
                   <tr key={c.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        style={{ width: "auto" }}
+                        checked={!!c.contacto_principal}
+                        disabled={!canEdit || principalBusy}
+                        aria-label={`Contacto principal: ${c.first_name} ${c.last_name ?? ""}`.trim()}
+                        onChange={() => void marcarPrincipal(c.contacto_principal ? null : c.id)}
+                      />
+                    </td>
                     <td>
                       <Link href={`/contacts/${c.id}`}>
                         {c.first_name} {c.last_name ?? ""}

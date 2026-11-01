@@ -56,11 +56,14 @@ class EntityDescriptor:
         arbitrary attributes (extends the anti-injection boundary to
         ordering)."""
         spec = self.field_specs.get(key)
-        if spec is None or not spec.sortable or spec.column is None:
+        if spec is None or not spec.sortable:
             return None
         # Un campo puede ordenarse por una expresión distinta de su columna
-        # (`created_at_external` → COALESCE con la fecha de alta).
-        return spec.sort_column if spec.sort_column is not None else spec.column
+        # (`created_at_external` → COALESCE con la fecha de alta; las columnas
+        # de la empresa → una subconsulta correlada).
+        if spec.sort_column is not None:
+            return spec.sort_column
+        return spec.column
 
     def serialize_row(self, row: Any) -> dict[str, Any]:
         """Project a model row to a dict using the registered fields.

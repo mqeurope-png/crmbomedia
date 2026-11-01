@@ -26,7 +26,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -84,6 +84,15 @@ def resolve_target_contacts(
             condition = build_filter(rules)
         except SegmentRuleError as exc:
             raise ValueError(f"Segment rules invalid: {exc}") from exc
+        if getattr(segment, "uno_por_empresa", False):
+            # 1/11/2026: un contacto por empresa, elegido entre los que Brevo
+            # puede recibir (con email, activos): si el preferido no tiene
+            # email, va el siguiente de su empresa, no se queda sin nadie.
+            from app.services.segments import un_por_empresa  # noqa: PLC0415
+
+            condition = un_por_empresa.filtro_de_segmento(segment, and_(
+                condition, func.coalesce(func.trim(Contact.email), "") != "",
+                Contact.is_active.is_(True)))
         rows = list(session.scalars(select(Contact).where(condition)))
     return [c for c in rows if c.email and c.is_active]
 

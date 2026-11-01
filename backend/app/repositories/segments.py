@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.crm import Contact, ContactTag, Segment
+from app.services.segments import un_por_empresa
 from app.services.segments.engine import (
     SegmentRuleError,
     build_filter,
@@ -63,6 +64,8 @@ def create_segment(
     static_contact_ids: list[str] | None,
     is_shared: bool,
     color: str | None,
+    uno_por_empresa: bool = False,
+    orden_contacto: str | None = None,
 ) -> Segment:
     segment = Segment(
         name=name,
@@ -73,6 +76,8 @@ def create_segment(
         static_contact_ids=_encode(static_contact_ids),
         is_shared=is_shared,
         color=color,
+        uno_por_empresa=uno_por_empresa,
+        orden_contacto=orden_contacto,
     )
     session.add(segment)
     session.flush()
@@ -125,6 +130,8 @@ def duplicate_segment(
         static_contact_ids=source.static_contact_ids,
         is_shared=False,
         color=source.color,
+        uno_por_empresa=bool(source.uno_por_empresa),
+        orden_contacto=source.orden_contacto,
     )
     session.add(duplicate)
     session.flush()
@@ -158,6 +165,9 @@ def evaluate_segment(
             condition = build_filter(rules)
         except SegmentRuleError:
             condition = None
+        if condition is not None:
+            # 1/11/2026: «un contacto por empresa», si el segmento lo lleva.
+            condition = un_por_empresa.filtro_de_segmento(segment, condition)
         if condition is None:
             count = 0
         else:
@@ -217,6 +227,7 @@ def list_segment_contacts(
         condition = build_filter(rules)
     except SegmentRuleError:
         return [], 0
+    condition = un_por_empresa.filtro_de_segmento(segment, condition)
     statement = (
         select(Contact)
         .options(

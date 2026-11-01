@@ -378,6 +378,11 @@ class Contact(TimestampMixin, Base):
     factusol_is_primary: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    #: 1/11/2026 — el contacto principal de su empresa, marcado a mano en la
+    #: ficha de empresa (uno por empresa). Manda en «un contacto por empresa».
+    contacto_principal: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
     notes: Mapped[list["Note"]] = relationship(
@@ -431,6 +436,20 @@ class Contact(TimestampMixin, Base):
             system = ref.system.value if hasattr(ref.system, "value") else str(ref.system)
             out.append({"system": system, "account_id": ref.account_id})
         return out
+
+
+@event.listens_for(Contact.company_id, "set", active_history=True)
+def _principal_no_viaja(target: Contact, value, oldvalue, _initiator) -> None:
+    """1/11/2026: el contacto principal lo es de SU empresa. Si cambia de
+    empresa (asignar, conciliar, pedido web…), deja de serlo: si no, la
+    empresa nueva podría acabar con dos. (Las actualizaciones en bloque, como
+    la fusión de empresas, lo quitan en su propio UPDATE.)"""
+    from sqlalchemy.orm.base import NEVER_SET, NO_VALUE  # noqa: PLC0415
+
+    if oldvalue in (NO_VALUE, NEVER_SET) or oldvalue == value:
+        return
+    if target.contacto_principal:
+        target.contacto_principal = False
 
 
 class Tag(TimestampMixin, Base):
@@ -923,6 +942,12 @@ class Segment(TimestampMixin, Base):
     rules_json: Mapped[str | None] = mapped_column(Text)
     is_dynamic: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     static_contact_ids: Mapped[str | None] = mapped_column(Text)
+    #: 1/11/2026 — un solo contacto por empresa (el primero según
+    #: `orden_contacto`, coma-separado; vacío = el orden de siempre).
+    uno_por_empresa: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
+    orden_contacto: Mapped[str | None] = mapped_column(String(120))
     owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     color: Mapped[str | None] = mapped_column(String(7))

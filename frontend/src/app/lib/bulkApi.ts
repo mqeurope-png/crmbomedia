@@ -67,6 +67,8 @@ export async function bulkContactAction(
 // detail) para 4xx leyéndolos antes de tocar el Blob.
 export async function bulkExportContactsCsv(
   contactIds: string[],
+  /** Las columnas que se ven en la lista (1/11/2026); sin ellas, las básicas. */
+  columns?: string[],
 ): Promise<Blob> {
   const token = getStoredToken();
   const resp = await fetch("/api/contacts/bulk-export-csv", {
@@ -75,7 +77,9 @@ export async function bulkExportContactsCsv(
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ contact_ids: contactIds }),
+    body: JSON.stringify(columns && columns.length
+      ? { contact_ids: contactIds, columns }
+      : { contact_ids: contactIds }),
   });
   if (!resp.ok) {
     let detail = `Export falló (${resp.status})`;

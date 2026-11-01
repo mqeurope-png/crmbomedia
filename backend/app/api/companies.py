@@ -19,8 +19,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin, require_user, require_viewer
-from app.core.errors import not_found
+from app.core.auth import get_current_user, require_admin, require_user, require_viewer
+from app.core.errors import forbidden, not_found
 from app.db.session import get_session
 from app.models.crm import Company, Contact, User
 from app.schemas.companies import (
@@ -733,9 +733,56 @@ def list_company_contacts(
             "phone": c.phone,
             "commercial_status": c.commercial_status,
             "owner_user_id": c.owner_user_id,
+            "contacto_principal": bool(c.contacto_principal),
         }
         for c in rows
     ]
+
+
+class ContactoPrincipalPayload(BaseModel):
+    #: El contacto que pasa a ser el principal; None = ninguno.
+    contact_id: str | None = None
+
+
+def _puede_editar_empresas(current_user: User = Depends(get_current_user)) -> User:
+    """El mismo permiso con el que la ficha deja editar la empresa
+    (`erp.companies`): así la casilla y el endpoint dicen lo mismo."""
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
+    if not has_capability(current_user, Cap.COMPANIES):
+        raise forbidden()
+    return current_user
+
+
+@router.post("/{company_id}/contacto-principal")
+def set_contacto_principal(
+    company_id: str,
+    payload: ContactoPrincipalPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(_puede_editar_empresas),
+) -> dict[str, Any]:
+    """1/11/2026: marca el contacto principal de la empresa (uno por
+    empresa: los demás se desmarcan). Manda en «un contacto por empresa»."""
+    if session.get(Company, company_id) is None:
+        raise not_found("Company")
+    if payload.contact_id is not None:
+        elegido = session.get(Contact, payload.contact_id)
+        if elegido is None or elegido.company_id != company_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail="Ese contacto no es de esta empresa.")
+    anteriores = list(session.scalars(select(Contact.id).where(
+        Contact.company_id == company_id, Contact.contacto_principal.is_(True))))
+    for c in session.scalars(select(Contact).where(Contact.company_id == company_id,
+                                                   Contact.contacto_principal.is_(True))):
+        c.contacto_principal = False
+    if payload.contact_id is not None:
+        session.get(Contact, payload.contact_id).contacto_principal = True
+    record_event(session, action=Action.CONTACT_UPDATED, target_type="company",
+                 target_id=company_id, actor=current_user,
+                 metadata={"field": "contacto_principal", "from": anteriores,
+                           "to": payload.contact_id})
+    session.commit()
+    return {"company_id": company_id, "contacto_principal": payload.contact_id}
 
 
 # --- contact-side endpoint ------------------------------------------

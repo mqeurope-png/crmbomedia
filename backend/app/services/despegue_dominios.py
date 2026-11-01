@@ -252,7 +252,7 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
     por_dominio: Counter = Counter()
     con_empresa = 0
     cols = [Contact.id, Contact.email, Contact.company_id, Contact.factusol_contact_id,
-            Contact.manually_edited_fields_json, Contact.origin]
+            Contact.manually_edited_fields_json, Contact.origin, Contact.contacto_principal]
     for fila in session.execute(select(*cols).where(Contact.company_id.is_not(None))):
         cid, email, company_id = fila[0], fila[1], fila[2]
         e = empresas.get(company_id)
@@ -280,7 +280,9 @@ def plan(session: Session, *, correos_factusol: dict[str, set[str]] | None = Non
             razon = "pedido"
         elif (cid, company_id) in ofertas:
             razon = "oferta"
-        elif "company_id" in _marcas_manuales(fila[4]) or (cid, company_id) in a_mano:
+        elif ("company_id" in _marcas_manuales(fila[4]) or (cid, company_id) in a_mano
+              or fila[6]):
+            # Marcado como contacto principal de la empresa: también es a mano.
             razon = "a_mano"
         elif (fila[5] or "").strip().lower() == "manual" and cid not in sincronizados:
             razon = "alta_manual"

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -4018,6 +4018,31 @@ def _view_rules_tree(view: ContactView) -> dict[str, Any]:
     return {}
 
 
+def _view_uno_por_empresa(
+    view: ContactView, rules: dict[str, Any], payload: Any = None,
+) -> tuple[bool, str | None]:
+    """1/11/2026: si la vista va «un contacto por empresa» y con qué orden.
+    Manda lo que trae la petición (lo que hay en pantalla); si no, lo guardado
+    en `filters_json` (`uno_por_empresa`, `orden`); y si la vista tampoco lo
+    dice, el de siempre: sí cuando sus reglas miran la empresa."""
+    from app.services.segments import un_por_empresa  # noqa: PLC0415
+
+    try:
+        datos = json.loads(view.filters_json or "{}")
+    except (TypeError, ValueError):
+        datos = {}
+    datos = datos if isinstance(datos, dict) else {}
+    uno = getattr(payload, "uno_por_empresa", None)
+    if not isinstance(uno, bool):
+        uno = datos.get("uno_por_empresa")
+    if not isinstance(uno, bool):
+        uno = un_por_empresa.tiene_reglas_de_empresa(rules)
+    orden = getattr(payload, "orden", None)
+    if orden is None:
+        orden = datos.get("orden") if isinstance(datos.get("orden"), list) else None
+    return uno, un_por_empresa.orden_a_texto(orden) if uno else None
+
+
 @router.post(
     "/contact-views/{view_id}/save-as-segment",
     response_model=SegmentRead,
@@ -4059,6 +4084,7 @@ def save_view_as_segment(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
+    uno, orden = _view_uno_por_empresa(view, rules, payload)
     segment = segments_repository.create_segment(
         session,
         owner_user_id=current_user.id,
@@ -4069,6 +4095,8 @@ def save_view_as_segment(
         static_contact_ids=None,
         is_shared=payload.is_shared,
         color=payload.color,
+        uno_por_empresa=uno,
+        orden_contacto=orden,
     )
     count, duration = segments_repository.evaluate_segment(session, segment)
     record_event(
@@ -4150,6 +4178,15 @@ def push_view_to_brevo_list(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
+    uno, orden = _view_uno_por_empresa(view, rules, payload)
+    if uno:
+        # Lo mismo que empujará Brevo: uno por empresa entre los que tienen
+        # email y están activos (`resolve_target_contacts`).
+        from app.services.segments import un_por_empresa  # noqa: PLC0415
+
+        filter_clause = un_por_empresa.clausula(and_(
+            filter_clause, func.coalesce(func.trim(Contact.email), "") != "",
+            Contact.is_active.is_(True)), un_por_empresa.normaliza_orden(orden))
     contacts_to_push = int(
         session.scalar(
             select(func.count()).select_from(
@@ -4199,6 +4236,8 @@ def push_view_to_brevo_list(
         static_contact_ids=None,
         is_shared=False,
         color=None,
+        uno_por_empresa=uno,
+        orden_contacto=orden,
     )
 
     target = BrevoSyncTarget(
@@ -5246,6 +5285,8 @@ def _segment_to_read(segment: Segment, *, current_user: User) -> SegmentRead:
         static_contact_ids=segments_repository.decode_static_ids(segment),
         cached_count=segment.cached_count,
         last_evaluated_at=segment.last_evaluated_at,
+        uno_por_empresa=bool(segment.uno_por_empresa),
+        orden_contacto=segment.orden_contacto,
         external_source=segment.external_source,
         external_last_refreshed_at=segment.external_last_refreshed_at,
         external_refresh_interval_minutes=segment.external_refresh_interval_minutes,

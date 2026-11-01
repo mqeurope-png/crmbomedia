@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import CompanyDetailPage from "./page";
 import {
   archiveCompany, fiscalCheck, getCompany, getDespegueEmpresa, listCompanyContacts, restoreCompany,
-  viesRevalidate,
+  setContactoPrincipal, viesRevalidate,
 } from "../../lib/companiesApi";
 import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib/erpApi";
 
@@ -51,6 +51,7 @@ jest.mock("../../lib/companiesApi", () => ({
   fiscalCheck: jest.fn(),
   viesRevalidate: jest.fn(),
   getDespegueEmpresa: jest.fn(() => Promise.resolve({ contactos: 0, dominios: [], at: null })),
+  setContactoPrincipal: jest.fn(() => Promise.resolve({})),
 }));
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
@@ -581,5 +582,27 @@ describe("Cliente de FACTUSOL sin contactos (1/11/2026)", () => {
     render(<CompanyDetailPage />);
     await screen.findAllByText(/Solo CRM/);
     expect(screen.queryByText(AVISO)).toBeNull();
+  });
+});
+
+
+describe("Contacto principal (uno por empresa, 1/11/2026)", () => {
+  it("se marca en la pestaña Contactos y desmarca al anterior", async () => {
+    (listCompanyContacts as jest.Mock).mockResolvedValue([
+      { id: "ct1", first_name: "Figurante", last_name: "Uno", email: null, phone: null,
+        commercial_status: "cliente", owner_user_id: null, contacto_principal: true },
+      { id: "ct2", first_name: "Figurante", last_name: "Dos", email: null, phone: null,
+        commercial_status: "cliente", owner_user_id: null, contacto_principal: false },
+    ]);
+    render(<CompanyDetailPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Contactos \(2\)/ }));
+    const uno = screen.getByLabelText("Contacto principal: Figurante Uno") as HTMLInputElement;
+    const dos = screen.getByLabelText("Contacto principal: Figurante Dos") as HTMLInputElement;
+    expect(uno.checked).toBe(true);
+    await waitFor(() => expect(dos).not.toBeDisabled());
+    await userEvent.click(dos);
+    expect(setContactoPrincipal).toHaveBeenCalledWith("c1", "ct2");
+    await waitFor(() => expect(dos.checked).toBe(true));
+    expect(uno.checked).toBe(false);
   });
 });

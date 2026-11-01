@@ -815,6 +815,9 @@ class ContactViewSaveAsSegmentRequest(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     color: str | None = Field(default=None, max_length=7)
     is_shared: bool = False
+    #: 1/11/2026: lo que hay en pantalla (si no viene, lo guardado en la vista).
+    uno_por_empresa: bool | None = None
+    orden: list[str] | None = Field(default=None, max_length=10)
 
 
 class ContactViewPushToBrevoRequest(BaseModel):
@@ -827,6 +830,9 @@ class ContactViewPushToBrevoRequest(BaseModel):
     brevo_account_id: str = Field(min_length=1, max_length=64)
     brevo_list_id: int | None = None
     new_list_name: str | None = Field(default=None, max_length=200)
+    #: 1/11/2026: lo que hay en pantalla (si no viene, lo guardado en la vista).
+    uno_por_empresa: bool | None = None
+    orden: list[str] | None = Field(default=None, max_length=10)
 
 
 class ContactViewPushToBrevoResponse(BaseModel):
@@ -1657,6 +1663,9 @@ class SegmentRead(BaseModel):
     static_contact_ids: list[str] = Field(default_factory=list)
     cached_count: int | None = None
     last_evaluated_at: datetime | None = None
+    #: 1/11/2026: un contacto por empresa (y el orden de preferencia).
+    uno_por_empresa: bool = False
+    orden_contacto: str | None = None
     # Set on Brevo-managed mirrors. `<system>:<account>:<external_id>`
     # — UI keys off this to hide the rule editor and show the
     # "Espejo Brevo" badge + refresh/open buttons.

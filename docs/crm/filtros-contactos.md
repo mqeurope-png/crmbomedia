@@ -192,11 +192,76 @@ contactos tienen ese apunte.
 
 ---
 
+## Un contacto por empresa (1/11/2026)
+
+Encima de la lista hay dos opciones:
+
+- **Todos los contactos de las empresas que cumplen.** Es lo de siempre.
+- **Un solo contacto por empresa:** el primero de cada empresa según el orden de
+  preferencia.
+
+**Por defecto** va «uno por empresa» solo cuando las reglas miran la empresa
+(empresa, parque o compras). Las vistas de siempre siguen con «todos». Lo que se
+elija se guarda con «Guardar» en la vista. Al crear un segmento o mandar a Brevo
+desde una vista, va lo que hay en pantalla (aunque no se haya guardado).
+Duplicar un segmento lo conserva.
+
+**Orden de preferencia.** Cualquier criterio se puede quitar o mover. Si dos
+contactos empatan en uno, decide el siguiente; si empatan en todos, el id.
+
+1. **Contacto principal**: el marcado en la ficha de empresa (pestaña
+   «Contactos», casilla «Principal», uno por empresa). Lo marca quien puede
+   editar la empresa. Si el contacto cambia de empresa, o su empresa se fusiona
+   en otra, deja de ser principal: la nueva ya tiene el suyo. El despegue de
+   dominios compartidos no toca a un contacto principal: cuenta como puesto a
+   mano.
+2. **Con email válido.**
+3. **Interacción más reciente**: llamada, nota, email o tarea.
+4. **El más antiguo.**
+
+**Por qué salió cada uno.** Bajo el nombre se dice el criterio real: se compara
+al elegido con el segundo de su empresa y se nombra el primer criterio en el que
+gana. Si es el único que cumple, se dice. Nunca pone «principal» si no hay
+ninguno marcado.
+
+**Recuentos.** Se muestran como «N empresas · M contactos · K seleccionados».
+Con «uno por empresa», M va seguido de «de los X que cumplen». Los contactos
+sin empresa no tienen por quién elegirse: en «uno por empresa» quedan fuera, y
+se cuentan aparte.
+
+**Brevo.** La lista se recalcula en cada sincronización: es dinámica, no una
+foto. Con «uno por empresa», el contacto se elige entre los que tienen email y
+están activos: si el preferido no tiene email, va el siguiente de su empresa.
+
+**Columnas y CSV.** En «Columnas» están, del grupo «Empresa, parque y compras»:
+Empresa, Sector, Gamas, Nº de máquinas, meses de la más nueva y de la más vieja,
+Gasto total, Última compra, Meses sin comprar, Dormido en y Hueco en. Las de un
+número o una fecha se pueden ordenar. Las cifras del ERP (parque, gasto,
+compras) las ve a partir del rol usuario; el lector ve solo la empresa y el
+sector. El CSV de la selección sale con las columnas que se ven, con su nombre
+en pantalla y en el orden de la lista (menos «Elegido por», que depende de la
+pantalla). Lo que empieza como una fórmula (`=`, `+`, `-`, `@`) sale con un
+apóstrofo delante para que la hoja de cálculo no lo ejecute. Los teléfonos y
+los números se quedan igual.
+
+**El cuadre** (`scripts/cuadre_huecos.py`, solo lee) explica por qué la pestaña
+«Dormidos y huecos» y la lista de contactos no dan el mismo número. La pestaña
+cuenta clientes de FACTUSOL y la lista, contactos de empresas de BoHub. Entre
+una y otra:
+
+- clientes sin empresa en BoHub;
+- códigos de cliente repetidos en varias empresas;
+- empresas sin contactos;
+- la antigüedad: la pestaña mira la máquina más reciente de esa gama; las reglas
+  de meses, todas las máquinas de la empresa.
+
 ## Rendimiento
 
 Todos los filtros son EXISTS sobre tablas **locales** indexadas
 (`call_logs.contact_id`, `notes.contact_id`, `orders.company_id`, etc.), así que
 no cambian el coste del listado de forma apreciable. Las de «Empresa, parque y
 compras» van contra las tablas precalculadas: con 17.558 contactos y tres
-reglas de parque, ~30 ms la página (medido en local con figurantes). Los dos filtros que tocarán
+reglas de parque, ~30 ms la página (medido en local con figurantes). Con «uno
+por empresa» y 60.000 interacciones, unos 200 ms con esas tres reglas y algo
+más de medio segundo sin ninguna regla. Los dos filtros que tocarán
 FACTUSOL (CRM-1.6b) llevarán su propia salvaguarda de caché + tope.

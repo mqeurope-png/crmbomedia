@@ -20,7 +20,7 @@ is the reference implementation; the other entities live under
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import func
@@ -953,6 +953,54 @@ FIELD_SPECS.update({
         sortable=True,
     ),
 })
+
+
+# --- 1/11/2026: columnas de la empresa en la lista de contactos -----------------
+#
+# Solo columnas (no filtros: para filtrar están las reglas de arriba). Los
+# valores los pone `columnas_empresa.rellenar` sobre cada página; para ordenar,
+# una subconsulta correlada contra la empresa o su resumen ERP.
+
+
+def _orden_por(columna: Any) -> Any:
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models.resumen_empresa import CrmEmpresaErp  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    modelo = Company if columna in ("name", "sector") else CrmEmpresaErp
+    pk = Company.id if modelo is Company else CrmEmpresaErp.company_id
+    return (select(getattr(modelo, columna)).where(pk == Contact.company_id)
+            .limit(1).scalar_subquery())
+
+
+def _columna_empresa(key: str, label: str, type_: str, *, orden: str | None = None) -> FieldSpec:
+    return FieldSpec(
+        key=key, label=label, type=type_, comparators=(), source="related_table",
+        grouped_under=_EMPRESA, displayable=True, filterable=False,
+        sortable=orden is not None, sort_column=_orden_por(orden) if orden else None,
+        column=None,
+    )
+
+
+FIELD_SPECS.update({
+    "empresa_nombre": _columna_empresa("empresa_nombre", "Empresa", "string", orden="name"),
+    "parque_gamas": _columna_empresa("parque_gamas", "Gamas (parque)", "string"),
+    "compra_dormido_gamas": _columna_empresa("compra_dormido_gamas", "Dormido en", "string"),
+    "compra_hueco_gamas": _columna_empresa("compra_hueco_gamas", "Hueco en", "string"),
+    "contacto_elegido_por": FieldSpec(
+        key="contacto_elegido_por", label="Elegido por (uno por empresa)", type="string",
+        comparators=(), source="computed", grouped_under=_EMPRESA, displayable=True,
+        filterable=False),
+})
+# Las reglas de empresa que también sirven de columna (y se pueden ordenar).
+for _clave, _orden in (("empresa_sector", "sector"), ("parque_maquinas", "maquinas"),
+                       ("parque_meses_nueva", "meses_nueva"),
+                       ("parque_meses_vieja", "meses_vieja"),
+                       ("compra_gasto_total", "gasto_total"), ("compra_ultima", "ultima_compra"),
+                       ("compra_meses_sin_comprar", "meses_sin_comprar")):
+    FIELD_SPECS[_clave] = replace(FIELD_SPECS[_clave], displayable=True, sortable=True,
+                                  sort_column=_orden_por(_orden))
 
 
 # --- CRM-1.5: reorganización del panel de filtros en 7 grupos ----------------
